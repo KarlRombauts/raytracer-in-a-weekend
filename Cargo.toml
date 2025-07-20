@@ -1,0 +1,12 @@
+[package]
+name = "raytracer-in-a-weekend"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+image = { version = "*", features = ["rayon"] }
+rayon = "*"
+indicatif = "0.18.0"
+rand = "0.9.1"
+typed-builder = "0.21.0"
+palette = "0.7.6"
