@@ -10,3 +10,6 @@ indicatif = "0.18.0"
 rand = "0.9.1"
 typed-builder = "0.21.0"
 palette = "0.7.6"
+
+[profile.release]
+debug = true

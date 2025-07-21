@@ -1,4 +1,4 @@
-use crate::scenes::{bouncing_spheres, earth, perlin_spheres, quads, tris};
+use crate::scenes::{bouncing_spheres, earth, obj, perlin_spheres, tris};
 
 mod camera;
 mod color;
@@ -9,8 +9,8 @@ mod material;
 mod ray;
 mod scenes;
 mod texture;
-mod vec3;
 
+mod vec3;
 fn main() {
-    tris();
+    obj();
 }

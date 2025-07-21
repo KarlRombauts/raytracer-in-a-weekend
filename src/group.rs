@@ -1,5 +1,4 @@
 use crate::interval::Interval;
-use crate::ray::AABB;
 use crate::ray::*;
 use std::sync::Arc;
 

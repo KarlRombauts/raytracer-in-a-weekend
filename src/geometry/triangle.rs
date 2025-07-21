@@ -19,6 +19,12 @@ pub struct Triangle {
 }
 
 impl Triangle {
+    pub fn from_points(p1: &Vec3, p2: &Vec3, p3: &Vec3, material: Arc<dyn Material>) -> Self {
+        let u = *p2 - *p1;
+        let v = *p3 - *p1;
+        Self::new(*p1, u, v, material)
+    }
+
     pub fn new(q: Point3, u: Vec3, v: Vec3, material: Arc<dyn Material>) -> Self {
         let n = u.cross(&v);
         let normal = n.unit();

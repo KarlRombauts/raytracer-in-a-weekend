@@ -2,7 +2,11 @@ use std::{cmp::Ordering, sync::Arc};
 
 use rand::Rng;
 
-use crate::{group::IntersectGroup, interval::Interval, ray::*};
+use crate::{
+    group::IntersectGroup,
+    interval::Interval,
+    ray::{Intersect, Ray, AABB},
+};
 
 pub struct BVHNode {
     left: Arc<dyn Intersect>,
