@@ -19,6 +19,10 @@ impl Interval {
         Interval { min, max }
     }
 
+    pub fn center(&self) -> f32 {
+        (self.min + self.max) * 0.5
+    }
+
     pub fn enclosing(a: Interval, b: Interval) -> Self {
         Interval::new(f32::min(a.min, b.min), f32::max(a.max, b.max))
     }

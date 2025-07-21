@@ -6,6 +6,7 @@ pub struct Ray {
     pub origin: Point3,
     pub direction: Vec3,
     pub time: f32,
+    pub inv_direction: Vec3,
 }
 
 impl Ray {
@@ -14,6 +15,7 @@ impl Ray {
             origin,
             direction,
             time: 0.0,
+            inv_direction: direction.inverse(),
         }
     }
 
@@ -22,6 +24,7 @@ impl Ray {
             origin,
             direction,
             time,
+            inv_direction: direction.inverse(),
         }
     }
 

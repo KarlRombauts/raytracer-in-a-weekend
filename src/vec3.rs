@@ -1,6 +1,7 @@
 use std::ops::Index;
 
 use rand::prelude::*;
+use rand_distr::{UnitDisc, UnitSphere};
 
 #[derive(Debug, Copy, Clone)]
 pub struct Vec3 {
@@ -22,6 +23,14 @@ impl Vec3 {
         Vec3 { x, y, z }
     }
 
+    pub fn inverse(&self) -> Self {
+        Vec3 {
+            x: 1. / self.x,
+            y: 1. / self.y,
+            z: 1. / self.z,
+        }
+    }
+
     pub fn random() -> Self {
         let mut rng = rand::rng();
         Vec3::new(
@@ -41,23 +50,15 @@ impl Vec3 {
     }
 
     pub fn random_unit() -> Self {
-        loop {
-            let v = Vec3::random_range(-1.0, 1.0);
-            let length_squared = v.length_squared();
-            if f32::EPSILON < length_squared && length_squared <= 1.0 {
-                return v / length_squared.sqrt();
-            }
-        }
+        let mut rng = rand::rng();
+        let [x, y, z]: [f32; 3] = UnitSphere.sample(&mut rng);
+        return Vec3 { x, y, z };
     }
 
     pub fn random_in_unit_disk() -> Self {
         let mut rng = rand::rng();
-        loop {
-            let p = Vec3::new(rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0), 0.);
-            if p.length_squared() < 1.0 {
-                return p;
-            }
-        }
+        let [x, y]: [f32; 2] = UnitDisc.sample(&mut rng);
+        Vec3::new(x, y, 0.0)
     }
 
     pub fn random_on_hemisphere(normal: &Vec3) -> Self {

@@ -13,7 +13,7 @@ use crate::{
 pub fn obj() {
     let red = Arc::new(Lambertian::from_color(Color::new(1.0, 0.2, 0.2)));
     let gray = Arc::new(Lambertian::from_color(Color::new(0.8, 0.8, 0.8)));
-    let mut obj = ObjData::load("./objs/teapot.obj").into_mesh(gray);
+    let mut obj = ObjData::load("./objs/monkey.obj").into_mesh(gray);
     obj.add(Arc::new(Quad::new(
         Point3::new(-500., 0., 20.),
         Vec3::new(1000., 0., 0.),
@@ -28,9 +28,9 @@ pub fn obj() {
             .image_width(400)
             .samples(100)
             .max_depth(50)
-            .fov(30.)
-            .look_from(Vec3::new(2., 5., 9.))
-            .look_at(Vec3::new(0.3, 1.2, 0.))
+            .fov(40.)
+            .look_from(Vec3::new(2., 2., 2.))
+            .look_at(Vec3::new(0.3, 0.6, 0.))
             .build(),
     );
 

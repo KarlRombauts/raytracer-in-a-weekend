@@ -99,18 +99,20 @@ impl Camera {
             .progress_chars("#>-"),
         );
         let mut img_buf = image::ImageBuffer::new(self.image_width, self.image_height);
-        img_buf.enumerate_pixels_mut().for_each(|(i, j, pixel)| {
-            let mut pixel_color = Color::ZERO;
-            for _ in 0..self.samples {
-                let ray = self.get_ray(i, j);
-                pixel_color += self.ray_color(&ray, self.max_depth, world);
-            }
+        img_buf
+            .par_enumerate_pixels_mut()
+            .for_each(|(i, j, pixel)| {
+                let mut pixel_color = Color::ZERO;
+                for _ in 0..self.samples {
+                    let ray = self.get_ray(i, j);
+                    pixel_color += self.ray_color(&ray, self.max_depth, world);
+                }
 
-            pixel_color *= self.pixel_samples_scale;
+                pixel_color *= self.pixel_samples_scale;
 
-            *pixel = image::Rgb(pixel_color.to_rgb_vec());
-            bar.inc(1);
-        });
+                *pixel = image::Rgb(pixel_color.to_rgb_vec());
+                bar.inc(1);
+            });
 
         bar.finish();
         let duration = start.elapsed();

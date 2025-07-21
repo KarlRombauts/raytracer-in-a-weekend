@@ -23,11 +23,11 @@ impl ObjData {
         };
 
         for line in raw.lines() {
-            match line.chars().next() {
-                Some('v') => {
+            match line.split_whitespace().next() {
+                Some("v") => {
                     data.parse_vert(line);
                 }
-                Some('f') => {
+                Some("f") => {
                     data.parse_face(line);
                 }
                 _ => (),
@@ -51,7 +51,10 @@ impl ObjData {
     }
 
     fn parse_face(&mut self, line: &str) {
-        let mut v = line.split_whitespace().skip(1).map(|s| {
+        let mut v = line.split_whitespace().skip(1).map(|mut s| {
+            if s.contains("/") {
+                s = s.split("/").next().unwrap()
+            }
             s.parse::<usize>()
                 .expect("face index was not a valid integer")
         });
@@ -62,11 +65,16 @@ impl ObjData {
 
         let face = [a - 1, b - 1, c - 1];
         self.faces.push(face);
+        if let Some(d) = v.next() {
+            let face = [a - 1, c - 1, d - 1];
+            self.faces.push(face);
+        }
     }
 
     pub fn into_mesh(self, material: Arc<dyn Material>) -> IntersectGroup {
         let mut group = IntersectGroup::new();
 
+        println!("Loaded {} faces", self.faces.len());
         self.faces.into_iter().for_each(|[i, j, k]| {
             let tri = Arc::new(Triangle::from_points(
                 &self.verts[i],

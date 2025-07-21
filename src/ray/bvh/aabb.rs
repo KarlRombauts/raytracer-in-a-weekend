@@ -1,4 +1,8 @@
-use crate::{interval::Interval, ray::Ray, vec3::Point3};
+use crate::{
+    interval::Interval,
+    ray::Ray,
+    vec3::{Point3, Vec3},
+};
 
 pub struct AABB {
     x: Interval,
@@ -42,6 +46,9 @@ impl AABB {
         AABB { x, y, z }
     }
 
+    pub fn center(&self) -> Vec3 {
+        Vec3::new(self.x.center(), self.y.center(), self.z.center())
+    }
     pub fn axis_interval(&self, n: u32) -> &Interval {
         match n {
             0 => &self.x,
@@ -57,7 +64,7 @@ impl AABB {
 
         for axis in 0..3 {
             let ax = self.axis_interval(axis);
-            let inv_d = 1.0 / ray.direction[axis];
+            let inv_d = ray.inv_direction[axis];
             let t0 = (ax.min - ray.origin[axis]) * inv_d;
             let t1 = (ax.max - ray.origin[axis]) * inv_d;
             let (t_low, t_high) = (t0.min(t1), t0.max(t1));
@@ -69,6 +76,34 @@ impl AABB {
             }
         }
         true
+    }
+
+    pub fn intersect_distance(&self, ray: &Ray) -> f32 {
+        let box_min = Point3::new(self.x.min, self.y.min, self.z.min);
+        let box_max = Point3::new(self.x.max, self.y.max, self.z.max);
+
+        let t_min = (box_min - ray.origin) * ray.inv_direction;
+        let t_max = (box_max - ray.origin) * ray.inv_direction;
+
+        let t1 = Point3::new(
+            t_min.x.min(t_max.x),
+            t_min.y.min(t_max.y),
+            t_min.z.min(t_max.z),
+        );
+        let t2 = Point3::new(
+            t_min.x.max(t_max.x),
+            t_min.y.max(t_max.y),
+            t_min.z.max(t_max.z),
+        );
+
+        let dst_near = t1.x.max(t1.y).max(t1.z);
+        let dst_far = t2.x.min(t2.y).min(t2.z);
+
+        if dst_far >= dst_near && dst_far > 0.0 {
+            dst_near.max(0.0) // Return entry distance (clamp to 0)
+        } else {
+            f32::INFINITY // No intersection
+        }
     }
 
     pub const EMPTY: AABB = AABB {
