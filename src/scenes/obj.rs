@@ -13,11 +13,11 @@ use crate::{
 pub fn obj() {
     let red = Arc::new(Lambertian::from_color(Color::new(1.0, 0.2, 0.2)));
     let gray = Arc::new(Lambertian::from_color(Color::new(0.8, 0.8, 0.8)));
-    let mut obj = ObjData::load("./objs/monkey.obj").into_mesh(gray);
+    let mut obj = ObjData::load("./objs/dragon.obj").into_mesh(gray);
     obj.add(Arc::new(Quad::new(
         Point3::new(-500., 0., 20.),
-        Vec3::new(1000., 0., 0.),
-        Vec3::new(0., 0., -1000.),
+        Vec3::new(3000., 0., 0.),
+        Vec3::new(0., 0., -3000.),
         red,
     )));
 
@@ -25,12 +25,12 @@ pub fn obj() {
 
     let camera = Camera::from(
         CameraConfig::builder()
-            .image_width(400)
-            .samples(100)
+            .image_width(1200)
+            .samples(400)
             .max_depth(50)
             .fov(40.)
-            .look_from(Vec3::new(2., 2., 2.))
-            .look_at(Vec3::new(0.3, 0.6, 0.))
+            .look_from(Vec3::new(10., 8., 10.))
+            .look_at(Vec3::new(0.3, 1.6, 0.))
             .build(),
     );
 
