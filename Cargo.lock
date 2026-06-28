@@ -3096,8 +3096,10 @@ dependencies = [
 name = "raytracer-in-a-weekend"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "eframe",
  "glam",
+ "glow",
  "image",
  "indicatif",
  "palette",

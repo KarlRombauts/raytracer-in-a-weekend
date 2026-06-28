@@ -13,3 +13,9 @@ pub use glossy::Glossy;
 pub use lambertian::Lambertian;
 pub use material::Material;
 pub use metal::Metal;
+
+/// Returns a throwaway `Arc<dyn Material>` suitable for geometry-only queries
+/// (e.g. computing a bounding box) where the actual material is irrelevant.
+pub fn blank_material() -> std::sync::Arc<dyn Material> {
+    std::sync::Arc::new(Blank::new())
+}
