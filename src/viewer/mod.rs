@@ -93,7 +93,7 @@ impl ViewerApp {
 }
 
 impl eframe::App for ViewerApp {
-    // eframe 0.35 hands the root `Ui` directly; we lay out panels inside it.
+    // eframe 0.34 (same API as 0.35): hands the root `Ui` directly; we lay out panels inside it.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 

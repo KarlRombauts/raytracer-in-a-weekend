@@ -11,7 +11,7 @@ rand = { version = "0.9.1", features = ["small_rng"] }
 typed-builder = "0.21.0"
 palette = "0.7.6"
 rand_distr = "0.5.1"
-eframe = "0.35.0"
+eframe = "0.34"
 rfd = "0.17.2"
 
 [profile.release]
