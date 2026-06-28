@@ -101,6 +101,7 @@ pub fn cornell_box() -> Scene {
         .look_from(Vec3::new(278.0, 278.0, -800.0))
         .look_at(Vec3::new(278.0, 278.0, 0.0))
         .dof_angle(0.0)
+        .firefly_clamp(10.0)
         .build();
 
     Scene { camera, objects }

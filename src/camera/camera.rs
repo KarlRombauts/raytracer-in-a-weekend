@@ -8,7 +8,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use image;
 
 use crate::camera::config::CameraConfig;
-use crate::color::Color;
+use crate::color::{clamp_luminance, Color};
 use crate::group::*;
 use crate::interval::Interval;
 use crate::ray::{Intersect, Ray};
@@ -22,6 +22,7 @@ pub struct Camera {
     max_depth: u32,
     dof_angle: f32,
     background: Color,
+    firefly_clamp: f32,
 
     // derived:
     pixel_samples_scale: f32,
@@ -78,6 +79,7 @@ impl From<CameraConfig> for Camera {
             max_depth: config.max_depth,
             dof_angle: config.dof_angle,
             background: config.background,
+            firefly_clamp: config.firefly_clamp,
 
             pixel_samples_scale,
             image_height,
@@ -126,7 +128,8 @@ impl Camera {
                 let mut pixel_color = Color::ZERO;
                 for s in 0..self.samples {
                     let ray = self.get_ray(i, j, s, &mut rng);
-                    pixel_color += self.ray_color(&ray, world, &mut rng);
+                    pixel_color +=
+                        clamp_luminance(self.ray_color(&ray, world, &mut rng), self.firefly_clamp);
                 }
 
                 pixel_color *= self.pixel_samples_scale;
@@ -171,7 +174,7 @@ impl Camera {
         rng: &mut SmallRng,
     ) -> Color {
         let ray = self.get_ray(i, j, sample_index, rng);
-        self.ray_color(&ray, world, rng)
+        clamp_luminance(self.ray_color(&ray, world, rng), self.firefly_clamp)
     }
 
     fn dof_disk_sample(&self, rng: &mut SmallRng) -> Vec3 {

@@ -38,4 +38,8 @@ pub struct CameraConfig {
 
     #[builder(default = Color::new(0.7, 0.8, 1.))]
     pub background: Color,
+
+    /// Firefly suppression: per-sample luminance cap. `f32::INFINITY` disables it.
+    #[builder(default = f32::INFINITY)]
+    pub firefly_clamp: f32,
 }
