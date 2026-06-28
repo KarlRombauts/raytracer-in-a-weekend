@@ -18,6 +18,9 @@ pub struct CameraConfig {
     #[builder(default = 60.0)]
     pub fov: f32,
 
+    #[builder(default = 0.0)]
+    pub roll: f32,
+
     #[builder(default = 0.)]
     pub dof_angle: f32,
 

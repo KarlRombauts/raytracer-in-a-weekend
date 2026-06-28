@@ -35,6 +35,8 @@ pub struct Camera {
 
     dof_disk_u: Vec3,
     dof_disk_v: Vec3,
+    #[allow(dead_code)]
+    basis_u: Vec3,
 }
 
 impl From<CameraConfig> for Camera {
@@ -50,7 +52,9 @@ impl From<CameraConfig> for Camera {
         let viewport_width = viewport_height * (config.image_width as f32) / (image_height as f32);
 
         let w = (config.look_from - config.look_at).unit();
-        let u = config.v_up.cross(&w).unit();
+        // Roll spins the up reference about the view axis before deriving right.
+        let up = config.v_up.rotate_about_axis(&w, config.roll.to_radians());
+        let u = up.cross(&w).unit();
         let v = w.cross(&u);
 
         let viewport_u = viewport_width * u;
@@ -85,6 +89,7 @@ impl From<CameraConfig> for Camera {
             w,
             dof_disk_u,
             dof_disk_v,
+            basis_u: u,
         }
     }
 }
@@ -183,6 +188,11 @@ impl Camera {
         Vec3::new(rng.random::<f32>() - 0.5, rng.random::<f32>() - 0.5, 0.0)
     }
 
+    #[cfg(test)]
+    pub(crate) fn basis_u(&self) -> crate::vec3::Vec3 {
+        self.basis_u
+    }
+
     fn ray_color(
         &self,
         ray: &Ray,
@@ -219,5 +229,36 @@ impl Camera {
         // Depth exhausted: matches the recursive base case `ray_color(_, 0) == 0`,
         // contributing nothing further.
         color
+    }
+}
+
+#[cfg(test)]
+mod roll_tests {
+    use super::Camera;
+    use crate::camera::CameraConfig;
+    use crate::vec3::Vec3;
+
+    fn cfg(roll: f32) -> CameraConfig {
+        CameraConfig::builder()
+            .look_from(Vec3::new(0.0, 0.0, 0.0))
+            .look_at(Vec3::new(0.0, 0.0, -1.0))
+            .v_up(Vec3::new(0.0, 1.0, 0.0))
+            .roll(roll)
+            .build()
+    }
+
+    #[test]
+    fn zero_roll_keeps_upright_basis() {
+        // With no roll, the right axis u should be world +x (within sign tol).
+        let cam = Camera::from(cfg(0.0));
+        assert!((cam.basis_u().x.abs() - 1.0).abs() < 1e-5, "u={:?}", cam.basis_u());
+        assert!(cam.basis_u().y.abs() < 1e-5);
+    }
+
+    #[test]
+    fn ninety_roll_tilts_right_axis_to_vertical() {
+        // Rolling 90° should swing the right axis onto the world vertical.
+        let cam = Camera::from(cfg(90.0));
+        assert!(cam.basis_u().y.abs() > 0.99, "u={:?}", cam.basis_u());
     }
 }

@@ -80,6 +80,11 @@ pub fn camera_controls(ui: &mut egui::Ui, cam: &mut CameraConfig) -> bool {
             c |= vec_row(ui, "look from", &mut cam.look_from, 1.0);
             c |= vec_row(ui, "look at", &mut cam.look_at, 1.0);
             c |= f32_row(ui, "fov", &mut cam.fov, 0.2);
+            ui.label("roll");
+            c |= ui
+                .add(egui::Slider::new(&mut cam.roll, -180.0..=180.0).suffix("°"))
+                .changed();
+            ui.end_row();
             c |= u32_row(ui, "samples", &mut cam.samples);
             c |= u32_row(ui, "depth", &mut cam.max_depth);
             c |= f32_row(ui, "dof", &mut cam.dof_angle, 0.05);
