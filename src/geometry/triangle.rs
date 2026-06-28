@@ -6,6 +6,8 @@ use crate::{
     ray::{HitRecord, Intersect, Ray, AABB},
     vec3::{Point3, Vec3},
 };
+use rand::rngs::SmallRng;
+use rand::Rng;
 
 pub struct Triangle {
     centroid: Vec3,
@@ -118,5 +120,46 @@ impl Intersect for Triangle {
 
     fn bounding_box(&self) -> &AABB {
         &self.bbox
+    }
+
+    fn sample_point(&self, rng: &mut SmallRng) -> crate::vec3::Point3 {
+        let r1: f32 = rng.random();
+        let r2: f32 = rng.random();
+        let su = r1.sqrt();
+        let p1 = self.q;
+        let p2 = self.q + self.u;
+        let p3 = self.q + self.v;
+        (1.0 - su) * p1 + (su * (1.0 - r2)) * p2 + (su * r2) * p3
+    }
+}
+
+#[cfg(test)]
+mod sample_tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::material::Lambertian;
+    use crate::vec3::{Point3, Vec3};
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+    use std::sync::Arc;
+
+    #[test]
+    fn sampled_point_is_inside_triangle() {
+        // Vertices q=(0,0,0), q+u=(1,0,0), q+v=(0,1,0): a sample (x,y,0) must
+        // satisfy the barycentric bounds x>=0, y>=0, x+y<=1.
+        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
+        let tri = Triangle::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            mat,
+        );
+        let mut rng = SmallRng::seed_from_u64(2);
+        for _ in 0..500 {
+            let p = tri.sample_point(&mut rng);
+            assert!(p.z.abs() < 1e-5, "off-plane: {:?}", p);
+            assert!(p.x >= -1e-5 && p.y >= -1e-5, "negative bary: {:?}", p);
+            assert!(p.x + p.y <= 1.0 + 1e-5, "outside tri: {:?}", p);
+        }
     }
 }

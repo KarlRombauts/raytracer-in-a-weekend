@@ -6,6 +6,8 @@ use crate::{
     ray::{HitRecord, Intersect, Ray, AABB},
     vec3::{Point3, Vec3},
 };
+use rand::rngs::SmallRng;
+use rand::Rng;
 
 pub struct Quad {
     q: Point3,
@@ -94,5 +96,40 @@ impl Intersect for Quad {
 
     fn bounding_box(&self) -> &AABB {
         &self.bbox
+    }
+
+    fn sample_point(&self, rng: &mut SmallRng) -> crate::vec3::Point3 {
+        let a: f32 = rng.random();
+        let b: f32 = rng.random();
+        self.q + a * self.u + b * self.v
+    }
+}
+
+#[cfg(test)]
+mod sample_tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::material::Lambertian;
+    use crate::vec3::{Point3, Vec3};
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+    use std::sync::Arc;
+
+    #[test]
+    fn sampled_point_lies_on_quad() {
+        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
+        let q = Quad::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 3.0, 0.0),
+            mat,
+        );
+        let mut rng = SmallRng::seed_from_u64(1);
+        for _ in 0..500 {
+            let p = q.sample_point(&mut rng);
+            assert!(p.z.abs() < 1e-5, "off-plane: {:?}", p);
+            assert!((0.0..=2.0).contains(&p.x), "x out: {}", p.x);
+            assert!((0.0..=3.0).contains(&p.y), "y out: {}", p.y);
+        }
     }
 }
