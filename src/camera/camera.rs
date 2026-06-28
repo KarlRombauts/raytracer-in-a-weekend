@@ -267,6 +267,12 @@ impl Camera {
                 if p_light > 0.0 && p_brdf > 0.0 {
                     let shadow = Ray::new_t(hit.p, ld, current.time);
                     if let Some(lh) = world.intersect(&shadow, &interval) {
+                        // Radiance from whatever the shadow ray actually reaches:
+                        // an occluder (or non-emitter) gives 0 = shadowed; a light
+                        // gives its emission. `p_light` is the marginal over ALL
+                        // lights, so even if the ray reaches a different light than
+                        // the one sampled, the estimator stays unbiased — don't
+                        // "fix" this to use the sampled light's own pdf.
                         let le = lh.material.emitted(lh.u, lh.v, lh.p);
                         if le != Color::ZERO {
                             let w = power_heuristic(p_light, p_brdf);
@@ -380,7 +386,9 @@ mod mixture_tests {
         let pure_gi = avg_floor_color(false);
         assert!(with_nee > 0.0 && pure_gi > 0.0, "both lit: nee={with_nee} gi={pure_gi}");
         let rel = (with_nee - pure_gi).abs() / pure_gi;
-        assert!(rel < 0.15, "means should agree (unbiased): nee={with_nee} gi={pure_gi} rel={rel}");
+        // Tight tolerance (both well-converged on the big light) so a subtle MIS
+        // weight bias would actually trip this guard, not just gross errors.
+        assert!(rel < 0.05, "means should agree (unbiased): nee={with_nee} gi={pure_gi} rel={rel}");
     }
 }
 
