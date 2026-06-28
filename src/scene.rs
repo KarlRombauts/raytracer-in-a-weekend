@@ -313,6 +313,10 @@ pub fn build_world(scene: &Scene) -> IntersectGroup {
             if geom.area() > 0.0 {
                 world.lights.push(Light {
                     geom,
+                    // Emission is Solid-only in Phase 1, so `preview_color()`
+                    // equals the true emitted colour exactly. If emission ever
+                    // becomes a non-Solid texture, this would feed a
+                    // representative average here — revisit then.
                     emit: emit.preview_color(),
                 });
             }
