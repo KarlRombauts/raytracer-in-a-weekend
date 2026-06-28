@@ -246,11 +246,22 @@ void main() {
         frag = vec4(u_color, 1.0);
         return;
     }
-    // Headlight: light direction = view direction = -z in view space, so the
-    // shade is just the normal's view-space z (facing the camera).
+    // Normals are in view space, so the lights below follow the camera like a
+    // solid-mode / material-preview studio rig.
     vec3 n = normalize(v_normal_view);
-    float ndotv = max(n.z, 0.0);
-    float shade = u_ambient + (1.0 - u_ambient) * ndotv;
-    frag = vec4(u_color * shade, 1.0);
+    if (!gl_FrontFacing) n = -n;      // two-sided: light whichever face we see
+    vec3 v = vec3(0.0, 0.0, 1.0);     // toward the camera in view space
+
+    // Two-light setup: a brighter key from upper-right, a softer fill.
+    vec3 key = normalize(vec3(0.45, 0.65, 0.6));
+    vec3 fill = normalize(vec3(-0.6, -0.15, 0.4));
+    float diffuse = 0.85 * max(dot(n, key), 0.0) + 0.35 * max(dot(n, fill), 0.0);
+    float shade = u_ambient + (1.0 - u_ambient) * diffuse;
+
+    // Fresnel rim light to pop silhouettes.
+    float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * 0.35;
+
+    vec3 col = u_color * shade + vec3(rim);
+    frag = vec4(col, 1.0);
 }
 "#;

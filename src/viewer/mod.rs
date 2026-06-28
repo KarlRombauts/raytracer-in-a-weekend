@@ -336,9 +336,15 @@ impl eframe::App for ViewerApp {
                     }
 
                     // Paint the GL rasterised preview via an egui paint callback.
+                    // Letterbox to the output aspect (centred, unit zoom) so the
+                    // preview lines up with the path-traced image in Render mode.
                     let scene = self.scene.clone();
                     let renderer = self.gl_renderer.clone();
-                    let rect = vp;
+                    let mut fit = egui::vec2(vp.width(), vp.width() / aspect);
+                    if fit.y > vp.height() {
+                        fit = egui::vec2(vp.height() * aspect, vp.height());
+                    }
+                    let rect = egui::Rect::from_center_size(vp.center(), fit);
                     let cb = eframe::egui_glow::CallbackFn::new(move |_info, painter| {
                         let scene = scene.lock().unwrap();
                         renderer
