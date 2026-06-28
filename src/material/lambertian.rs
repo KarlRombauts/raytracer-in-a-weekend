@@ -43,4 +43,44 @@ impl Material for Lambertian {
 
         Some((scattered, attenuation))
     }
+
+    fn scattering_pdf(&self, hit_record: &HitRecord, dir: &crate::vec3::Vec3) -> f32 {
+        let cos = hit_record.normal.dot(&dir.unit());
+        (cos.max(0.0)) / std::f32::consts::PI
+    }
+}
+
+#[cfg(test)]
+mod pdf_tests {
+    use super::*;
+    use crate::material::{Dielectric, Glossy, Material, Metal};
+    use crate::vec3::{Point3, Vec3};
+
+    #[test]
+    fn lambertian_scattering_pdf_is_cosine_over_pi() {
+        let lam = Lambertian::from_color(Color::new(0.0, 0.0, 0.0));
+        let hit = crate::ray::HitRecord::new(
+            1.0,
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            &lam,
+        );
+        // dir straight up the normal: cos = 1 => 1/PI
+        let up = lam.scattering_pdf(&hit, &Vec3::new(0.0, 1.0, 0.0));
+        assert!((up - 1.0 / std::f32::consts::PI).abs() < 1e-6, "up={up}");
+        // dir parallel to the surface: cos = 0 => 0
+        let side = lam.scattering_pdf(&hit, &Vec3::new(1.0, 0.0, 0.0));
+        assert!(side.abs() < 1e-6, "side={side}");
+        // dir below the surface: clamped to 0
+        let down = lam.scattering_pdf(&hit, &Vec3::new(0.0, -1.0, 0.0));
+        assert_eq!(down, 0.0);
+    }
+
+    #[test]
+    fn specular_flags_are_correct() {
+        assert!(!Lambertian::from_color(Color::new(0.0, 0.0, 0.0)).is_specular());
+        assert!(Metal::new(Color::new(0.5, 0.5, 0.5), 0.0).is_specular());
+        assert!(Dielectric::new(1.5).is_specular());
+        assert!(Glossy::new(Color::new(0.5, 0.5, 0.5), 0.0).is_specular());
+    }
 }

@@ -33,6 +33,10 @@ impl Glossy {
 }
 
 impl Material for Glossy {
+    fn is_specular(&self) -> bool {
+        true
+    }
+
     fn scatter(
         &self,
         ray_in: &Ray,

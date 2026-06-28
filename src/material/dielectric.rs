@@ -39,6 +39,10 @@ impl Dielectric {
 }
 
 impl Material for Dielectric {
+    fn is_specular(&self) -> bool {
+        true
+    }
+
     fn scatter(
         &self,
         ray_in: &Ray,

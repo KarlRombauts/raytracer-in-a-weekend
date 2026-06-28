@@ -17,6 +17,10 @@ impl Metal {
 }
 
 impl Material for Metal {
+    fn is_specular(&self) -> bool {
+        true
+    }
+
     fn scatter(
         &self,
         ray_in: &Ray,
