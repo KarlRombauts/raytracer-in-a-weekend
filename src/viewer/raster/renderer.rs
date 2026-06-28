@@ -187,11 +187,20 @@ impl SceneRenderer {
 /// Preview color and whether the material is emissive (drawn unlit at full color).
 fn preview_color(m: &MaterialSpec) -> ([f32; 3], bool) {
     match m {
-        MaterialSpec::Lambertian { albedo } => ([albedo.x, albedo.y, albedo.z], false),
-        MaterialSpec::Glossy { albedo, .. } => ([albedo.x, albedo.y, albedo.z], false),
+        MaterialSpec::Lambertian { albedo } => {
+            let c = albedo.preview_color();
+            ([c.x, c.y, c.z], false)
+        }
+        MaterialSpec::Glossy { albedo, .. } => {
+            let c = albedo.preview_color();
+            ([c.x, c.y, c.z], false)
+        }
         MaterialSpec::Metal { albedo, .. } => ([albedo.x, albedo.y, albedo.z], false),
         MaterialSpec::Dielectric { .. } => ([0.85, 0.9, 1.0], false),
-        MaterialSpec::DiffuseLight { emit } => ([emit.x, emit.y, emit.z], true),
+        MaterialSpec::DiffuseLight { emit } => {
+            let c = emit.preview_color();
+            ([c.x, c.y, c.z], true)
+        }
     }
 }
 

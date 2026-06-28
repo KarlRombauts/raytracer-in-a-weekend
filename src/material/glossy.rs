@@ -30,6 +30,10 @@ impl Glossy {
             roughness,
         }
     }
+
+    pub fn from_texture(texture: Arc<dyn Texture>, roughness: f32) -> Self {
+        Glossy { texture, roughness }
+    }
 }
 
 impl Material for Glossy {

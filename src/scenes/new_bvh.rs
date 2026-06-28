@@ -6,7 +6,7 @@ use crate::{
     geometry::ObjData,
     material::Metal,
     ray::BVH,
-    scene::{MaterialSpec, ObjectSpec, Scene, Shape, Transform},
+    scene::{MaterialSpec, ObjectSpec, Scene, Shape, TextureSpec, Transform},
     vec3::{Point3, Vec3},
 };
 
@@ -37,9 +37,7 @@ pub fn new_bvh() -> Scene {
             u: Vec3::new(3000., 0.1, 0.),
             v: Vec3::new(0., 0.1, -3000.),
         },
-        material: MaterialSpec::Lambertian {
-            albedo: Color::new(0.8, 0.8, 0.8),
-        },
+        material: MaterialSpec::Lambertian { albedo: TextureSpec::solid(Color::new(0.8, 0.8, 0.8)) },
         transform: Transform::identity(),
     };
 

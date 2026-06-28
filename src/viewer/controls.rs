@@ -8,7 +8,7 @@ use eframe::egui;
 use super::icons;
 use crate::camera::CameraConfig;
 use crate::color::Color;
-use crate::scene::{self, MaterialSpec, ObjectSpec, Shape, Transform};
+use crate::scene::{self, MaterialSpec, ObjectSpec, Shape, TextureSpec, Transform};
 use crate::vec3::{Point3, Vec3};
 
 /// `label | value` row (u32), Blender-style, optionally clamped to `range`.
@@ -259,12 +259,13 @@ pub fn object_settings(ui: &mut egui::Ui, obj: &mut ObjectSpec) -> bool {
 /// switch). Emission returns its normalised hue.
 fn shared_color(m: &MaterialSpec) -> Color {
     match m {
-        MaterialSpec::Lambertian { albedo } => *albedo,
-        MaterialSpec::Glossy { albedo, .. } => *albedo,
+        MaterialSpec::Lambertian { albedo } => albedo.preview_color(),
+        MaterialSpec::Glossy { albedo, .. } => albedo.preview_color(),
         MaterialSpec::Metal { albedo, .. } => *albedo,
         MaterialSpec::Dielectric { tint, .. } => *tint,
         MaterialSpec::DiffuseLight { emit } => {
-            *emit / emit.x.max(emit.y).max(emit.z).max(1e-4)
+            let e = emit.preview_color();
+            e / e.x.max(e.y).max(e.z).max(1e-4)
         }
     }
 }
@@ -301,13 +302,10 @@ fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
                 // Each builder receives the current shared colour/roughness so
                 // switching type keeps those values instead of resetting them.
                 c |= pick(ui, m, matches!(m, MaterialSpec::Lambertian { .. }), "Diffuse", |col, _| {
-                    MaterialSpec::Lambertian { albedo: col }
+                    MaterialSpec::Lambertian { albedo: TextureSpec::solid(col) }
                 });
                 c |= pick(ui, m, matches!(m, MaterialSpec::Glossy { .. }), "Glossy", |col, r| {
-                    MaterialSpec::Glossy {
-                        albedo: col,
-                        roughness: r,
-                    }
+                    MaterialSpec::Glossy { albedo: TextureSpec::solid(col), roughness: r }
                 });
                 c |= pick(ui, m, matches!(m, MaterialSpec::Metal { .. }), "Metal", |col, r| {
                     MaterialSpec::Metal {
@@ -323,18 +321,26 @@ fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
                     }
                 });
                 c |= pick(ui, m, matches!(m, MaterialSpec::DiffuseLight { .. }), "Emission", |col, _| {
-                    MaterialSpec::DiffuseLight {
-                        emit: col * 5.0,
-                    }
+                    MaterialSpec::DiffuseLight { emit: TextureSpec::solid(col * 5.0) }
                 });
             });
         c
     });
 
     match m {
-        MaterialSpec::Lambertian { albedo } => changed |= color_prop(ui, "Color", albedo),
+        MaterialSpec::Lambertian { albedo } => {
+            let mut c = albedo.preview_color();
+            if color_prop(ui, "Color", &mut c) {
+                *albedo = TextureSpec::solid(c);
+                changed = true;
+            }
+        }
         MaterialSpec::Glossy { albedo, roughness } => {
-            changed |= color_prop(ui, "Color", albedo);
+            let mut c = albedo.preview_color();
+            if color_prop(ui, "Color", &mut c) {
+                *albedo = TextureSpec::solid(c);
+                changed = true;
+            }
             changed |= axis_row(ui, "Roughness", roughness, 0.01, "", Some(3), Some(0.0..=1.0));
         }
         MaterialSpec::Metal { albedo, fuzz } => {
@@ -351,15 +357,19 @@ fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
             changed |= axis_row(ui, "IOR", ior, 0.01, "", Some(3), Some(1.0..=3.0));
         }
         MaterialSpec::DiffuseLight { emit } => {
-            // Split the HDR colour into a normalised hue + a strength multiplier.
-            let intensity = emit.x.max(emit.y).max(emit.z).max(1e-4);
-            let mut rgb = [emit.x / intensity, emit.y / intensity, emit.z / intensity];
+            let e = emit.preview_color();
+            let intensity = e.x.max(e.y).max(e.z).max(1e-4);
+            let mut rgb = [e.x / intensity, e.y / intensity, e.z / intensity];
             let mut strength = intensity;
             let col = prop_row(ui, "Color", |ui| ui.color_edit_button_rgb(&mut rgb).changed());
             let str_changed =
                 axis_row(ui, "Strength", &mut strength, 0.1, "", Some(2), Some(0.0..=10_000.0));
             if col || str_changed {
-                *emit = Color::new(rgb[0] * strength, rgb[1] * strength, rgb[2] * strength);
+                *emit = TextureSpec::solid(Color::new(
+                    rgb[0] * strength,
+                    rgb[1] * strength,
+                    rgb[2] * strength,
+                ));
                 changed = true;
             }
         }
@@ -481,7 +491,7 @@ fn default_sphere(n: usize) -> ObjectSpec {
             radius: 80.0,
         },
         material: MaterialSpec::Lambertian {
-            albedo: Color::new(0.8, 0.3, 0.3),
+            albedo: TextureSpec::solid(Color::new(0.8, 0.3, 0.3)),
         },
         transform: Transform::identity(),
     }
@@ -495,7 +505,7 @@ fn default_box(n: usize) -> ObjectSpec {
             b: Point3::new(360.0, 160.0, 360.0),
         },
         material: MaterialSpec::Lambertian {
-            albedo: Color::new(0.7, 0.7, 0.7),
+            albedo: TextureSpec::solid(Color::new(0.7, 0.7, 0.7)),
         },
         transform: Transform::identity(),
     }

@@ -113,27 +113,29 @@ impl TextureSpec {
 /// when the world is (re)assembled, so the editor can mutate it freely.
 #[derive(Clone)]
 pub enum MaterialSpec {
-    Lambertian { albedo: Color },
-    Glossy { albedo: Color, roughness: f32 },
+    Lambertian { albedo: TextureSpec },
+    Glossy { albedo: TextureSpec, roughness: f32 },
     Metal { albedo: Color, fuzz: f32 },
     Dielectric { ior: f32, tint: Color, roughness: f32 },
-    DiffuseLight { emit: Color },
+    DiffuseLight { emit: TextureSpec },
 }
 
 impl MaterialSpec {
     fn build(&self) -> Arc<dyn Material> {
         match self {
-            MaterialSpec::Lambertian { albedo } => Arc::new(Lambertian::from_color(*albedo)),
+            MaterialSpec::Lambertian { albedo } => {
+                Arc::new(Lambertian::from_texture(albedo.build()))
+            }
             MaterialSpec::Glossy { albedo, roughness } => {
-                Arc::new(Glossy::new(*albedo, *roughness))
+                Arc::new(Glossy::from_texture(albedo.build(), *roughness))
             }
             MaterialSpec::Metal { albedo, fuzz } => Arc::new(Metal::new(*albedo, *fuzz)),
-            MaterialSpec::Dielectric {
-                ior,
-                tint,
-                roughness,
-            } => Arc::new(Dielectric::new_glass(*ior, *tint, *roughness)),
-            MaterialSpec::DiffuseLight { emit } => Arc::new(DiffuseLight::from_color(*emit)),
+            MaterialSpec::Dielectric { ior, tint, roughness } => {
+                Arc::new(Dielectric::new_glass(*ior, *tint, *roughness))
+            }
+            MaterialSpec::DiffuseLight { emit } => {
+                Arc::new(DiffuseLight::from_texture(emit.build()))
+            }
         }
     }
 }
@@ -228,7 +230,7 @@ impl ObjectSpec {
             .unwrap_or_else(|| "mesh".to_string());
 
         let material = MaterialSpec::Lambertian {
-            albedo: Color::new(0.73, 0.73, 0.73),
+            albedo: TextureSpec::solid(Color::new(0.73, 0.73, 0.73)),
         };
         let obj = ObjData::load(path_str);
         let render = Arc::new(obj.render_mesh());
@@ -311,7 +313,7 @@ pub fn build_world(scene: &Scene) -> IntersectGroup {
             if geom.area() > 0.0 {
                 world.lights.push(Light {
                     geom,
-                    emit: *emit,
+                    emit: emit.preview_color(),
                 });
             }
         }
@@ -383,13 +385,13 @@ mod registration_tests {
                 u: Vec3::new(1.0, 0.0, 0.0),
                 v: Vec3::new(0.0, 0.0, 1.0),
             },
-            material: MaterialSpec::DiffuseLight { emit: Color::new(5.0, 5.0, 5.0) },
+            material: MaterialSpec::DiffuseLight { emit: TextureSpec::solid(Color::new(5.0, 5.0, 5.0)) },
             transform: Transform::identity(),
         };
         let sphere_light = ObjectSpec {
             name: "sphere".to_string(),
             shape: Shape::Sphere { center: Point3::new(0.0, 0.0, 0.0), radius: 1.0 },
-            material: MaterialSpec::DiffuseLight { emit: Color::new(5.0, 5.0, 5.0) },
+            material: MaterialSpec::DiffuseLight { emit: TextureSpec::solid(Color::new(5.0, 5.0, 5.0)) },
             transform: Transform::identity(),
         };
         let scene = Scene {

@@ -1,7 +1,7 @@
 use crate::{
     camera::CameraConfig,
     color::Color,
-    scene::{MaterialSpec, ObjectSpec, Scene, Shape, Transform},
+    scene::{MaterialSpec, ObjectSpec, Scene, Shape, TextureSpec, Transform},
     vec3::{Point3, Vec3},
 };
 
@@ -15,18 +15,10 @@ fn quad(name: &str, q: Point3, u: Vec3, v: Vec3, material: MaterialSpec) -> Obje
 }
 
 pub fn cornell_box() -> Scene {
-    let red = MaterialSpec::Lambertian {
-        albedo: Color::new(0.65, 0.05, 0.05),
-    };
-    let white = MaterialSpec::Lambertian {
-        albedo: Color::new(0.73, 0.73, 0.73),
-    };
-    let green = MaterialSpec::Lambertian {
-        albedo: Color::new(0.12, 0.45, 0.15),
-    };
-    let light = MaterialSpec::DiffuseLight {
-        emit: Color::new(15.0, 15.0, 15.0),
-    };
+    let red = MaterialSpec::Lambertian { albedo: TextureSpec::solid(Color::new(0.65, 0.05, 0.05)) };
+    let white = MaterialSpec::Lambertian { albedo: TextureSpec::solid(Color::new(0.73, 0.73, 0.73)) };
+    let green = MaterialSpec::Lambertian { albedo: TextureSpec::solid(Color::new(0.12, 0.45, 0.15)) };
+    let light = MaterialSpec::DiffuseLight { emit: TextureSpec::solid(Color::new(15.0, 15.0, 15.0)) };
 
     let objects = vec![
         quad(
