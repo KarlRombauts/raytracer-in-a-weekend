@@ -8,6 +8,7 @@ mod interval;
 mod material;
 mod ray;
 mod render;
+mod sampling;
 mod scene;
 mod scenes;
 mod texture;
