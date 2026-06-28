@@ -1,6 +1,6 @@
 use crate::{
     color::Color,
-    texture::{load_image_linear_buffer, Texture},
+    texture::{load_image_linear_buffer, load_image_linear_buffer_from_bytes, Texture},
     vec3::Point3,
 };
 
@@ -15,6 +15,14 @@ impl ImageTexture {
         ImageTexture {
             image: load_image_linear_buffer(&file_path).unwrap(),
         }
+    }
+
+    /// Decode an image from embedded bytes. Non-panicking: returns `Err` on an
+    /// undecodable buffer so callers can fall back gracefully.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(ImageTexture {
+            image: load_image_linear_buffer_from_bytes(bytes)?,
+        })
     }
 }
 
@@ -32,5 +40,38 @@ impl Texture for ImageTexture {
         let pixel = self.image.get_pixel(i, j);
 
         return Color::new(pixel[0], pixel[1], pixel[2]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vec3::Point3;
+    use image::{DynamicImage, ImageFormat, RgbImage};
+    use std::io::Cursor;
+
+    fn red_png_bytes() -> Vec<u8> {
+        let mut img = RgbImage::new(2, 2);
+        for p in img.pixels_mut() {
+            *p = image::Rgb([255, 0, 0]);
+        }
+        let mut bytes: Vec<u8> = Vec::new();
+        DynamicImage::ImageRgb8(img)
+            .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
+            .unwrap();
+        bytes
+    }
+
+    #[test]
+    fn from_bytes_decodes_a_png() {
+        let tex = ImageTexture::from_bytes(&red_png_bytes()).expect("valid png decodes");
+        // Uniform red image: any uv samples the same linear-red pixel.
+        let c = tex.value(0.5, 0.5, &Point3::new(0.0, 0.0, 0.0));
+        assert!(c.x > 0.99 && c.y < 0.01 && c.z < 0.01, "got {c:?}");
+    }
+
+    #[test]
+    fn from_bytes_rejects_garbage() {
+        assert!(ImageTexture::from_bytes(&[1, 2, 3, 4]).is_err());
     }
 }
