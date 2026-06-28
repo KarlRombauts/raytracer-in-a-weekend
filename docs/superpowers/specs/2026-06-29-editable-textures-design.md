@@ -27,9 +27,23 @@ format.
 ### Roadmap (context, not this spec)
 
 - **Phase 1 (this spec):** textures in the editable layer + UI. In-memory only.
-- **Phase 2:** scene library — serde on the scene types, `.ron` load/save,
+- **Phase 2:** scene library — serde on the scene types, `.scene` load/save,
   scene picker, default/blank scene, curated sample scenes, OBJ/mesh embedding,
   WASM file-upload wiring.
+
+  **Format decided:** `.scene` = a **zstd-compressed [postcard]** blob (serde,
+  compact, `no_std`/WASM-friendly). Rationale: scenes embed images and meshes,
+  which dominate file size; a binary container stores those bytes raw, avoiding
+  the ~33% base64 bloat a text format (RON/JSON) would add. Asset encoding:
+  **images** keep their original encoded bytes (PNG/JPEG — already compressed,
+  decode via `image::load_from_memory`); **meshes** store parsed binary arrays
+  (`positions: [f32]`, `normals: [f32]`, `indices: [u32]`) rather than OBJ text,
+  for smaller files and instant load (no float re-parsing). zstd wraps the whole
+  file — it squeezes the structural data and mesh float arrays; the already-
+  compressed images pass through. Phase 1's `Asset { bytes, label }` feeds this
+  directly: the bytes go straight into the postcard blob, no base64.
+
+  [postcard]: https://docs.rs/postcard
 
 ## Scope for this phase
 
@@ -169,5 +183,7 @@ obvious in the render rather than silent or fatal.
 
 ## Open questions
 
-None blocking. Phase 2 will decide path-vs-embedded *serialization* (we've chosen
-embedded for portability) and whether to gzip embedded blobs.
+None blocking. Phase 2 serialization is decided: embedded assets in a
+zstd-compressed postcard `.scene` file (see Roadmap above). Remaining Phase-2
+details (default scene contents, curated scene list, WASM upload wiring) are
+deferred to the Phase 2 brainstorm.
