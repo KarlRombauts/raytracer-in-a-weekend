@@ -19,6 +19,9 @@ pub const STACK: &str = "\u{E466}";
 pub const PALETTE: &str = "\u{E6C8}";
 pub const SHAPES: &str = "\u{EC5E}";
 pub const ARROWS_OUT_CARDINAL: &str = "\u{E0A4}";
+pub const CROSSHAIR: &str = "\u{E1D6}";
+pub const APERTURE: &str = "\u{E00A}";
+pub const IMAGE: &str = "\u{E2CA}";
 
 /// Register the Phosphor font as a fallback so the icon codepoints resolve in
 /// any normal label/button. Call once at startup with the egui context.

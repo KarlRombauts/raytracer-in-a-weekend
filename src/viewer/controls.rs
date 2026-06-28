@@ -1,94 +1,135 @@
 //! egui widgets that edit a `Scene` in place. Each returns whether the value
 //! changed, so the caller can invalidate the render only when something edited.
 
+use std::ops::RangeInclusive;
+
 use eframe::egui;
 
 use super::icons;
 use crate::camera::CameraConfig;
 use crate::color::Color;
-use crate::scene::{MaterialSpec, ObjectSpec, Shape, Transform};
+use crate::scene::{self, MaterialSpec, ObjectSpec, Shape, Transform};
 use crate::vec3::{Point3, Vec3};
 
-// --- Small grid-row helpers (call inside an `egui::Grid`) ---
-
-/// `label | x | y | z` row.
-fn vec_row(ui: &mut egui::Ui, label: &str, v: &mut Vec3, speed: f32) -> bool {
-    ui.label(label);
-    let mut c = ui.add(egui::DragValue::new(&mut v.x).speed(speed)).changed();
-    c |= ui.add(egui::DragValue::new(&mut v.y).speed(speed)).changed();
-    c |= ui.add(egui::DragValue::new(&mut v.z).speed(speed)).changed();
-    ui.end_row();
-    c
-}
-
-/// `label | value` row (f32).
-fn f32_row(ui: &mut egui::Ui, label: &str, v: &mut f32, speed: f32) -> bool {
-    ui.label(label);
-    let c = ui.add(egui::DragValue::new(v).speed(speed)).changed();
-    ui.end_row();
-    c
-}
-
-/// `label | value` row (u32).
-fn u32_row(ui: &mut egui::Ui, label: &str, v: &mut u32) -> bool {
-    ui.label(label);
-    let c = ui.add(egui::DragValue::new(v)).changed();
-    ui.end_row();
-    c
-}
-
-/// `label | swatch` row using a colour picker (clamped to [0,1]).
-fn color_row(ui: &mut egui::Ui, label: &str, c: &mut Color) -> bool {
-    let mut rgb = [c.x, c.y, c.z];
-    ui.label(label);
-    let changed = ui.color_edit_button_rgb(&mut rgb).changed();
-    ui.end_row();
-    if changed {
-        *c = Color::new(rgb[0], rgb[1], rgb[2]);
+/// `label | value` row (u32), Blender-style, optionally clamped to `range`.
+fn int_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut u32,
+    range: Option<RangeInclusive<u32>>,
+) -> bool {
+    let mut dv = egui::DragValue::new(value).speed(1.0);
+    if let Some(r) = range {
+        dv = dv.range(r);
     }
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        let h = ui.spacing().interact_size.y;
+        ui.allocate_ui_with_layout(
+            egui::vec2(AXIS_LABEL_W, h),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.label(label);
+            },
+        );
+        changed = ui.add_sized([ui.available_width(), h], dv).changed();
+    });
     changed
 }
 
-/// `emit | swatch | ×strength` row: an HDR emissive colour split into a
-/// normalised hue and an intensity multiplier so lights can exceed 1.0.
-fn emissive_row(ui: &mut egui::Ui, emit: &mut Color) -> bool {
-    let intensity = emit.x.max(emit.y).max(emit.z).max(1e-4);
-    let mut rgb = [emit.x / intensity, emit.y / intensity, emit.z / intensity];
-    let mut strength = intensity;
+/// A `label | content` row (Blender-style): right-aligned label in a fixed
+/// column, then `content` (combo, swatch, …) filling the rest of the width.
+/// Shares `AXIS_LABEL_W` with `axis_row` so labels line up across sections.
+fn prop_row<R>(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.horizontal(|ui| {
+        let h = ui.spacing().interact_size.y;
+        ui.allocate_ui_with_layout(
+            egui::vec2(AXIS_LABEL_W, h),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.label(label);
+            },
+        );
+        content(ui)
+    })
+    .inner
+}
 
-    ui.label("emit");
-    let mut changed = ui.color_edit_button_rgb(&mut rgb).changed();
-    changed |= ui
-        .add(egui::DragValue::new(&mut strength).speed(0.1).prefix("×"))
-        .changed();
-    ui.end_row();
-
-    if changed {
-        *emit = Color::new(rgb[0] * strength, rgb[1] * strength, rgb[2] * strength);
-    }
-    changed
+/// A right-aligned-label colour-swatch row.
+fn color_prop(ui: &mut egui::Ui, label: &str, c: &mut Color) -> bool {
+    prop_row(ui, label, |ui| {
+        let mut rgb = [c.x, c.y, c.z];
+        let changed = ui.color_edit_button_rgb(&mut rgb).changed();
+        if changed {
+            *c = Color::new(rgb[0], rgb[1], rgb[2]);
+        }
+        changed
+    })
 }
 
 // --- Sections ---
 
 pub fn camera_controls(ui: &mut egui::Ui, cam: &mut CameraConfig) -> bool {
     let mut c = false;
-    egui::Grid::new("camera")
-        .num_columns(4)
-        .spacing([6.0, 4.0])
-        .show(ui, |ui| {
-            c |= vec_row(ui, "look from", &mut cam.look_from, 1.0);
-            c |= vec_row(ui, "look at", &mut cam.look_at, 1.0);
-            c |= f32_row(ui, "fov", &mut cam.fov, 0.2);
-            ui.label("roll");
-            c |= ui
-                .add(egui::Slider::new(&mut cam.roll, -180.0..=180.0).suffix("°"))
-                .changed();
-            ui.end_row();
-            c |= u32_row(ui, "samples", &mut cam.samples);
-            c |= u32_row(ui, "depth", &mut cam.max_depth);
-            c |= f32_row(ui, "dof", &mut cam.dof_angle, 0.05);
+
+    section_header(ui, icons::CROSSHAIR, "View");
+    ui.indent("cam_view", |ui| {
+        c |= axis_vec(ui, "Position", &mut cam.look_from, 1.0, "", None, None);
+        ui.add_space(4.0);
+        c |= axis_vec(ui, "Target", &mut cam.look_at, 1.0, "", None, None);
+        ui.add_space(4.0);
+        c |= axis_row(ui, "Roll", &mut cam.roll, 0.5, "°", Some(1), Some(-180.0..=180.0));
+    });
+
+    section_header(ui, icons::APERTURE, "Lens");
+    ui.indent("cam_lens", |ui| {
+        c |= axis_row(ui, "FOV", &mut cam.fov, 0.2, "°", Some(1), Some(1.0..=179.0));
+        c |= axis_row(ui, "DoF", &mut cam.dof_angle, 0.05, "°", Some(2), Some(0.0..=180.0));
+        c |= axis_row(ui, "Focus", &mut cam.focus_dist, 1.0, "", Some(1), Some(0.001..=1.0e6));
+    });
+
+    section_header(ui, icons::IMAGE, "Output");
+    ui.indent("cam_output", |ui| {
+        // Resolution: width and height are edited independently — changing one
+        // adjusts the aspect ratio so the other stays put.
+        let cur_h = ((cam.image_width as f64 / cam.aspect_ratio).round().max(1.0)) as u32;
+        c |= prop_row(ui, "Width", |ui| {
+            let h = ui.spacing().interact_size.y;
+            let mut w = cam.image_width;
+            if ui
+                .add_sized(
+                    [ui.available_width(), h],
+                    egui::DragValue::new(&mut w).speed(4.0).range(1..=8192),
+                )
+                .changed()
+            {
+                cam.image_width = w.max(1);
+                cam.aspect_ratio = cam.image_width as f64 / cur_h as f64;
+                true
+            } else {
+                false
+            }
         });
+        c |= prop_row(ui, "Height", |ui| {
+            let h = ui.spacing().interact_size.y;
+            let mut hpx = cur_h;
+            if ui
+                .add_sized(
+                    [ui.available_width(), h],
+                    egui::DragValue::new(&mut hpx).speed(4.0).range(1..=8192),
+                )
+                .changed()
+            {
+                cam.aspect_ratio = cam.image_width as f64 / hpx.max(1) as f64;
+                true
+            } else {
+                false
+            }
+        });
+        c |= int_row(ui, "Samples", &mut cam.samples, Some(1..=100_000));
+        c |= int_row(ui, "Max Bounces", &mut cam.max_depth, Some(1..=1_000));
+    });
+
     c
 }
 
@@ -119,7 +160,7 @@ pub fn object_list(
     }
 
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if ui
             .button(format!("{}  {}  Sphere", icons::PLUS, icons::SPHERE))
             .clicked()
@@ -135,6 +176,32 @@ pub fn object_list(
             objects.push(default_box(objects.len()));
             *selected = Some(objects.len() - 1);
             changed = true;
+        }
+        if ui
+            .button(format!("{}  {}  OBJ", icons::PLUS, icons::POLYGON))
+            .clicked()
+        {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Wavefront OBJ", &["obj"])
+                .pick_file()
+            {
+                // Auto-fit the import into the existing scene: centre it and
+                // scale it to a fraction of the scene's size, so it's visible
+                // regardless of the OBJ's native units.
+                let (center, size) = match scene::placeable_bounds(objects) {
+                    Some((min, max)) => {
+                        let extent = max - min;
+                        let span = extent.x.max(extent.y).max(extent.z);
+                        ((min + max) * 0.5, span * 0.33)
+                    }
+                    None => (Vec3::ZERO, 2.0),
+                };
+                if let Some(obj) = ObjectSpec::from_obj(&path, center, size) {
+                    objects.push(obj);
+                    *selected = Some(objects.len() - 1);
+                    changed = true;
+                }
+            }
         }
     });
     changed
@@ -156,9 +223,17 @@ pub fn object_settings(ui: &mut egui::Ui, obj: &mut ObjectSpec) -> bool {
         ui.text_edit_singleline(&mut obj.name);
     });
 
+    let is_mesh = matches!(obj.shape, Shape::Mesh(_));
+
     section_header(ui, icons::PALETTE, "Material");
     ui.indent("material_body", |ui| {
-        changed |= material_controls(ui, &mut obj.material);
+        if is_mesh {
+            // A mesh's material is baked into its triangles at import; editing
+            // it would mean rebuilding the BVH, so it's fixed here.
+            ui.weak("baked at import");
+        } else {
+            changed |= material_controls(ui, &mut obj.material);
+        }
     });
 
     // Geometry is shown only for primitives with intuitive parameters. Quads
@@ -171,116 +246,230 @@ pub fn object_settings(ui: &mut egui::Ui, obj: &mut ObjectSpec) -> bool {
         });
     }
 
-    if obj.shape.is_editable() {
-        section_header(ui, icons::ARROWS_OUT_CARDINAL, "Transform");
-        ui.indent("transform_body", |ui| {
-            changed |= transform_controls(ui, &mut obj.transform);
-        });
-    }
+    // Transform applies to every object — it wraps the geometry (including a
+    // mesh's BVH) with Translate/Rotate/Scale, with no rebuild.
+    section_header(ui, icons::ARROWS_OUT_CARDINAL, "Transform");
+    ui.indent("transform_body", |ui| {
+        changed |= transform_controls(ui, &mut obj.transform);
+    });
     changed
+}
+
+/// Base colour shared across material types (used to carry it over on a type
+/// switch). Emission returns its normalised hue.
+fn shared_color(m: &MaterialSpec) -> Color {
+    match m {
+        MaterialSpec::Lambertian { albedo } => *albedo,
+        MaterialSpec::Glossy { albedo, .. } => *albedo,
+        MaterialSpec::Metal { albedo, .. } => *albedo,
+        MaterialSpec::Dielectric { tint, .. } => *tint,
+        MaterialSpec::DiffuseLight { emit } => {
+            *emit / emit.x.max(emit.y).max(emit.z).max(1e-4)
+        }
+    }
+}
+
+/// Roughness-like parameter shared across material types (carried over on a
+/// switch). Types without one report 0.
+fn shared_roughness(m: &MaterialSpec) -> f32 {
+    match m {
+        MaterialSpec::Glossy { roughness, .. } => *roughness,
+        MaterialSpec::Metal { fuzz, .. } => *fuzz,
+        MaterialSpec::Dielectric { roughness, .. } => *roughness,
+        MaterialSpec::Lambertian { .. } | MaterialSpec::DiffuseLight { .. } => 0.0,
+    }
 }
 
 fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
     let mut changed = false;
-    let current = match m {
-        MaterialSpec::Lambertian { .. } => "Lambertian",
-        MaterialSpec::Metal { .. } => "Metal",
-        MaterialSpec::Dielectric { .. } => "Dielectric",
-        MaterialSpec::DiffuseLight { .. } => "Light",
-    };
-    egui::ComboBox::from_id_salt("mat")
-        .selected_text(current)
-        .show_ui(ui, |ui| {
-            changed |= pick(ui, m, matches!(m, MaterialSpec::Lambertian { .. }), "Lambertian", || {
-                MaterialSpec::Lambertian {
-                    albedo: Color::new(0.7, 0.7, 0.7),
-                }
-            });
-            changed |= pick(ui, m, matches!(m, MaterialSpec::Metal { .. }), "Metal", || {
-                MaterialSpec::Metal {
-                    albedo: Color::new(0.8, 0.8, 0.8),
-                    fuzz: 0.0,
-                }
-            });
-            changed |= pick(ui, m, matches!(m, MaterialSpec::Dielectric { .. }), "Dielectric", || {
-                MaterialSpec::Dielectric { ior: 1.5 }
-            });
-            changed |= pick(ui, m, matches!(m, MaterialSpec::DiffuseLight { .. }), "Light", || {
-                MaterialSpec::DiffuseLight {
-                    emit: Color::new(10.0, 10.0, 10.0),
-                }
-            });
-        });
 
-    egui::Grid::new("material")
-        .num_columns(3)
-        .spacing([6.0, 4.0])
-        .show(ui, |ui| match m {
-            MaterialSpec::Lambertian { albedo } => changed |= color_row(ui, "albedo", albedo),
-            MaterialSpec::Metal { albedo, fuzz } => {
-                changed |= color_row(ui, "albedo", albedo);
-                changed |= f32_row(ui, "fuzz", fuzz, 0.01);
+    // Natural, Blender-ish names for the shader types.
+    let current = match m {
+        MaterialSpec::Lambertian { .. } => "Diffuse",
+        MaterialSpec::Glossy { .. } => "Glossy",
+        MaterialSpec::Metal { .. } => "Metal",
+        MaterialSpec::Dielectric { .. } => "Glass",
+        MaterialSpec::DiffuseLight { .. } => "Emission",
+    };
+
+    changed |= prop_row(ui, "Surface", |ui| {
+        let mut c = false;
+        egui::ComboBox::from_id_salt("surface")
+            .selected_text(current)
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                // Each builder receives the current shared colour/roughness so
+                // switching type keeps those values instead of resetting them.
+                c |= pick(ui, m, matches!(m, MaterialSpec::Lambertian { .. }), "Diffuse", |col, _| {
+                    MaterialSpec::Lambertian { albedo: col }
+                });
+                c |= pick(ui, m, matches!(m, MaterialSpec::Glossy { .. }), "Glossy", |col, r| {
+                    MaterialSpec::Glossy {
+                        albedo: col,
+                        roughness: r,
+                    }
+                });
+                c |= pick(ui, m, matches!(m, MaterialSpec::Metal { .. }), "Metal", |col, r| {
+                    MaterialSpec::Metal {
+                        albedo: col,
+                        fuzz: r,
+                    }
+                });
+                c |= pick(ui, m, matches!(m, MaterialSpec::Dielectric { .. }), "Glass", |col, r| {
+                    MaterialSpec::Dielectric {
+                        ior: 1.5,
+                        tint: col,
+                        roughness: r,
+                    }
+                });
+                c |= pick(ui, m, matches!(m, MaterialSpec::DiffuseLight { .. }), "Emission", |col, _| {
+                    MaterialSpec::DiffuseLight {
+                        emit: col * 5.0,
+                    }
+                });
+            });
+        c
+    });
+
+    match m {
+        MaterialSpec::Lambertian { albedo } => changed |= color_prop(ui, "Color", albedo),
+        MaterialSpec::Glossy { albedo, roughness } => {
+            changed |= color_prop(ui, "Color", albedo);
+            changed |= axis_row(ui, "Roughness", roughness, 0.01, "", Some(3), Some(0.0..=1.0));
+        }
+        MaterialSpec::Metal { albedo, fuzz } => {
+            changed |= color_prop(ui, "Color", albedo);
+            changed |= axis_row(ui, "Roughness", fuzz, 0.01, "", Some(3), Some(0.0..=1.0));
+        }
+        MaterialSpec::Dielectric {
+            ior,
+            tint,
+            roughness,
+        } => {
+            changed |= color_prop(ui, "Color", tint);
+            changed |= axis_row(ui, "Roughness", roughness, 0.01, "", Some(3), Some(0.0..=1.0));
+            changed |= axis_row(ui, "IOR", ior, 0.01, "", Some(3), Some(1.0..=3.0));
+        }
+        MaterialSpec::DiffuseLight { emit } => {
+            // Split the HDR colour into a normalised hue + a strength multiplier.
+            let intensity = emit.x.max(emit.y).max(emit.z).max(1e-4);
+            let mut rgb = [emit.x / intensity, emit.y / intensity, emit.z / intensity];
+            let mut strength = intensity;
+            let col = prop_row(ui, "Color", |ui| ui.color_edit_button_rgb(&mut rgb).changed());
+            let str_changed =
+                axis_row(ui, "Strength", &mut strength, 0.1, "", Some(2), Some(0.0..=10_000.0));
+            if col || str_changed {
+                *emit = Color::new(rgb[0] * strength, rgb[1] * strength, rgb[2] * strength);
+                changed = true;
             }
-            MaterialSpec::Dielectric { ior } => changed |= f32_row(ui, "ior", ior, 0.01),
-            MaterialSpec::DiffuseLight { emit } => changed |= emissive_row(ui, emit),
-        });
+        }
+    }
     changed
 }
 
-/// One selectable row inside the material combo; sets `m` to `make()` on click.
+/// One selectable row inside the material combo. On click it sets `m` to
+/// `make(shared_color, shared_roughness)`, preserving those across the switch.
 fn pick(
     ui: &mut egui::Ui,
     m: &mut MaterialSpec,
     selected: bool,
     label: &str,
-    make: impl FnOnce() -> MaterialSpec,
+    make: impl FnOnce(Color, f32) -> MaterialSpec,
 ) -> bool {
     if ui.selectable_label(selected, label).clicked() {
-        *m = make();
+        *m = make(shared_color(m), shared_roughness(m));
         true
     } else {
         false
     }
 }
 
-fn shape_controls(ui: &mut egui::Ui, s: &mut Shape) -> bool {
-    if let Shape::Mesh(_) = s {
-        ui.weak("mesh — geometry not editable");
-        return false;
+// --- Blender-style stacked axis rows: right-aligned label, full-width field ---
+
+const AXIS_LABEL_W: f32 = 84.0;
+
+/// One `label | [ value ]` row: a right-aligned label in a fixed column, then a
+/// drag field that fills the rest of the width (Blender property style).
+fn axis_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    speed: f32,
+    suffix: &str,
+    decimals: Option<usize>,
+    range: Option<RangeInclusive<f32>>,
+) -> bool {
+    let mut dv = egui::DragValue::new(value).speed(speed);
+    if !suffix.is_empty() {
+        dv = dv.suffix(suffix);
     }
+    if let Some(d) = decimals {
+        dv = dv.fixed_decimals(d);
+    }
+    if let Some(r) = range {
+        dv = dv.range(r);
+    }
+
     let mut changed = false;
-    egui::Grid::new("shape")
-        .num_columns(4)
-        .spacing([6.0, 4.0])
-        .show(ui, |ui| match s {
-            Shape::Sphere { center, radius } => {
-                changed |= vec_row(ui, "center", center, 1.0);
-                changed |= f32_row(ui, "radius", radius, 0.5);
-            }
-            Shape::Quad { q, u, v } => {
-                changed |= vec_row(ui, "q", q, 1.0);
-                changed |= vec_row(ui, "u", u, 1.0);
-                changed |= vec_row(ui, "v", v, 1.0);
-            }
-            Shape::Box { a, b } => {
-                changed |= vec_row(ui, "min", a, 1.0);
-                changed |= vec_row(ui, "max", b, 1.0);
-            }
-            Shape::Mesh(_) => {}
-        });
+    ui.horizontal(|ui| {
+        let h = ui.spacing().interact_size.y;
+        ui.allocate_ui_with_layout(
+            egui::vec2(AXIS_LABEL_W, h),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.label(label);
+            },
+        );
+        changed = ui.add_sized([ui.available_width(), h], dv).changed();
+    });
+    changed
+}
+
+/// A `name X` / `Y` / `Z` stack, Blender-style (only the first row is named).
+fn axis_vec(
+    ui: &mut egui::Ui,
+    name: &str,
+    v: &mut Vec3,
+    speed: f32,
+    suffix: &str,
+    decimals: Option<usize>,
+    range: Option<RangeInclusive<f32>>,
+) -> bool {
+    let mut c = false;
+    c |= axis_row(ui, &format!("{name} X"), &mut v.x, speed, suffix, decimals, range.clone());
+    c |= axis_row(ui, "Y", &mut v.y, speed, suffix, decimals, range.clone());
+    c |= axis_row(ui, "Z", &mut v.z, speed, suffix, decimals, range);
+    c
+}
+
+fn shape_controls(ui: &mut egui::Ui, s: &mut Shape) -> bool {
+    let mut changed = false;
+    match s {
+        Shape::Sphere { center, radius } => {
+            changed |= axis_vec(ui, "Center", center, 1.0, "", None, None);
+            changed |= axis_row(ui, "Radius", radius, 0.5, "", None, Some(0.001..=1.0e6));
+        }
+        Shape::Quad { q, u, v } => {
+            changed |= axis_vec(ui, "Q", q, 1.0, "", None, None);
+            changed |= axis_vec(ui, "U", u, 1.0, "", None, None);
+            changed |= axis_vec(ui, "V", v, 1.0, "", None, None);
+        }
+        Shape::Box { a, b } => {
+            changed |= axis_vec(ui, "Min", a, 1.0, "", None, None);
+            changed |= axis_vec(ui, "Max", b, 1.0, "", None, None);
+        }
+        Shape::Mesh(_) => {}
+    }
     changed
 }
 
 fn transform_controls(ui: &mut egui::Ui, t: &mut Transform) -> bool {
     let mut changed = false;
-    egui::Grid::new("xform")
-        .num_columns(4)
-        .spacing([6.0, 4.0])
-        .show(ui, |ui| {
-            changed |= vec_row(ui, "rotate", &mut t.rotate, 1.0);
-            changed |= vec_row(ui, "scale", &mut t.scale, 0.01);
-            changed |= vec_row(ui, "translate", &mut t.translate, 1.0);
-        });
+    changed |= axis_vec(ui, "Location", &mut t.translate, 1.0, "", None, None);
+    ui.add_space(4.0);
+    changed |= axis_vec(ui, "Rotation", &mut t.rotate, 1.0, "°", None, Some(-360.0..=360.0));
+    ui.add_space(4.0);
+    changed |= axis_vec(ui, "Scale", &mut t.scale, 0.01, "", Some(3), Some(0.001..=1.0e4));
     changed
 }
 
