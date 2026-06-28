@@ -1,0 +1,4 @@
+[build]
+# Optimize for the machine doing the build/render (unlocks AVX etc. for the f32 math).
+# Remove or override this if you need a portable binary.
+rustflags = ["-C", "target-cpu=native"]

@@ -1,4 +1,4 @@
-use crate::scenes::{bouncing_spheres, earth, obj, perlin_spheres, tris};
+use crate::scenes::{cornell_box, new_bvh};
 
 mod camera;
 mod color;
@@ -7,10 +7,14 @@ mod group;
 mod interval;
 mod material;
 mod ray;
+mod render;
+mod scene;
 mod scenes;
 mod texture;
-
 mod vec3;
+mod viewer;
+
 fn main() {
-    obj();
+    let _ = new_bvh;
+    viewer::run(cornell_box());
 }

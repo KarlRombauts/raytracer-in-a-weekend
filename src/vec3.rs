@@ -3,7 +3,7 @@ use std::ops::Index;
 use rand::prelude::*;
 use rand_distr::{UnitDisc, UnitSphere};
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Vec3 {
     pub x: f32,
     pub y: f32,
@@ -18,6 +18,14 @@ impl Vec3 {
         y: 0.0,
         z: 0.0,
     };
+
+    pub fn zeros() -> Self {
+        Vec3::new(0., 0., 0.)
+    }
+
+    pub fn ones() -> Self {
+        Vec3::new(1., 1., 1.)
+    }
 
     pub fn new(x: f32, y: f32, z: f32) -> Self {
         Vec3 { x, y, z }
@@ -40,6 +48,22 @@ impl Vec3 {
         )
     }
 
+    pub fn min(a: &Self, b: &Self) -> Self {
+        Vec3 {
+            x: f32::min(a.x, b.x),
+            y: f32::min(a.y, b.y),
+            z: f32::min(a.z, b.z),
+        }
+    }
+
+    pub fn max(a: &Self, b: &Self) -> Self {
+        Vec3 {
+            x: f32::max(a.x, b.x),
+            y: f32::max(a.y, b.y),
+            z: f32::max(a.z, b.z),
+        }
+    }
+
     pub fn random_range(min: f32, max: f32) -> Self {
         let mut rng = rand::rng();
         Vec3::new(
@@ -49,20 +73,18 @@ impl Vec3 {
         )
     }
 
-    pub fn random_unit() -> Self {
-        let mut rng = rand::rng();
-        let [x, y, z]: [f32; 3] = UnitSphere.sample(&mut rng);
+    pub fn random_unit(rng: &mut impl Rng) -> Self {
+        let [x, y, z]: [f32; 3] = UnitSphere.sample(rng);
         return Vec3 { x, y, z };
     }
 
-    pub fn random_in_unit_disk() -> Self {
-        let mut rng = rand::rng();
-        let [x, y]: [f32; 2] = UnitDisc.sample(&mut rng);
+    pub fn random_in_unit_disk(rng: &mut impl Rng) -> Self {
+        let [x, y]: [f32; 2] = UnitDisc.sample(rng);
         Vec3::new(x, y, 0.0)
     }
 
-    pub fn random_on_hemisphere(normal: &Vec3) -> Self {
-        let on_unit_sphere = Vec3::random_unit();
+    pub fn random_on_hemisphere(normal: &Vec3, rng: &mut impl Rng) -> Self {
+        let on_unit_sphere = Vec3::random_unit(rng);
         if on_unit_sphere.dot(normal) > 0.0 {
             return on_unit_sphere;
         } else {

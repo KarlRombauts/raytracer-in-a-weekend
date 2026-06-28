@@ -58,7 +58,11 @@ impl Intersect for Sphere {
         &self.bbox
     }
 
-    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord> {
+    fn center(&self) -> Vec3 {
+        self.bbox.center()
+    }
+
+    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>> {
         let current_center = self.center.at(ray.time);
         let oc = ray.origin - current_center;
         let a = ray.direction.length_squared();
@@ -82,7 +86,7 @@ impl Intersect for Sphere {
 
         let p = ray.at(root);
         let outward_normal = (p - current_center).unit();
-        let mut hit_record = HitRecord::new(root, p, outward_normal, self.material.clone());
+        let mut hit_record = HitRecord::new(root, p, outward_normal, self.material.as_ref());
         (hit_record.u, hit_record.v) = self.get_spherical_uv(&outward_normal);
         hit_record.set_face_normal(ray, &outward_normal);
         Some(hit_record)

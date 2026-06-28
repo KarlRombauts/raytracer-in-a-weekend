@@ -20,6 +20,7 @@ pub struct Camera {
     samples: u32,
     max_depth: u32,
     dof_angle: f32,
+    background: Color,
 
     // derived:
     pixel_samples_scale: f32,
@@ -71,6 +72,7 @@ impl From<CameraConfig> for Camera {
             samples: config.samples,
             max_depth: config.max_depth,
             dof_angle: config.dof_angle,
+            background: config.background,
 
             pixel_samples_scale,
             image_height,
@@ -102,10 +104,13 @@ impl Camera {
         img_buf
             .par_enumerate_pixels_mut()
             .for_each(|(i, j, pixel)| {
+                // Per-pixel PRNG, seeded deterministically from the pixel coords so
+                // renders are reproducible and threads never share RNG state.
+                let mut rng = SmallRng::seed_from_u64(((j as u64) << 32) | i as u64);
                 let mut pixel_color = Color::ZERO;
                 for _ in 0..self.samples {
-                    let ray = self.get_ray(i, j);
-                    pixel_color += self.ray_color(&ray, self.max_depth, world);
+                    let ray = self.get_ray(i, j, &mut rng);
+                    pixel_color += self.ray_color(&ray, self.max_depth, world, &mut rng);
                 }
 
                 pixel_color *= self.pixel_samples_scale;
@@ -127,13 +132,38 @@ impl Camera {
         img_buf.save("test.png").unwrap();
     }
 
-    fn dof_disk_sample(&self) -> Vec3 {
-        let p = Vec3::random_in_unit_disk();
+    pub fn image_width(&self) -> u32 {
+        self.image_width
+    }
+
+    pub fn image_height(&self) -> u32 {
+        self.image_height
+    }
+
+    pub fn samples(&self) -> u32 {
+        self.samples
+    }
+
+    /// Trace a single sample for pixel (i, j). The progressive renderer calls
+    /// this once per pass and averages the results itself.
+    pub fn sample_pixel(
+        &self,
+        i: u32,
+        j: u32,
+        world: &IntersectGroup,
+        rng: &mut SmallRng,
+    ) -> Color {
+        let ray = self.get_ray(i, j, rng);
+        self.ray_color(&ray, self.max_depth, world, rng)
+    }
+
+    fn dof_disk_sample(&self, rng: &mut SmallRng) -> Vec3 {
+        let p = Vec3::random_in_unit_disk(rng);
         return self.center + (p.x * self.dof_disk_u) + (p.y * self.dof_disk_v);
     }
 
-    fn get_ray(&self, i: u32, j: u32) -> Ray {
-        let offset = self.sample_square();
+    fn get_ray(&self, i: u32, j: u32, rng: &mut SmallRng) -> Ray {
+        let offset = self.sample_square(rng);
         let pixel_sample = self.pixel00_loc
             + ((i as f32 + offset.x) * self.pixel_delta_u)
             + ((j as f32 + offset.y) * self.pixel_delta_v);
@@ -141,36 +171,53 @@ impl Camera {
         let ray_origin = if self.dof_angle <= 0. {
             self.center
         } else {
-            self.dof_disk_sample()
+            self.dof_disk_sample(rng)
         };
         let ray_direction = pixel_sample - ray_origin;
 
-        let mut rng = rand::rng();
         let ray_time = rng.random::<f32>();
         Ray::new_t(ray_origin, ray_direction, ray_time)
     }
 
-    fn sample_square(&self) -> Vec3 {
-        let mut rng = rand::rng();
+    fn sample_square(&self, rng: &mut SmallRng) -> Vec3 {
         Vec3::new(rng.random::<f32>() - 0.5, rng.random::<f32>() - 0.5, 0.0)
     }
 
-    fn ray_color(&self, ray: &Ray, depth: u32, world: &IntersectGroup) -> Color {
-        if depth <= 0 {
-            return Color::ZERO;
-        }
-        // if let Some(hit_record) = world.intersect(ray, &Interval::new(0.0, f32::INFINITY)) {
-        //     return 0.5 * (hit_record.normal + Color::new(1.0, 1.0, 1.0));
-        // }
-        if let Some(hit_record) = world.intersect(ray, &Interval::new(0.001, f32::INFINITY)) {
-            if let Some((scattered, attenuation)) = hit_record.material.scatter(ray, &hit_record) {
-                return attenuation * self.ray_color(&scattered, depth - 1, world);
+    fn ray_color(
+        &self,
+        ray: &Ray,
+        depth: u32,
+        world: &IntersectGroup,
+        rng: &mut SmallRng,
+    ) -> Color {
+        // Iterative path tracing: accumulate emission weighted by the running
+        // product of attenuations (throughput). Equivalent to the recursive
+        // `emit + attenuation * ray_color(...)` but without per-bounce stack
+        // frames, keeping the loop state in registers.
+        let interval = Interval::new(0.001, f32::INFINITY);
+        let mut color = Color::ZERO;
+        let mut throughput = Color::ones();
+        let mut current = ray.clone();
+
+        for _ in 0..depth {
+            let Some(hit) = world.intersect(&current, &interval) else {
+                color += throughput * self.background;
+                return color;
+            };
+
+            color += throughput * hit.material.emitted(hit.u, hit.v, hit.p);
+
+            match hit.material.scatter(&current, &hit, rng) {
+                Some((scattered, attenuation)) => {
+                    throughput = throughput * attenuation;
+                    current = scattered;
+                }
+                None => return color,
             }
-            return Color::ZERO;
         }
 
-        let unit_direction = ray.direction.unit();
-        let t = 0.5 * (unit_direction.y + 1.0);
-        (1.0 - t) * Color::new(1.0, 1.0, 1.0) + t * Color::new(0.5, 0.7, 1.0)
+        // Depth exhausted: matches the recursive base case `ray_color(_, 0) == 0`,
+        // contributing nothing further.
+        color
     }
 }

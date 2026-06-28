@@ -8,6 +8,7 @@ use crate::{
 };
 
 pub struct Triangle {
+    centroid: Vec3,
     q: Point3,
     u: Vec3,
     v: Vec3,
@@ -22,7 +23,24 @@ impl Triangle {
     pub fn from_points(p1: &Vec3, p2: &Vec3, p3: &Vec3, material: Arc<dyn Material>) -> Self {
         let u = *p2 - *p1;
         let v = *p3 - *p1;
-        Self::new(*p1, u, v, material)
+        let n = u.cross(&v);
+        let normal = n.unit();
+        let d = normal.dot(p1);
+        let centroid = (*p1 + *p2 + *p3) / 3.;
+
+        let mut triangle = Triangle {
+            centroid,
+            q: *p1,
+            u,
+            v,
+            d,
+            w: n / n.dot(&n),
+            normal,
+            material,
+            bbox: AABB::EMPTY,
+        };
+        triangle.set_bounding_box();
+        triangle
     }
 
     pub fn new(q: Point3, u: Vec3, v: Vec3, material: Arc<dyn Material>) -> Self {
@@ -30,7 +48,10 @@ impl Triangle {
         let normal = n.unit();
         let d = normal.dot(&q);
 
+        let centroid = (q + (q + u) + (q + v)) / 3.;
+
         let mut triangle = Triangle {
+            centroid,
             q,
             u,
             v,
@@ -56,11 +77,15 @@ impl Triangle {
 }
 
 impl Intersect for Triangle {
+    fn center(&self) -> Vec3 {
+        self.centroid
+    }
+
     fn intersect(
         &self,
         ray: &Ray,
         ray_t: &crate::interval::Interval,
-    ) -> Option<crate::ray::HitRecord> {
+    ) -> Option<crate::ray::HitRecord<'_>> {
         let denom = self.normal.dot(&ray.direction);
 
         // No hit if the ray is parallel to the plane
@@ -84,7 +109,7 @@ impl Intersect for Triangle {
             return None;
         }
 
-        let mut hit_record = HitRecord::new(t, p, Vec3::ZERO, self.material.clone());
+        let mut hit_record = HitRecord::new(t, p, Vec3::ZERO, self.material.as_ref());
         hit_record.set_face_normal(ray, &self.normal);
         hit_record.u = alpha;
         hit_record.v = beta;

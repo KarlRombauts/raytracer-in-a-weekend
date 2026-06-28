@@ -28,8 +28,9 @@ impl Material for Lambertian {
         &self,
         ray_in: &crate::ray::Ray,
         hit_record: &HitRecord,
+        rng: &mut rand::rngs::SmallRng,
     ) -> Option<(crate::ray::Ray, Color)> {
-        let mut scatter_direction = hit_record.normal + Vec3::random_unit();
+        let mut scatter_direction = hit_record.normal + Vec3::random_unit(rng);
 
         if scatter_direction.near_zero() {
             scatter_direction = hit_record.normal;

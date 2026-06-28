@@ -17,6 +17,23 @@ impl AABB {
         aabb
     }
 
+    pub fn extent(&self) -> Vec3 {
+        self.max_vec() - self.min_vec()
+    }
+
+    pub fn area(&self) -> f32 {
+        let e = self.extent();
+        return e.x * e.y + e.y * e.z + e.z * e.x;
+    }
+
+    pub fn min_vec(&self) -> Vec3 {
+        Vec3::new(self.x.min, self.y.min, self.z.min)
+    }
+
+    pub fn max_vec(&self) -> Vec3 {
+        Vec3::new(self.x.max, self.y.max, self.z.max)
+    }
+
     fn pad_to_minimums(&mut self) {
         let delta = 0.0001;
         if self.x.size() < delta {
@@ -59,23 +76,63 @@ impl AABB {
     }
 
     pub fn intersect(&self, ray: &Ray, ray_t: &Interval) -> bool {
+        // Hand-unrolled over x/y/z with direct field access. Avoids the
+        // match-based `axis_interval`/`Index<u32>` lookups (each carrying a
+        // panic branch) in the single hottest loop of BVH traversal.
         let mut tmin = ray_t.min;
         let mut tmax = ray_t.max;
 
-        for axis in 0..3 {
-            let ax = self.axis_interval(axis);
-            let inv_d = ray.inv_direction[axis];
-            let t0 = (ax.min - ray.origin[axis]) * inv_d;
-            let t1 = (ax.max - ray.origin[axis]) * inv_d;
-            let (t_low, t_high) = (t0.min(t1), t0.max(t1));
-
-            tmin = tmin.max(t_low);
-            tmax = tmax.min(t_high);
-            if tmax <= tmin {
-                return false;
-            }
+        let inv_d = ray.inv_direction.x;
+        let t0 = (self.x.min - ray.origin.x) * inv_d;
+        let t1 = (self.x.max - ray.origin.x) * inv_d;
+        tmin = tmin.max(t0.min(t1));
+        tmax = tmax.min(t0.max(t1));
+        if tmax <= tmin {
+            return false;
         }
+
+        let inv_d = ray.inv_direction.y;
+        let t0 = (self.y.min - ray.origin.y) * inv_d;
+        let t1 = (self.y.max - ray.origin.y) * inv_d;
+        tmin = tmin.max(t0.min(t1));
+        tmax = tmax.min(t0.max(t1));
+        if tmax <= tmin {
+            return false;
+        }
+
+        let inv_d = ray.inv_direction.z;
+        let t0 = (self.z.min - ray.origin.z) * inv_d;
+        let t1 = (self.z.max - ray.origin.z) * inv_d;
+        tmin = tmin.max(t0.min(t1));
+        tmax = tmax.min(t0.max(t1));
+        if tmax <= tmin {
+            return false;
+        }
+
         true
+    }
+
+    pub fn intersect_dist(&self, ray: &Ray, ray_t: &Interval) -> f32 {
+        let tx1 = (self.min_vec().x - ray.origin.x) / ray.direction.x;
+        let tx2 = (self.max_vec().x - ray.origin.x) / ray.direction.x;
+        let mut tmin = tx1.min(tx2);
+        let mut tmax = tx1.max(tx2);
+
+        let ty1 = (self.min_vec().y - ray.origin.y) / ray.direction.y;
+        let ty2 = (self.max_vec().y - ray.origin.y) / ray.direction.y;
+        tmin = tmin.max(ty1.min(ty2));
+        tmax = tmax.min(ty1.max(ty2));
+
+        let tz1 = (self.min_vec().z - ray.origin.z) / ray.direction.z;
+        let tz2 = (self.max_vec().z - ray.origin.z) / ray.direction.z;
+        tmin = tmin.max(tz1.min(tz2));
+        tmax = tmax.min(tz1.max(tz2));
+
+        if tmax >= tmin && tmin < ray_t.max && tmax > ray_t.min {
+            tmin
+        } else {
+            1e30
+        }
     }
 
     pub fn intersect_distance(&self, ray: &Ray) -> f32 {

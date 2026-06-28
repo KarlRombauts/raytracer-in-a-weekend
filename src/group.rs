@@ -1,5 +1,6 @@
 use crate::interval::Interval;
 use crate::ray::*;
+use crate::vec3::Vec3;
 use std::sync::Arc;
 
 pub struct IntersectGroup {
@@ -33,11 +34,15 @@ impl IntersectGroup {
 }
 
 impl Intersect for IntersectGroup {
+    fn center(&self) -> Vec3 {
+        self.bbox.center()
+    }
+
     fn bounding_box(&self) -> &AABB {
         &self.bbox
     }
 
-    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord> {
+    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>> {
         let mut closest_hit: Option<HitRecord> = None;
         let mut closest_t = ray_t.max;
 

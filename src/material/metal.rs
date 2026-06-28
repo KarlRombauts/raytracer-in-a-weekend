@@ -17,9 +17,14 @@ impl Metal {
 }
 
 impl Material for Metal {
-    fn scatter(&self, ray_in: &Ray, hit_record: &HitRecord) -> Option<(crate::ray::Ray, Color)> {
+    fn scatter(
+        &self,
+        ray_in: &Ray,
+        hit_record: &HitRecord,
+        rng: &mut rand::rngs::SmallRng,
+    ) -> Option<(crate::ray::Ray, Color)> {
         let mut reflected = Vec3::reflect(&ray_in.direction, &hit_record.normal);
-        reflected = reflected.unit() + (self.roughness * Vec3::random_unit());
+        reflected = reflected.unit() + (self.roughness * Vec3::random_unit(rng));
         let scattered = Ray::new_t(hit_record.p, reflected, ray_in.time);
         let attenuation = self.albedo;
         if scattered.direction.dot(&hit_record.normal) > 0.0 {

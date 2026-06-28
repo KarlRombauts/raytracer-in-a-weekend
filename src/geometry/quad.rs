@@ -13,6 +13,7 @@ pub struct Quad {
     v: Vec3,
     d: f32,
     w: Vec3,
+    centroid: Vec3,
     normal: Vec3,
     material: Arc<dyn Material>,
     bbox: AABB,
@@ -30,6 +31,7 @@ impl Quad {
             v,
             d,
             w: n / n.dot(&n),
+            centroid: q + (u + v) * 0.5,
             normal,
             material,
             bbox: AABB::EMPTY,
@@ -51,11 +53,15 @@ impl Quad {
 }
 
 impl Intersect for Quad {
+    fn center(&self) -> Vec3 {
+        return self.centroid;
+    }
+
     fn intersect(
         &self,
         ray: &Ray,
         ray_t: &crate::interval::Interval,
-    ) -> Option<crate::ray::HitRecord> {
+    ) -> Option<crate::ray::HitRecord<'_>> {
         let denom = self.normal.dot(&ray.direction);
 
         // No hit if the ray is parallel to the plane
@@ -79,7 +85,7 @@ impl Intersect for Quad {
             return None;
         }
 
-        let mut hit_record = HitRecord::new(t, p, Vec3::ZERO, self.material.clone());
+        let mut hit_record = HitRecord::new(t, p, Vec3::ZERO, self.material.as_ref());
         hit_record.set_face_normal(ray, &self.normal);
         hit_record.u = alpha;
         hit_record.v = beta;

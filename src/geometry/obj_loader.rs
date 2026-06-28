@@ -87,4 +87,21 @@ impl ObjData {
 
         group
     }
+
+    pub fn into_triangles(self, material: Arc<dyn Material>) -> Vec<Triangle> {
+        let mut triangles = Vec::new();
+
+        println!("Loaded {} faces", self.faces.len());
+        self.faces.into_iter().for_each(|[i, j, k]| {
+            let tri = Triangle::from_points(
+                &self.verts[i],
+                &self.verts[j],
+                &self.verts[k],
+                material.clone(),
+            );
+            triangles.push(tri);
+        });
+
+        return triangles;
+    }
 }

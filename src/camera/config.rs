@@ -1,7 +1,7 @@
-use crate::vec3::Vec3;
+use crate::{color::Color, vec3::Vec3};
 use typed_builder::TypedBuilder;
 
-#[derive(TypedBuilder)]
+#[derive(TypedBuilder, Clone)]
 pub struct CameraConfig {
     #[builder(default = 16.0 / 9.0)]
     pub aspect_ratio: f64,
@@ -32,4 +32,7 @@ pub struct CameraConfig {
 
     #[builder(default = Vec3::new(0., 1., 0.))]
     pub v_up: Vec3,
+
+    #[builder(default = Color::new(0.7, 0.8, 1.))]
+    pub background: Color,
 }

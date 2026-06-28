@@ -1,11 +1,10 @@
 use std::{cmp::Ordering, sync::Arc};
 
-use rand::Rng;
-
 use crate::{
     group::IntersectGroup,
     interval::Interval,
     ray::{HitRecord, Intersect, Ray, AABB},
+    vec3::Vec3,
 };
 
 pub struct BVHNode {
@@ -95,12 +94,16 @@ impl BVHNode {
 }
 
 impl Intersect for BVHNode {
+    fn center(&self) -> Vec3 {
+        self.bbox.center()
+    }
+
     fn bounding_box(&self) -> &AABB {
         &self.bbox
     }
 
     #[inline(always)]
-    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord> {
+    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>> {
         // 1) First do the trivial reject on this node’s box:
         if !self.bbox.intersect(ray, ray_t) {
             return None;

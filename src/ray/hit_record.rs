@@ -1,23 +1,21 @@
-use std::sync::Arc;
-
 use crate::{material::Material, ray::Ray, vec3::*};
 
-pub struct HitRecord {
+pub struct HitRecord<'a> {
     pub t: f32,
     pub p: Point3,
     pub normal: Vec3,
     pub front_face: bool,
-    pub material: Arc<dyn Material>,
+    pub material: &'a dyn Material,
     pub u: f32,
     pub v: f32,
 }
 
-impl HitRecord {
+impl<'a> HitRecord<'a> {
     pub fn new(
         t: f32,
         p: Point3,
         normal: Vec3,
-        material: Arc<dyn Material>,
+        material: &'a dyn Material,
         // u: f32,
         // v: f32,
     ) -> Self {

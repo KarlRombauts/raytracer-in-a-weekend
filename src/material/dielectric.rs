@@ -23,7 +23,12 @@ impl Dielectric {
 }
 
 impl Material for Dielectric {
-    fn scatter(&self, ray_in: &Ray, hit_record: &HitRecord) -> Option<(Ray, Color)> {
+    fn scatter(
+        &self,
+        ray_in: &Ray,
+        hit_record: &HitRecord,
+        rng: &mut rand::rngs::SmallRng,
+    ) -> Option<(Ray, Color)> {
         let attenuation = Color::new(1.0, 1.0, 1.0);
 
         let ri = if hit_record.front_face {
@@ -39,8 +44,6 @@ impl Material for Dielectric {
 
         let cannot_refract = ri * sin_theta > 1.0;
 
-        let mut rng = rand::rng();
-
         let direction = if cannot_refract || self.reflectance(cos_theta, ri) > rng.random::<f32>() {
             Vec3::reflect(&unit_direction, &hit_record.normal)
         } else {
@@ -50,5 +53,9 @@ impl Material for Dielectric {
         let scattered = Ray::new_t(hit_record.p, direction, ray_in.time);
 
         Some((scattered, attenuation))
+    }
+
+    fn emitted(&self, u: f32, v: f32, p: crate::vec3::Point3) -> Color {
+        return Color::zeros();
     }
 }
