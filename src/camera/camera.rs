@@ -215,25 +215,24 @@ impl Camera {
 
         let mut direct = Color::ZERO;
         for light in &world.lights {
-            let lp = light.geom.sample_point(rng);
-            let to = lp - hit.p;
-            let dist = to.length();
-            if dist <= 0.0 {
+            // Unnormalized direction toward a random point on the light; that
+            // point sits at parameter t = 1 along `dir`.
+            let dir = light.geom.random_dir(hit.p, rng);
+            let pdf = light.geom.pdf_value(hit.p, dir);
+            if pdf <= 0.0 {
                 continue;
             }
-            let dir = to / dist;
-            let cos = hit.normal.dot(&dir);
-            if cos <= 0.0 {
+            let unit = dir.unit();
+            let cos_surface = hit.normal.dot(&unit);
+            if cos_surface <= 0.0 {
                 continue; // light is behind the surface
             }
             let shadow = Ray::new_t(hit.p, dir, ray.time);
-            // Stop just short of the light so its own surface is not an occluder.
-            // For a light almost touching the surface (dist < 0.002) this interval
-            // inverts (max < min); that is safe — every `contains` is then false,
-            // so the light simply counts as unoccluded. Do not "fix" it into a panic.
-            let shadow_interval = Interval::new(0.001, dist - 0.001);
+            // Check for blockers strictly before the light (at t = 1).
+            let shadow_interval = Interval::new(0.001, 1.0 - 1e-4);
             if world.intersect(&shadow, &shadow_interval).is_none() {
-                direct += albedo * light.emit * cos;
+                // Geometry term (cos_light, area, dist^2) lives inside `pdf`.
+                direct += (albedo / std::f32::consts::PI) * light.emit * cos_surface / pdf;
             }
         }
 
@@ -357,6 +356,86 @@ mod direct_tests {
             lit_color,
             occ_color
         );
+    }
+}
+
+#[cfg(test)]
+mod pdf_direct_tests {
+    use super::*;
+    use crate::camera::CameraConfig;
+    use crate::color::Color;
+    use crate::geometry::Quad;
+    use crate::group::{IntersectGroup, Light};
+    use crate::material::{DiffuseLight, Lambertian};
+    use crate::ray::{Intersect, Ray};
+    use crate::vec3::{Point3, Vec3};
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+    use std::sync::Arc;
+
+    fn test_camera() -> Camera {
+        Camera::from(
+            CameraConfig::builder()
+                .image_width(1)
+                .aspect_ratio(1.0)
+                .background(Color::ZERO)
+                .build(),
+        )
+    }
+
+    fn floor() -> Arc<dyn Intersect> {
+        let mat = Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0)));
+        Arc::new(Quad::new(
+            Point3::new(-100.0, 0.0, -100.0),
+            Vec3::new(200.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 200.0),
+            mat,
+        ))
+    }
+
+    // Small (1x1) downward-facing light directly overhead at height h.
+    fn small_light(h: f32) -> Arc<dyn Intersect> {
+        let mat = Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0)));
+        Arc::new(Quad::new(
+            Point3::new(-0.5, h, -0.5),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            mat,
+        ))
+    }
+
+    fn world_with_light(h: f32) -> IntersectGroup {
+        let mut w = IntersectGroup::new();
+        w.add(floor());
+        let lq = small_light(h);
+        w.add(lq.clone());
+        w.lights.push(Light { geom: lq, emit: Color::new(5.0, 5.0, 5.0) });
+        w
+    }
+
+    fn avg_direct(h: f32) -> f32 {
+        let cam = test_camera();
+        let world = world_with_light(h);
+        let ray = Ray::new(Point3::new(0.0, 1.0, 0.0), Vec3::new(0.0, -1.0, 0.0));
+        let mut rng = SmallRng::seed_from_u64(42);
+        let n = 4000;
+        let mut sum = 0.0;
+        for _ in 0..n {
+            sum += cam.ray_color_direct(&ray, &world, &mut rng).x;
+        }
+        sum / n as f32
+    }
+
+    #[test]
+    fn direct_falls_off_with_inverse_square() {
+        // A small overhead light approximates a point source, so doubling its
+        // height should quarter the direct illumination (the dist^2 / cos_light
+        // / area geometry term, all inside pdf_value).
+        let near = avg_direct(10.0);
+        let far = avg_direct(20.0);
+        assert!(near > 0.0 && far > 0.0, "both should be lit: near={near} far={far}");
+        let ratio = near / far;
+        assert!((ratio - 4.0).abs() < 0.6, "expected ~4x falloff, got {ratio}");
     }
 }
 
