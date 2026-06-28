@@ -11,11 +11,11 @@ pub struct RenderMesh {
 }
 
 impl RenderMesh {
-    fn push_tri(&mut self, a: Point3, b: Point3, c: Point3) {
+    fn push_tri(&mut self, a: Point3, b: Point3, c: Point3, center: Point3) {
         let cross_product = (b - a).cross(&(c - a));
         let n = if cross_product.length_squared() < 1e-6 {
-            // Degenerate triangle (e.g., at sphere poles): use average of vertex normals
-            (a.unit() + b.unit() + c.unit()).unit()
+            // Degenerate triangle (e.g., at sphere poles): centroid direction from center.
+            (((a + b + c) / 3.0) - center).unit()
         } else {
             cross_product.unit()
         };
@@ -28,15 +28,17 @@ impl RenderMesh {
     pub fn from_triangles(verts: &[Vec3], faces: &[[usize; 3]]) -> RenderMesh {
         let mut m = RenderMesh { positions: Vec::new(), normals: Vec::new() };
         for &[i, j, k] in faces {
-            m.push_tri(verts[i], verts[j], verts[k]);
+            // Degenerate fallback unreachable for real mesh data; Vec3::ZERO is fine.
+            m.push_tri(verts[i], verts[j], verts[k], Vec3::ZERO);
         }
         m
     }
 
     pub fn quad(q: Point3, u: Vec3, v: Vec3) -> RenderMesh {
         let mut m = RenderMesh { positions: Vec::new(), normals: Vec::new() };
-        m.push_tri(q, q + u, q + u + v);
-        m.push_tri(q, q + u + v, q + v);
+        // Degenerate fallback unreachable for non-degenerate quads; Vec3::ZERO is fine.
+        m.push_tri(q, q + u, q + u + v, Vec3::ZERO);
+        m.push_tri(q, q + u + v, q + v, Vec3::ZERO);
         m
     }
 
@@ -61,8 +63,9 @@ impl RenderMesh {
         ];
         let mut m = RenderMesh { positions: Vec::new(), normals: Vec::new() };
         for [i, j, k, l] in faces {
-            m.push_tri(corners[i], corners[j], corners[k]);
-            m.push_tri(corners[i], corners[k], corners[l]);
+            // Degenerate fallback unreachable for axis-aligned box faces; Vec3::ZERO is fine.
+            m.push_tri(corners[i], corners[j], corners[k], Vec3::ZERO);
+            m.push_tri(corners[i], corners[k], corners[l], Vec3::ZERO);
         }
         m
     }
@@ -85,8 +88,9 @@ impl RenderMesh {
             for seg in 0..segments {
                 let (a, b) = (p(ring, seg), p(ring, seg + 1));
                 let (cc, d) = (p(ring + 1, seg), p(ring + 1, seg + 1));
-                m.push_tri(a, b, d);
-                m.push_tri(a, d, cc);
+                // Pass center so degenerate pole triangles get outward-facing normals.
+                m.push_tri(a, b, d, center);
+                m.push_tri(a, d, cc, center);
             }
         }
         m
@@ -146,5 +150,31 @@ mod tests {
         let m = RenderMesh::from_triangles(&verts, &faces);
         assert_eq!(m.positions.len(), 3);
         assert!(unit_len(&m.normals[0]));
+    }
+
+    /// Translated sphere pole normals must point radially outward from the sphere
+    /// center, not from the world origin. For a sphere at (5,0,0) every face
+    /// normal n (paired with any vertex v of that face) must satisfy
+    /// n.dot(v - center) >= -1e-3 (outward-ish or tangent, never inward).
+    #[test]
+    fn translated_sphere_pole_normals_point_outward() {
+        let center = Point3::new(5.0, 0.0, 0.0);
+        let radius = 1.0_f32;
+        let m = RenderMesh::sphere(center, radius, 8, 12);
+        // Iterate triangles (3 vertices each)
+        let n_verts = m.positions.len();
+        assert!(n_verts % 3 == 0);
+        for i in (0..n_verts).step_by(3) {
+            let v = m.positions[i];
+            let n = m.normals[i];
+            // vector from sphere center to vertex
+            let to_v = [v[0] - center.x, v[1] - center.y, v[2] - center.z];
+            let dot = n[0] * to_v[0] + n[1] * to_v[1] + n[2] * to_v[2];
+            assert!(
+                dot >= -1e-3,
+                "face normal points inward: n={:?}, v={:?}, center={:?}, dot={}",
+                n, v, [center.x, center.y, center.z], dot
+            );
+        }
     }
 }
