@@ -218,17 +218,16 @@ impl Camera {
         self.basis_u
     }
 
-    /// Mixture-PDF path tracer. One ray per bounce. At a diffuse (non-specular)
-    /// hit the outgoing ray is drawn from a 50/50 mixture of a cosine-weighted
-    /// direction and a direction toward a registered light, weighted by
-    /// `albedo * scattering_pdf / p_mixture`. Specular materials use their own
-    /// scattered ray. Emission is accumulated at every hit (one ray per bounce, so
-    /// no double counting).
     fn ray_color(&self, ray: &Ray, world: &IntersectGroup, rng: &mut SmallRng) -> Color {
         let interval = Interval::new(0.001, f32::INFINITY);
         let mut color = Color::ZERO;
         let mut throughput = Color::ones();
         let mut current = ray.clone();
+        // Whether emission at the next hit gets full weight: true for the camera ray
+        // and after specular bounces (NEE can't sample those), false after a diffuse
+        // bounce (NEE already accounted for direct light, so MIS-weight the emission).
+        let mut specular_bounce = true;
+        let mut prev_brdf_pdf = 0.0_f32;
 
         for _ in 0..self.max_depth {
             let Some(hit) = world.intersect(&current, &interval) else {
@@ -236,7 +235,16 @@ impl Camera {
                 break;
             };
 
-            color += throughput * hit.material.emitted(hit.u, hit.v, hit.p);
+            let emitted = hit.material.emitted(hit.u, hit.v, hit.p);
+            if emitted != Color::ZERO {
+                if specular_bounce {
+                    color += throughput * emitted;
+                } else {
+                    let p_light = world.light_pdf(current.origin, current.direction);
+                    let w = power_heuristic(prev_brdf_pdf, p_light);
+                    color += throughput * emitted * w;
+                }
+            }
 
             let Some((scattered, atten)) = hit.material.scatter(&current, &hit, rng) else {
                 break; // pure light / absorber
@@ -245,33 +253,38 @@ impl Camera {
             if hit.material.is_specular() {
                 throughput = throughput * atten;
                 current = scattered;
+                specular_bounce = true;
                 continue;
             }
 
-            // Lambertian: sample one outgoing ray from the cosine/light mixture.
+            // Lambertian.
             let albedo = atten;
-            let dir = if !world.lights.is_empty() && rng.random::<f32>() < 0.5 {
-                match world.sample_light_dir(hit.p, rng) {
-                    Some(d) => d,
-                    None => cosine_direction(&hit.normal, rng),
-                }
-            } else {
-                cosine_direction(&hit.normal, rng)
-            };
 
-            let s = hit.material.scattering_pdf(&hit, &dir);
-            if s <= 0.0 {
-                break; // direction below the surface contributes nothing
+            // (1) Next-event estimation: sample a light, weight against the BRDF pdf.
+            if let Some(ld) = world.sample_light_dir(hit.p, rng) {
+                let p_light = world.light_pdf(hit.p, ld);
+                let p_brdf = hit.material.scattering_pdf(&hit, &ld);
+                if p_light > 0.0 && p_brdf > 0.0 {
+                    let shadow = Ray::new_t(hit.p, ld, current.time);
+                    if let Some(lh) = world.intersect(&shadow, &interval) {
+                        let le = lh.material.emitted(lh.u, lh.v, lh.p);
+                        if le != Color::ZERO {
+                            let w = power_heuristic(p_light, p_brdf);
+                            color += throughput * w * albedo * (p_brdf / p_light) * le;
+                        }
+                    }
+                }
             }
-            let p = if world.lights.is_empty() {
-                s
-            } else {
-                0.5 * s + 0.5 * world.light_pdf(hit.p, dir)
-            };
-            if p <= 0.0 {
+
+            // (2) BRDF bounce (cosine), weighted against the light pdf at the next hit.
+            let dir = cosine_direction(&hit.normal, rng);
+            let p_brdf = hit.material.scattering_pdf(&hit, &dir);
+            if p_brdf <= 0.0 {
                 break;
             }
-            throughput = throughput * albedo * (s / p);
+            throughput = throughput * albedo;
+            prev_brdf_pdf = p_brdf;
+            specular_bounce = false;
             current = Ray::new_t(hit.p, dir, current.time);
         }
 
@@ -368,6 +381,91 @@ mod mixture_tests {
         assert!(with_nee > 0.0 && pure_gi > 0.0, "both lit: nee={with_nee} gi={pure_gi}");
         let rel = (with_nee - pure_gi).abs() / pure_gi;
         assert!(rel < 0.15, "means should agree (unbiased): nee={with_nee} gi={pure_gi} rel={rel}");
+    }
+}
+
+#[cfg(test)]
+mod mis_tests {
+    use super::*;
+    use crate::camera::CameraConfig;
+    use crate::color::Color;
+    use crate::geometry::Quad;
+    use crate::group::{IntersectGroup, Light};
+    use crate::material::{DiffuseLight, Lambertian};
+    use crate::ray::{Intersect, Ray};
+    use crate::vec3::{Point3, Vec3};
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+    use std::sync::Arc;
+
+    fn cam() -> Camera {
+        Camera::from(
+            CameraConfig::builder()
+                .image_width(1)
+                .aspect_ratio(1.0)
+                .background(Color::ZERO)
+                .build(),
+        )
+    }
+
+    fn floor() -> Arc<dyn Intersect> {
+        let mat = Arc::new(Lambertian::from_color(Color::new(0.7, 0.7, 0.7)));
+        Arc::new(Quad::new(
+            Point3::new(-5.0, 0.0, -5.0),
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 10.0),
+            mat,
+        ))
+    }
+
+    // Small, bright overhead light: pure GI rarely hits it (high variance);
+    // NEE samples it every bounce (low variance).
+    fn small_light() -> Arc<dyn Intersect> {
+        let mat = Arc::new(DiffuseLight::from_color(Color::new(40.0, 40.0, 40.0)));
+        Arc::new(Quad::new(
+            Point3::new(-0.5, 4.0, -0.5),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            mat,
+        ))
+    }
+
+    // Returns (mean, variance) of the .x channel over `n` samples.
+    fn stats(register_light: bool, n: usize) -> (f32, f32) {
+        let c = cam();
+        let mut world = IntersectGroup::new();
+        world.add(floor());
+        let l = small_light();
+        world.add(l.clone());
+        if register_light {
+            world.lights.push(Light { geom: l, emit: Color::new(40.0, 40.0, 40.0) });
+        }
+        let ray = Ray::new(Point3::new(0.0, 1.0, 0.0), Vec3::new(0.0, -1.0, 0.0));
+        let mut rng = SmallRng::seed_from_u64(7);
+        let mut sum = 0.0;
+        let mut sum2 = 0.0;
+        for _ in 0..n {
+            let x = c.ray_color(&ray, &world, &mut rng).x;
+            sum += x;
+            sum2 += x * x;
+        }
+        let mean = sum / n as f32;
+        let var = (sum2 / n as f32) - mean * mean;
+        (mean, var)
+    }
+
+    #[test]
+    fn mis_cuts_variance_versus_pure_gi() {
+        let n = 4000;
+        let (mis_mean, mis_var) = stats(true, n);
+        let (gi_mean, gi_var) = stats(false, n);
+        // Both lit and (being unbiased) roughly equal in mean.
+        assert!(mis_mean > 0.0 && gi_mean > 0.0, "both lit: mis={mis_mean} gi={gi_mean}");
+        // The whole point: NEE+MIS has markedly lower per-sample variance.
+        assert!(
+            mis_var < 0.5 * gi_var,
+            "expected MIS variance well below pure-GI: mis_var={mis_var} gi_var={gi_var}"
+        );
     }
 }
 
