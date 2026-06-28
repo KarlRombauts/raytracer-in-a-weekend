@@ -13,6 +13,12 @@ use crate::scene::Scene;
 use render_task::RenderTask;
 use view_transform::ViewTransform;
 
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Render,
+    Edit,
+}
+
 /// A rounded, slightly-darker card to group related controls.
 fn card(ui: &egui::Ui) -> egui::Frame {
     egui::Frame::group(ui.style())
@@ -45,31 +51,32 @@ pub fn run(scene: Scene) {
 struct ViewerApp {
     scene: Arc<Mutex<Scene>>,
     render: RenderTask,
-    width: u32,
-    height: u32,
     texture: Option<egui::TextureHandle>,
     shown_pass: u32,
     view: ViewTransform,
     /// Index of the object whose settings are shown (UI state, not scene data).
     selected: Option<usize>,
+    mode: Mode,
+    initial_camera: crate::camera::CameraConfig,
 }
 
 impl ViewerApp {
     fn new(cc: &eframe::CreationContext<'_>, scene: Scene, width: u32, height: u32) -> Self {
         icons::install(&cc.egui_ctx);
         let total = scene.camera.samples;
+        let initial_camera = scene.camera.clone();
         let scene = Arc::new(Mutex::new(scene));
         let render = RenderTask::spawn(cc.egui_ctx.clone(), scene.clone(), width, height, total);
 
         ViewerApp {
             scene,
             render,
-            width,
-            height,
             texture: None,
             shown_pass: 0,
             view: ViewTransform::new(),
             selected: None,
+            mode: Mode::Render,
+            initial_camera,
         }
     }
 }
@@ -80,18 +87,20 @@ impl eframe::App for ViewerApp {
         let ctx = ui.ctx().clone();
 
         // Pull the latest frame; rebuild the texture only when a new pass landed.
-        let (passes, total, done, elapsed, new_image) = {
+        // Dims come from the frame so a resolution change resizes the texture.
+        let (img_w, img_h, passes, total, done, elapsed, new_image) = {
             let s = self.render.lock();
             let new_image = if s.passes != self.shown_pass {
                 Some(egui::ColorImage::from_rgba_unmultiplied(
-                    [self.width as usize, self.height as usize],
+                    [s.width as usize, s.height as usize],
                     &s.rgba,
                 ))
             } else {
                 None
             };
-            (s.passes, s.total, s.done, s.elapsed, new_image)
+            (s.width, s.height, s.passes, s.total, s.done, s.elapsed, new_image)
         };
+        let aspect = img_w as f32 / img_h as f32;
         if let Some(image) = new_image {
             // LINEAR filtering so the image stays smooth when scaled up or down.
             match &mut self.texture {
@@ -133,11 +142,23 @@ impl eframe::App for ViewerApp {
                         }
                     });
                     ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.mode, Mode::Render, "Render");
+                        ui.selectable_value(&mut self.mode, Mode::Edit, "Edit");
+                        if ui.button("Reset camera").clicked() {
+                            scene.camera = self.initial_camera.clone();
+                            self.render.invalidate();
+                        }
+                    });
+                    ui.separator();
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         egui::CollapsingHeader::new(format!("{}  Camera", icons::CAMERA))
                             .default_open(true)
                             .show(ui, |ui| {
-                                dirty |= controls::camera_controls(ui, &mut scene.camera);
+                                card(ui).show(ui, |ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    dirty |= controls::camera_controls(ui, &mut scene.camera);
+                                });
                             });
                         egui::CollapsingHeader::new(format!("{}  Objects", icons::STACK))
                             .default_open(true)
@@ -196,23 +217,45 @@ impl eframe::App for ViewerApp {
 
             let vp = ui.available_rect_before_wrap();
             let response = ui.allocate_rect(vp, egui::Sense::click_and_drag());
-            let aspect = self.width as f32 / self.height as f32;
 
-            // Drag to pan; double-click to reset the view.
-            if response.dragged() {
-                self.view.pan_by(response.drag_delta());
-            }
-            if response.double_clicked() {
-                self.view.reset();
-            }
-
-            // Scroll to zoom, keeping the point under the cursor fixed.
-            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-            if response.hovered() && scroll != 0.0 {
-                let cursor = ui
-                    .input(|i| i.pointer.hover_pos())
-                    .unwrap_or_else(|| vp.center());
-                self.view.zoom_at(vp, aspect, cursor, scroll);
+            match self.mode {
+                Mode::Render => {
+                    // Drag to pan; double-click to reset the 2D view.
+                    if response.dragged() {
+                        self.view.pan_by(response.drag_delta());
+                    }
+                    if response.double_clicked() {
+                        self.view.reset();
+                    }
+                    let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+                    if response.hovered() && scroll != 0.0 {
+                        let cursor = ui
+                            .input(|i| i.pointer.hover_pos())
+                            .unwrap_or_else(|| vp.center());
+                        self.view.zoom_at(vp, aspect, cursor, scroll);
+                    }
+                }
+                Mode::Edit => {
+                    let mut changed = false;
+                    if response.dragged() {
+                        let shift = ui.input(|i| i.modifiers.shift);
+                        let mut scene = self.scene.lock().unwrap();
+                        if shift {
+                            orbit::pan(&mut scene.camera, response.drag_delta());
+                        } else {
+                            orbit::orbit(&mut scene.camera, response.drag_delta());
+                        }
+                        changed = true;
+                    }
+                    let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+                    if response.hovered() && scroll != 0.0 {
+                        orbit::dolly(&mut self.scene.lock().unwrap().camera, scroll);
+                        changed = true;
+                    }
+                    if changed {
+                        self.render.invalidate();
+                    }
+                }
             }
 
             // Paint the image, clipped to the viewport so zoomed overflow hides.
