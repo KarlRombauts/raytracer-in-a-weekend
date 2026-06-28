@@ -361,8 +361,9 @@ This task changes three `MaterialSpec` variants from a flat `Color` to a `Textur
 - Modify: `src/scenes/cornell_box.rs` (Lambertian + DiffuseLight constructions)
 - Modify: `src/scenes/new_bvh.rs` (Lambertian construction)
 - Modify: `src/viewer/raster/renderer.rs` (`preview_color`)
-- Modify: `src/viewer/raster/pick.rs` (test fixture)
 - Modify: `src/viewer/controls.rs` (`shared_color` + the `pick` builder closures only — the texture editor UI is Task 4)
+
+> **Worktree note:** This plan executes in a worktree branched from `rasterized-edit-view` HEAD. `src/viewer/raster/pick.rs` exists only in another thread's *uncommitted* working tree, so it is **absent here** — Step 5 below is a no-op in this worktree (skip it). Should `pick.rs` be present, apply Step 5; otherwise omit it from the commit.
 
 **Interfaces:**
 - Consumes: `TextureSpec::{solid, build, preview_color}` (Task 2)
@@ -431,7 +432,7 @@ In `src/scenes/new_bvh.rs`, update its import and the Lambertian construction (t
 
 - [ ] **Step 4: Fix the rasterizer preview**
 
-In `src/viewer/raster/renderer.rs`, update `preview_color` (around line 569) to read texture colors via `TextureSpec::preview_color`:
+In `src/viewer/raster/renderer.rs`, update `preview_color` (around line 188 on this branch — find the `fn preview_color(m: &MaterialSpec) -> ([f32; 3], bool)` definition) to read texture colors via `TextureSpec::preview_color`:
 
 ```rust
 fn preview_color(m: &MaterialSpec) -> ([f32; 3], bool) {
@@ -454,9 +455,9 @@ fn preview_color(m: &MaterialSpec) -> ([f32; 3], bool) {
 }
 ```
 
-- [ ] **Step 5: Fix the `pick.rs` test fixture**
+- [ ] **Step 5: Fix the `pick.rs` test fixture (skip if absent — see Worktree note)**
 
-In `src/viewer/raster/pick.rs` (around line 79), wrap the test material's albedo. Add `TextureSpec` to that test module's `use crate::scene::{...}` import:
+`src/viewer/raster/pick.rs` is not present on this branch, so **skip this step**. If it does exist, wrap the test material's albedo (add `TextureSpec` to that test module's `use crate::scene::{...}` import):
 
 ```rust
             material: MaterialSpec::Lambertian { albedo: TextureSpec::solid(Color::new(0.5, 0.5, 0.5)) },
@@ -552,7 +553,8 @@ Expected: compiles clean; all tests pass (existing tests + Tasks 1-2 tests).
 - [ ] **Step 9: Commit**
 
 ```bash
-git add src/material/glossy.rs src/scene.rs src/scenes/cornell_box.rs src/scenes/new_bvh.rs src/viewer/raster/renderer.rs src/viewer/raster/pick.rs src/viewer/controls.rs
+git add src/material/glossy.rs src/scene.rs src/scenes/cornell_box.rs src/scenes/new_bvh.rs src/viewer/raster/renderer.rs src/viewer/controls.rs
+# add src/viewer/raster/pick.rs too only if Step 5 applied
 git commit -m "feat: MaterialSpec carries TextureSpec for diffuse/glossy/emission"
 ```
 
