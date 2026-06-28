@@ -228,15 +228,18 @@ uniform mat4 u_model;
 uniform mat4 u_view;
 uniform mat4 u_proj;
 out vec3 v_normal_view;
+out vec3 v_normal_world;
 void main() {
     mat4 mv = u_view * u_model;
     v_normal_view = mat3(mv) * a_normal;
+    v_normal_world = mat3(u_model) * a_normal;
     gl_Position = u_proj * mv * vec4(a_pos, 1.0);
 }
 "#;
 
 const FRAG: &str = r#"
 in vec3 v_normal_view;
+in vec3 v_normal_world;
 uniform vec3 u_color;
 uniform float u_ambient;
 uniform bool u_emissive;
@@ -246,22 +249,29 @@ void main() {
         frag = vec4(u_color, 1.0);
         return;
     }
-    // Normals are in view space, so the lights below follow the camera like a
-    // solid-mode / material-preview studio rig.
-    vec3 n = normalize(v_normal_view);
-    if (!gl_FrontFacing) n = -n;      // two-sided: light whichever face we see
-    vec3 v = vec3(0.0, 0.0, 1.0);     // toward the camera in view space
+    // View-space normal drives the camera-relative key/fill (like solid mode);
+    // world-space normal drives the hemisphere ambient (fixed up direction).
+    vec3 nv = normalize(v_normal_view);
+    vec3 nw = normalize(v_normal_world);
+    if (!gl_FrontFacing) { nv = -nv; nw = -nw; }   // two-sided
+    vec3 v = vec3(0.0, 0.0, 1.0);                   // toward the camera
 
-    // Two-light setup: a brighter key from upper-right, a softer fill.
+    // Hemisphere ambient: brighter "sky" from above, darker "ground" below, so
+    // up-facing surfaces (box tops, floor) separate from vertical walls/sides
+    // even when everything shares one colour.
+    vec3 sky = vec3(0.48, 0.50, 0.54);
+    vec3 ground = vec3(0.20, 0.19, 0.18);
+    vec3 ambient = mix(ground, sky, clamp(nw.y * 0.5 + 0.5, 0.0, 1.0));
+
+    // Camera-relative key + fill.
     vec3 key = normalize(vec3(0.45, 0.65, 0.6));
     vec3 fill = normalize(vec3(-0.6, -0.15, 0.4));
-    float diffuse = 0.85 * max(dot(n, key), 0.0) + 0.35 * max(dot(n, fill), 0.0);
-    float shade = u_ambient + (1.0 - u_ambient) * diffuse;
+    float diffuse = 0.6 * max(dot(nv, key), 0.0) + 0.22 * max(dot(nv, fill), 0.0);
 
     // Fresnel rim light to pop silhouettes.
-    float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * 0.35;
+    float rim = pow(1.0 - max(dot(nv, v), 0.0), 3.0) * 0.3;
 
-    vec3 col = u_color * shade + vec3(rim);
+    vec3 col = u_color * (ambient + diffuse) + vec3(rim);
     frag = vec4(col, 1.0);
 }
 "#;
