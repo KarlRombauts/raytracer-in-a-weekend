@@ -5,6 +5,7 @@ mod render_task;
 mod view_transform;
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use eframe::egui;
 
@@ -18,6 +19,13 @@ enum Mode {
     Render,
     Edit,
 }
+
+/// Resolution divisor used while actively orbiting/panning, so the view tracks
+/// the mouse; the render snaps back to full quality once motion stops.
+const PREVIEW_SCALE: u32 = 4;
+/// Seconds of stillness after the last camera motion before switching back to
+/// full-resolution rendering.
+const PREVIEW_DEBOUNCE: f32 = 0.15;
 
 /// A rounded, slightly-darker card to group related controls.
 fn card(ui: &egui::Ui) -> egui::Frame {
@@ -58,6 +66,8 @@ struct ViewerApp {
     selected: Option<usize>,
     mode: Mode,
     initial_camera: crate::camera::CameraConfig,
+    /// egui time (seconds) of the last camera motion, for the preview debounce.
+    last_interact: f64,
 }
 
 impl ViewerApp {
@@ -77,6 +87,7 @@ impl ViewerApp {
             selected: None,
             mode: Mode::Render,
             initial_camera,
+            last_interact: -1.0,
         }
     }
 }
@@ -220,6 +231,11 @@ impl eframe::App for ViewerApp {
 
             match self.mode {
                 Mode::Render => {
+                    // Leaving Edit mid-preview: restore full-resolution rendering.
+                    if self.render.preview_scale() != 1 {
+                        self.render.set_preview_scale(1);
+                        self.render.invalidate();
+                    }
                     // Drag to pan; double-click to reset the 2D view.
                     if response.dragged() {
                         self.view.pan_by(response.drag_delta());
@@ -236,12 +252,12 @@ impl eframe::App for ViewerApp {
                     }
                 }
                 Mode::Edit => {
-                    let mut changed = false;
+                    let now = ui.input(|i| i.time);
+                    let mut moved = false;
                     // `dragged()` stays true while the button is held even when
-                    // the mouse is still, so only treat it as a camera change
-                    // when the pointer actually moved. A stationary hold then
-                    // lets the render keep accumulating passes from the current
-                    // view, while moving restarts with a fresh sample per frame.
+                    // the mouse is still, so only treat actual motion as a camera
+                    // change. A stationary hold then lets the render keep
+                    // accumulating passes from the current view.
                     if response.dragged() {
                         let delta = response.drag_delta();
                         if delta != egui::Vec2::ZERO {
@@ -251,16 +267,34 @@ impl eframe::App for ViewerApp {
                             } else {
                                 orbit::orbit(&mut scene.camera, delta);
                             }
-                            changed = true;
+                            moved = true;
                         }
                     }
                     let scroll = ui.input(|i| i.smooth_scroll_delta.y);
                     if response.hovered() && scroll != 0.0 {
                         orbit::dolly(&mut self.scene.lock().unwrap().camera, scroll);
-                        changed = true;
+                        moved = true;
                     }
-                    if changed {
+                    if moved {
+                        self.last_interact = now;
+                    }
+
+                    // Reduced-resolution preview while actively interacting;
+                    // snap back to full quality once motion has stopped.
+                    let interacting = (now - self.last_interact) < PREVIEW_DEBOUNCE as f64;
+                    let want_scale = if interacting { PREVIEW_SCALE } else { 1 };
+                    let scale_changed = self.render.preview_scale() != want_scale;
+                    if scale_changed {
+                        self.render.set_preview_scale(want_scale);
+                    }
+                    if moved || scale_changed {
                         self.render.invalidate();
+                    }
+                    if interacting {
+                        // Wake after the debounce window so the full-res switch
+                        // fires even if the pointer then goes idle.
+                        ui.ctx()
+                            .request_repaint_after(Duration::from_secs_f32(PREVIEW_DEBOUNCE));
                     }
                 }
             }

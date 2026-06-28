@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,9 @@ pub struct SharedFrame {
 pub struct RenderTask {
     shared: Arc<Mutex<SharedFrame>>,
     generation: Arc<AtomicU64>,
+    /// Resolution divisor: 1 = full quality, >1 = reduced preview while the
+    /// user is interacting so passes complete fast enough to track the mouse.
+    preview_scale: Arc<AtomicU32>,
 }
 
 impl RenderTask {
@@ -51,9 +54,11 @@ impl RenderTask {
             elapsed: 0.0,
         }));
         let generation = Arc::new(AtomicU64::new(0));
+        let preview_scale = Arc::new(AtomicU32::new(1));
 
         let shared_bg = shared.clone();
         let generation_bg = generation.clone();
+        let preview_scale_bg = preview_scale.clone();
         std::thread::spawn(move || {
             let mut last_gen = u64::MAX;
             loop {
@@ -65,54 +70,61 @@ impl RenderTask {
                 }
                 last_gen = current_gen;
 
-                // Rebuild the world from the current scene snapshot.
+                // Snapshot the scene and build the world.
                 let snapshot = scene.lock().unwrap().clone();
-                let camera = Camera::from(snapshot.camera.clone());
                 let world = build_world(&snapshot);
                 let target = snapshot.camera.samples;
-                let (w, h) = (camera.image_width(), camera.image_height());
 
-                {
-                    // Restart accumulation, but keep showing the previous
-                    // frame until the first new pass lands. Only a resolution
-                    // change reallocates (to black); retaining the old pixels
-                    // avoids a black flash on every camera drag, which restarts
-                    // the render on each mouse move.
-                    let mut s = shared_bg.lock().unwrap();
-                    if s.width != w || s.height != h {
-                        s.width = w;
-                        s.height = h;
-                        s.rgba = vec![0u8; (w * h * 4) as usize];
-                    }
-                    s.passes = 0;
-                    s.total = target;
-                    s.done = false;
-                    s.elapsed = 0.0;
+                // Render at reduced resolution while the user is interacting so
+                // each pass completes fast enough to track the mouse; full
+                // resolution (scale 1) when idle. Shrinking the camera's image
+                // width scales the whole render down; the UI upsamples it.
+                let scale = preview_scale_bg.load(Ordering::Relaxed).max(1);
+                let mut cam_cfg = snapshot.camera.clone();
+                if scale > 1 {
+                    cam_cfg.image_width = (cam_cfg.image_width / scale).max(1);
                 }
+                let camera = Camera::from(cam_cfg);
+                let (w, h) = (camera.image_width(), camera.image_height());
 
                 let mut renderer = ProgressiveRenderer::new(w, h);
                 let start = Instant::now();
-                let mut cancelled = false;
-                for _ in 0..target {
+
+                // Render the first pass BEFORE publishing the new dimensions, so
+                // a resolution change never flashes black: the UI keeps showing
+                // the previous frame until this one is ready to replace it.
+                renderer.add_pass(&camera, &world);
+                {
+                    let mut s = shared_bg.lock().unwrap();
+                    s.width = w;
+                    s.height = h;
+                    s.rgba = renderer.to_rgba();
+                    s.passes = renderer.passes();
+                    s.total = target;
+                    s.done = false;
+                    s.elapsed = start.elapsed().as_secs_f64();
+                }
+                ctx.request_repaint();
+
+                // Keep adding passes until the target is reached or a newer edit
+                // lands. The check is AFTER publishing, so even a fast drag
+                // (which restarts every mouse move) still shows ≥1 sample.
+                let mut cancelled = generation_bg.load(Ordering::Relaxed) != last_gen;
+                while !cancelled && renderer.passes() < target {
                     renderer.add_pass(&camera, &world);
-                    let rgba = renderer.to_rgba();
                     {
                         let mut s = shared_bg.lock().unwrap();
-                        s.rgba = rgba;
+                        s.rgba = renderer.to_rgba();
                         s.passes = renderer.passes();
                         s.elapsed = start.elapsed().as_secs_f64();
                     }
                     ctx.request_repaint();
-                    // Bail only AFTER publishing this pass, so even a fast drag
-                    // (which restarts the render every mouse move) still lands
-                    // at least one noisy sample on screen instead of nothing.
-                    if generation_bg.load(Ordering::Relaxed) != last_gen {
-                        cancelled = true;
-                        break;
-                    }
+                    cancelled = generation_bg.load(Ordering::Relaxed) != last_gen;
                 }
 
-                if !cancelled {
+                // Only the full-resolution image is worth saving to disk;
+                // reduced previews are throwaway.
+                if !cancelled && scale == 1 {
                     renderer.save_png("test.png");
                     shared_bg.lock().unwrap().done = true;
                     ctx.request_repaint();
@@ -120,12 +132,27 @@ impl RenderTask {
             }
         });
 
-        RenderTask { shared, generation }
+        RenderTask {
+            shared,
+            generation,
+            preview_scale,
+        }
     }
 
     /// Signal that the scene changed: cancels the in-flight render and restarts.
     pub fn invalidate(&self) {
         self.generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Set the resolution divisor for subsequent renders (1 = full quality).
+    /// Takes effect on the next restart — pair with `invalidate` to apply now.
+    pub fn set_preview_scale(&self, scale: u32) {
+        self.preview_scale.store(scale.max(1), Ordering::Relaxed);
+    }
+
+    /// Current resolution divisor.
+    pub fn preview_scale(&self) -> u32 {
+        self.preview_scale.load(Ordering::Relaxed)
     }
 
     /// Lock and read the current shared frame.
