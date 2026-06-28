@@ -161,7 +161,7 @@ impl Camera {
         rng: &mut SmallRng,
     ) -> Color {
         let ray = self.get_ray(i, j, sample_index, rng);
-        self.ray_color(&ray, self.max_depth, world, rng)
+        self.ray_color_direct(&ray, world, rng)
     }
 
     fn dof_disk_sample(&self, rng: &mut SmallRng) -> Vec3 {
@@ -191,6 +191,53 @@ impl Camera {
         self.basis_u
     }
 
+    /// Direct-lighting integrator: shade a hit by sampling each light with a
+    /// shadow ray. No indirect bounce and no PDF/geometry weighting yet — the
+    /// contribution is `albedo * emit * cos`, so the result is intentionally
+    /// biased (a stepping stone toward full next-event estimation).
+    fn ray_color_direct(
+        &self,
+        ray: &Ray,
+        world: &IntersectGroup,
+        rng: &mut SmallRng,
+    ) -> Color {
+        let interval = Interval::new(0.001, f32::INFINITY);
+        let Some(hit) = world.intersect(ray, &interval) else {
+            return self.background;
+        };
+
+        let emitted = hit.material.emitted(hit.u, hit.v, hit.p);
+
+        // No scatter => the surface is a light (or pure absorber); show its emission.
+        let Some((_, albedo)) = hit.material.scatter(ray, &hit, rng) else {
+            return emitted;
+        };
+
+        let mut direct = Color::ZERO;
+        for light in &world.lights {
+            let lp = light.geom.sample_point(rng);
+            let to = lp - hit.p;
+            let dist = to.length();
+            if dist <= 0.0 {
+                continue;
+            }
+            let dir = to / dist;
+            let cos = hit.normal.dot(&dir);
+            if cos <= 0.0 {
+                continue; // light is behind the surface
+            }
+            let shadow = Ray::new_t(hit.p, dir, ray.time);
+            // Stop just short of the light so its own surface is not an occluder.
+            let shadow_interval = Interval::new(0.001, dist - 0.001);
+            if world.intersect(&shadow, &shadow_interval).is_none() {
+                direct += albedo * light.emit * cos;
+            }
+        }
+
+        emitted + direct
+    }
+
+    #[allow(dead_code)]
     fn ray_color(
         &self,
         ray: &Ray,
@@ -227,6 +274,86 @@ impl Camera {
         // Depth exhausted: matches the recursive base case `ray_color(_, 0) == 0`,
         // contributing nothing further.
         color
+    }
+}
+
+#[cfg(test)]
+mod direct_tests {
+    use super::*;
+    use crate::camera::CameraConfig;
+    use crate::color::Color;
+    use crate::geometry::Quad;
+    use crate::group::{IntersectGroup, Light};
+    use crate::material::{DiffuseLight, Lambertian};
+    use crate::vec3::{Point3, Vec3};
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+    use std::sync::Arc;
+
+    fn test_camera() -> Camera {
+        Camera::from(
+            CameraConfig::builder()
+                .image_width(1)
+                .aspect_ratio(1.0)
+                .background(Color::ZERO)
+                .build(),
+        )
+    }
+
+    fn floor() -> Arc<Quad> {
+        let mat = Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0)));
+        Arc::new(Quad::new(
+            Point3::new(-1.0, 0.0, -1.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 2.0),
+            mat,
+        ))
+    }
+
+    fn light_quad() -> Arc<Quad> {
+        let mat = Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0)));
+        Arc::new(Quad::new(
+            Point3::new(-1.0, 2.0, -1.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 2.0),
+            mat,
+        ))
+    }
+
+    #[test]
+    fn occluded_point_is_darker_than_lit_point() {
+        let cam = test_camera();
+        // Camera ray straight down onto the floor centre at (0,0,0).
+        let ray = Ray::new(Point3::new(0.0, 1.0, 0.0), Vec3::new(0.0, -1.0, 0.0));
+
+        let mut lit = IntersectGroup::new();
+        lit.add(floor());
+        lit.add(light_quad());
+        lit.lights.push(Light { geom: light_quad(), emit: Color::new(5.0, 5.0, 5.0) });
+
+        let mut rng = SmallRng::seed_from_u64(1);
+        let lit_color = cam.ray_color_direct(&ray, &lit, &mut rng);
+        assert!(lit_color.x > 0.0, "expected lit floor, got {:?}", lit_color);
+
+        // Same scene plus a blocker quad between the floor and the light.
+        let mut blocked = IntersectGroup::new();
+        blocked.add(floor());
+        blocked.add(light_quad());
+        let blocker_mat = Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0)));
+        blocked.add(Arc::new(Quad::new(
+            Point3::new(-1.0, 1.0, -1.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 2.0),
+            blocker_mat,
+        )));
+        blocked.lights.push(Light { geom: light_quad(), emit: Color::new(5.0, 5.0, 5.0) });
+        let occ_color = cam.ray_color_direct(&ray, &blocked, &mut rng);
+        assert!(
+            occ_color.x < lit_color.x,
+            "occluded should be darker: lit {:?} occ {:?}",
+            lit_color,
+            occ_color
+        );
     }
 }
 
