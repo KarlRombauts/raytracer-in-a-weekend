@@ -205,10 +205,15 @@ pub fn build_world(scene: &Scene) -> IntersectGroup {
         let geom = obj.build();
         world.add(geom.clone());
         if let MaterialSpec::DiffuseLight { emit } = &obj.material {
-            world.lights.push(Light {
-                geom,
-                emit: *emit,
-            });
+            // Only register emitters we can importance-sample (area() > 0).
+            // Others (sphere/mesh/transformed) still glow when hit directly,
+            // they're just not shadow-ray sampled.
+            if geom.area() > 0.0 {
+                world.lights.push(Light {
+                    geom,
+                    emit: *emit,
+                });
+            }
         }
     }
     world
@@ -261,6 +266,41 @@ mod light_tests {
         let world = build_world(&scene);
         assert_eq!(world.lights.len(), 1, "expected exactly one light");
         assert_eq!(world.lights[0].emit, Color::new(15.0, 15.0, 15.0));
+    }
+}
+
+#[cfg(test)]
+mod registration_tests {
+    use super::*;
+    use crate::camera::CameraConfig;
+
+    #[test]
+    fn only_area_lights_are_registered() {
+        let quad_light = ObjectSpec {
+            name: "quad".to_string(),
+            shape: Shape::Quad {
+                q: Point3::new(0.0, 5.0, 0.0),
+                u: Vec3::new(1.0, 0.0, 0.0),
+                v: Vec3::new(0.0, 0.0, 1.0),
+            },
+            material: MaterialSpec::DiffuseLight { emit: Color::new(5.0, 5.0, 5.0) },
+            transform: Transform::identity(),
+        };
+        let sphere_light = ObjectSpec {
+            name: "sphere".to_string(),
+            shape: Shape::Sphere { center: Point3::new(0.0, 0.0, 0.0), radius: 1.0 },
+            material: MaterialSpec::DiffuseLight { emit: Color::new(5.0, 5.0, 5.0) },
+            transform: Transform::identity(),
+        };
+        let scene = Scene {
+            camera: CameraConfig::builder().build(),
+            objects: vec![quad_light, sphere_light],
+        };
+        let world = build_world(&scene);
+        // Sphere keeps area()=0 (deferred) => not registered; quad is.
+        assert_eq!(world.lights.len(), 1, "only the quad (area>0) should register");
+        // Both objects still live in the world geometry (the sphere still glows).
+        assert_eq!(world.objects.len(), 2, "both objects remain in the world");
     }
 }
 
