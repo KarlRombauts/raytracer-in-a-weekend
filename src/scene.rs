@@ -46,7 +46,10 @@ pub enum Shape {
     Sphere { center: Point3, radius: f32 },
     Quad { q: Point3, u: Vec3, v: Vec3 },
     Box { a: Point3, b: Point3 },
-    Mesh(Arc<dyn Intersect>),
+    Mesh {
+        object: Arc<dyn Intersect>,
+        render: Arc<crate::geometry::RenderMesh>,
+    },
 }
 
 impl Shape {
@@ -57,7 +60,23 @@ impl Shape {
             }
             Shape::Quad { q, u, v } => Arc::new(Quad::new(*q, *u, *v, material)),
             Shape::Box { a, b } => Arc::new(make_box(*a, *b, material)),
-            Shape::Mesh(object) => object.clone(),
+            Shape::Mesh { object, .. } => object.clone(),
+        }
+    }
+
+    /// Triangle geometry for the rasterized preview, in the shape's own
+    /// definition space (the object's transform is applied separately as a
+    /// model matrix).
+    pub fn render_mesh(&self) -> crate::geometry::RenderMesh {
+        use crate::geometry::RenderMesh;
+        match self {
+            Shape::Sphere { center, radius } => RenderMesh::sphere(*center, *radius, 16, 24),
+            Shape::Quad { q, u, v } => RenderMesh::quad(*q, *u, *v),
+            Shape::Box { a, b } => RenderMesh::unit_box(*a, *b),
+            Shape::Mesh { render, .. } => RenderMesh {
+                positions: render.positions.clone(),
+                normals: render.normals.clone(),
+            },
         }
     }
 }
@@ -111,7 +130,9 @@ impl ObjectSpec {
         let material = MaterialSpec::Lambertian {
             albedo: Color::new(0.73, 0.73, 0.73),
         };
-        let triangles = ObjData::load(path_str).into_triangles(material.build());
+        let obj = ObjData::load(path_str);
+        let render = Arc::new(obj.render_mesh());
+        let triangles = obj.into_triangles(material.build());
         let bvh = BVH::build(triangles);
 
         // Auto-fit: scale the mesh to the target size and recentre it. The
@@ -131,7 +152,7 @@ impl ObjectSpec {
 
         Some(ObjectSpec {
             name,
-            shape: Shape::Mesh(Arc::new(bvh)),
+            shape: Shape::Mesh { object: Arc::new(bvh), render },
             material,
             transform,
         })
@@ -204,7 +225,7 @@ pub fn placeable_bounds(objects: &[ObjectSpec]) -> Option<(Vec3, Vec3)> {
                 }
                 (lo, hi)
             }
-            Shape::Mesh(_) => continue,
+            Shape::Mesh { .. } => continue,
         };
         min = Vec3::min(&min, &lo);
         max = Vec3::max(&max, &hi);
@@ -212,4 +233,24 @@ pub fn placeable_bounds(objects: &[ObjectSpec]) -> Option<(Vec3, Vec3)> {
     }
 
     any.then_some((min, max))
+}
+
+#[cfg(test)]
+mod render_mesh_tests {
+    use super::*;
+    use crate::vec3::{Point3, Vec3};
+
+    #[test]
+    fn primitive_shapes_produce_nonempty_meshes() {
+        let sphere = Shape::Sphere { center: Point3::new(0.0, 0.0, 0.0), radius: 1.0 };
+        let quad = Shape::Quad {
+            q: Point3::new(0.0, 0.0, 0.0),
+            u: Vec3::new(1.0, 0.0, 0.0),
+            v: Vec3::new(0.0, 1.0, 0.0),
+        };
+        let bx = Shape::Box { a: Point3::new(0.0, 0.0, 0.0), b: Point3::new(1.0, 1.0, 1.0) };
+        assert!(!sphere.render_mesh().positions.is_empty());
+        assert_eq!(quad.render_mesh().positions.len(), 6);
+        assert_eq!(bx.render_mesh().positions.len(), 36);
+    }
 }

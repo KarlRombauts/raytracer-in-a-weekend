@@ -139,7 +139,7 @@ fn shape_icon(s: &Shape) -> &'static str {
         Shape::Sphere { .. } => icons::SPHERE,
         Shape::Quad { .. } => icons::RECTANGLE,
         Shape::Box { .. } => icons::CUBE,
-        Shape::Mesh(_) => icons::POLYGON,
+        Shape::Mesh { .. } => icons::POLYGON,
     }
 }
 
@@ -223,7 +223,7 @@ pub fn object_settings(ui: &mut egui::Ui, obj: &mut ObjectSpec) -> bool {
         ui.text_edit_singleline(&mut obj.name);
     });
 
-    let is_mesh = matches!(obj.shape, Shape::Mesh(_));
+    let is_mesh = matches!(obj.shape, Shape::Mesh { .. });
 
     section_header(ui, icons::PALETTE, "Material");
     ui.indent("material_body", |ui| {
@@ -458,7 +458,7 @@ fn shape_controls(ui: &mut egui::Ui, s: &mut Shape) -> bool {
             changed |= axis_vec(ui, "Min", a, 1.0, "", None, None);
             changed |= axis_vec(ui, "Max", b, 1.0, "", None, None);
         }
-        Shape::Mesh(_) => {}
+        Shape::Mesh { .. } => {}
     }
     changed
 }

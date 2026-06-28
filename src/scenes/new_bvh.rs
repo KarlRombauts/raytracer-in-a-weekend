@@ -12,14 +12,16 @@ use crate::{
 
 pub fn new_bvh() -> Scene {
     let gray = Arc::new(Metal::new(Color::new(1.0, 0.4, 0.2), 0.2));
-    let triangles = ObjData::load("./objs/dragon.obj").into_triangles(gray);
+    let obj = ObjData::load("./objs/dragon.obj");
+    let render = Arc::new(obj.render_mesh());
+    let triangles = obj.into_triangles(gray);
     let bvh = BVH::build(triangles);
 
     println!("{}", bvh.get_stats());
 
     let dragon = ObjectSpec {
         name: "Dragon (mesh)".to_string(),
-        shape: Shape::Mesh(Arc::new(bvh)),
+        shape: Shape::Mesh { object: Arc::new(bvh), render },
         // Mesh keeps its baked material; this is ignored but required by the spec.
         material: MaterialSpec::Metal {
             albedo: Color::new(1.0, 0.4, 0.2),
