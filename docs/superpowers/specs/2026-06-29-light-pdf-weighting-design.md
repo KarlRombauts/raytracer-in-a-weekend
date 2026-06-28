@@ -111,6 +111,29 @@ correct Lambertian BRDF. The `emitted + direct` structure and the
 miss→background / scatter-None→emitted handling are unchanged. Still direct-only
 (no indirect bounce), so no double counting.
 
+## Light registration (`build_world`)
+
+`build_world` (`src/scene.rs`) currently registers **every** `DiffuseLight`
+object in `world.lights`. Change it to register a light **only when its built
+geometry reports `area() > 0`** — i.e. only the shapes we can correctly
+importance-sample (this step: `Quad`/`Triangle`). The object is still added to
+the world geometry unconditionally, so a non-registered emitter (mesh, sphere)
+**still glows when a ray hits it directly** (its `emitted()` is returned); it
+simply isn't NEE-sampled. This keeps `world.lights` honest ("things we actually
+sample"), avoids a wasted `pdf_value` intersect per unsamplable emitter per
+sample, and degrades gracefully: once the indirect bounce returns, those emitters
+illuminate the scene via GI (just noisier, un-importance-sampled).
+
+```rust
+let geom = obj.build();
+world.add(geom.clone());
+if let MaterialSpec::DiffuseLight { emit } = &obj.material {
+    if geom.area() > 0.0 {
+        world.lights.push(Light { geom, emit: *emit });
+    }
+}
+```
+
 ## Scope
 
 **Correct this step:** planar single-primitive lights — `Quad` and `Triangle`.
@@ -118,14 +141,16 @@ This covers the Cornell box, whose light is a single untransformed quad. After
 this change the Cornell box's direct lighting is physically correct (no longer
 over/under-exposed).
 
-**Deferred** (each left at the `area() = 0` default → `pdf_value == 0` →
-contributes nothing; documented, not silently wrong):
+**Deferred** (each keeps the `area() = 0` default, so it is **not registered** as
+an NEE light by `build_world` — it still emits/glows, it just isn't shadow-ray
+sampled; not silently wrong):
 - **Sphere lights:** uniform surface sampling is inconsistent with the
   nearest-hit `pdf_value` (a back-side sample's PDF would not match its hit), so
   correct spheres need cone sampling toward the visible cap. Separate step.
 - **Composite lights** (box-of-quads via `IntersectGroup`, triangle-mesh via
-  `BVH`): need area-weighted child selection so the total-area PDF is consistent
-  with the generic `pdf_value`. Separate step.
+  `BVH`): need area-weighted child selection (e.g. a per-triangle area CDF /
+  alias table) so the total-area PDF is consistent with the generic `pdf_value`.
+  Separate step.
 - **Transformed lights** (`Translate`/`Scale`/`Rotate` wrapping a light): need an
   `area()` that accounts for the transform (`Scale` changes area). Separate step.
 
@@ -139,6 +164,9 @@ contributes nothing; documented, not silently wrong):
 - Integrator inverse-square behavior: for a fixed simple configuration, averaging
   many samples, moving the light from distance `d` to `2d` reduces the direct
   term by ≈ 4× (within a tolerance), confirming the geometry term is applied.
+- `build_world` registration guard: a scene with a quad emitter and a sphere
+  emitter registers only the quad in `world.lights` (`len == 1`), while both
+  objects remain in the world geometry (the sphere still glows when hit).
 
 ## Out of scope (YAGNI)
 
