@@ -71,7 +71,7 @@ mod tests {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test --lib texture::image_texture`
+Run: `cargo test texture::image_texture`
 Expected: FAIL to compile — `from_bytes` not found.
 
 - [ ] **Step 3: Add the byte-based loader (DRY with the path loader)**
@@ -141,7 +141,7 @@ and add the method inside `impl ImageTexture` (keep `new` as-is):
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cargo test --lib texture::image_texture`
+Run: `cargo test texture::image_texture`
 Expected: PASS (both tests).
 
 - [ ] **Step 6: Commit**
@@ -222,7 +222,7 @@ mod texture_spec_tests {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test --lib texture_spec_tests`
+Run: `cargo test texture_spec_tests`
 Expected: FAIL to compile — `TextureSpec` / `CellTexture` / `Asset` not found.
 
 - [ ] **Step 3: Add the types and their builders**
@@ -339,7 +339,7 @@ impl TextureSpec {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test --lib texture_spec_tests`
+Run: `cargo test texture_spec_tests`
 Expected: PASS (all four tests).
 
 - [ ] **Step 5: Commit**
