@@ -131,6 +131,32 @@ impl Intersect for Triangle {
         let p3 = self.q + self.v;
         (1.0 - su) * p1 + (su * (1.0 - r2)) * p2 + (su * r2) * p3
     }
+
+    fn area(&self) -> f32 {
+        0.5 * self.u.cross(&self.v).length()
+    }
+}
+
+#[cfg(test)]
+mod area_tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::material::Lambertian;
+    use crate::vec3::{Point3, Vec3};
+    use std::sync::Arc;
+
+    #[test]
+    fn area_is_half_cross_product() {
+        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
+        let tri = Triangle::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 3.0, 0.0),
+            mat,
+        );
+        // |u x v| = |(2,0,0) x (0,3,0)| = 6; triangle area = 3.
+        assert!((tri.area() - 3.0).abs() < 1e-5);
+    }
 }
 
 #[cfg(test)]

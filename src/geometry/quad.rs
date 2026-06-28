@@ -103,6 +103,50 @@ impl Intersect for Quad {
         let b: f32 = rng.random();
         self.q + a * self.u + b * self.v
     }
+
+    fn area(&self) -> f32 {
+        self.u.cross(&self.v).length()
+    }
+}
+
+#[cfg(test)]
+mod area_pdf_tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::material::Lambertian;
+    use crate::vec3::{Point3, Vec3};
+    use std::sync::Arc;
+
+    // Overhead light on the y = 2 plane, spanning x,z in [-1,1]; area = 4.
+    fn overhead_quad() -> Quad {
+        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
+        Quad::new(
+            Point3::new(-1.0, 2.0, -1.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 2.0),
+            mat,
+        )
+    }
+
+    #[test]
+    fn area_is_cross_product_magnitude() {
+        assert!((overhead_quad().area() - 4.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn pdf_value_matches_analytic() {
+        // Origin directly below the quad centre; dir points at the centre (0,2,0).
+        // dist^2 = 4, cos = 1, area = 4  =>  pdf = dist^2 / (cos * area) = 1.0
+        let p = overhead_quad().pdf_value(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0));
+        assert!((p - 1.0).abs() < 1e-5, "pdf={}", p);
+    }
+
+    #[test]
+    fn pdf_value_zero_on_miss() {
+        // Pointing away from the overhead quad never hits it.
+        let p = overhead_quad().pdf_value(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, -2.0, 0.0));
+        assert_eq!(p, 0.0);
+    }
 }
 
 #[cfg(test)]
