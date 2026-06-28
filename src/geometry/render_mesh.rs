@@ -1,7 +1,8 @@
-//! Flat-shaded triangle geometry for the rasterized preview, derived from the
-//! same shapes the path tracer uses. Three vertices per triangle, each carrying
-//! the triangle's face normal. Object-local / definition space — the per-object
-//! model matrix applies the transform.
+//! Triangle geometry for the rasterized preview, derived from the same shapes
+//! the path tracer uses. Three vertices per triangle. Boxes and quads use flat
+//! (per-face) normals for crisp edges; spheres and imported meshes use smooth
+//! (radial / vertex-averaged) normals so curved forms shade smoothly. Object-
+//! local / definition space — the per-object model matrix applies the transform.
 
 use crate::vec3::{Point3, Vec3};
 
@@ -25,11 +26,49 @@ impl RenderMesh {
         }
     }
 
+    /// Push a triangle with explicit per-vertex normals (for smooth shading).
+    fn push_tri_smooth(&mut self, a: Point3, b: Point3, c: Point3, na: Vec3, nb: Vec3, nc: Vec3) {
+        for (p, n) in [(a, na), (b, nb), (c, nc)] {
+            self.positions.push([p.x, p.y, p.z]);
+            self.normals.push([n.x, n.y, n.z]);
+        }
+    }
+
     pub fn from_triangles(verts: &[Vec3], faces: &[[usize; 3]]) -> RenderMesh {
         let mut m = RenderMesh { positions: Vec::new(), normals: Vec::new() };
         for &[i, j, k] in faces {
             // Degenerate fallback unreachable for real mesh data; Vec3::ZERO is fine.
             m.push_tri(verts[i], verts[j], verts[k], Vec3::ZERO);
+        }
+        m
+    }
+
+    /// Like `from_triangles`, but with smooth (area-weighted, vertex-averaged)
+    /// normals so curved organic meshes shade smoothly instead of faceted.
+    pub fn from_triangles_smooth(verts: &[Vec3], faces: &[[usize; 3]]) -> RenderMesh {
+        // Accumulate area-weighted face normals (un-normalized cross products)
+        // into each shared vertex, then normalize.
+        let mut acc = vec![Vec3::ZERO; verts.len()];
+        for &[i, j, k] in faces {
+            let fnv = (verts[j] - verts[i]).cross(&(verts[k] - verts[i]));
+            acc[i] = acc[i] + fnv;
+            acc[j] = acc[j] + fnv;
+            acc[k] = acc[k] + fnv;
+        }
+        let vn: Vec<Vec3> = acc
+            .iter()
+            .map(|n| {
+                if n.length_squared() < 1e-12 {
+                    Vec3::new(0.0, 1.0, 0.0)
+                } else {
+                    n.unit()
+                }
+            })
+            .collect();
+
+        let mut m = RenderMesh { positions: Vec::new(), normals: Vec::new() };
+        for &[i, j, k] in faces {
+            m.push_tri_smooth(verts[i], verts[j], verts[k], vn[i], vn[j], vn[k]);
         }
         m
     }
@@ -83,14 +122,15 @@ impl RenderMesh {
                         theta.sin() * phi.sin(),
                     )
         };
+        // Smooth normals: each vertex's normal is its outward radial direction.
+        let nrm = |pt: Point3| (pt - center).unit();
         let mut m = RenderMesh { positions: Vec::new(), normals: Vec::new() };
         for ring in 0..rings {
             for seg in 0..segments {
                 let (a, b) = (p(ring, seg), p(ring, seg + 1));
                 let (cc, d) = (p(ring + 1, seg), p(ring + 1, seg + 1));
-                // Pass center so degenerate pole triangles get outward-facing normals.
-                m.push_tri(a, b, d, center);
-                m.push_tri(a, d, cc, center);
+                m.push_tri_smooth(a, b, d, nrm(a), nrm(b), nrm(d));
+                m.push_tri_smooth(a, d, cc, nrm(a), nrm(d), nrm(cc));
             }
         }
         m

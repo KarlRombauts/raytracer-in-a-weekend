@@ -72,7 +72,7 @@ impl ObjData {
     }
 
     pub fn render_mesh(&self) -> crate::geometry::RenderMesh {
-        crate::geometry::RenderMesh::from_triangles(&self.verts, &self.faces)
+        crate::geometry::RenderMesh::from_triangles_smooth(&self.verts, &self.faces)
     }
 
     pub fn into_mesh(self, material: Arc<dyn Material>) -> IntersectGroup {
