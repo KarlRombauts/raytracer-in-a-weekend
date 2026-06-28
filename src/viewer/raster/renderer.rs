@@ -12,6 +12,7 @@ struct ObjectBuffers {
     vao: glow::VertexArray,
     vbo: glow::Buffer,
     vertex_count: i32,
+    center: glam::Vec3,
 }
 
 pub struct SceneRenderer {
@@ -41,6 +42,20 @@ impl SceneRenderer {
             }
             for obj in &scene.objects {
                 let mesh = obj.shape.render_mesh();
+                // Compute the AABB centre once here so paint() never needs to
+                // re-tessellate the mesh just to find the pivot point.
+                let center = if mesh.positions.is_empty() {
+                    glam::Vec3::ZERO
+                } else {
+                    let mut min = glam::Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
+                    let mut max = glam::Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+                    for p in &mesh.positions {
+                        let v = glam::Vec3::new(p[0], p[1], p[2]);
+                        min = min.min(v);
+                        max = max.max(v);
+                    }
+                    (min + max) * 0.5
+                };
                 // Interleave position+normal as 6 f32 per vertex.
                 let mut data: Vec<f32> = Vec::with_capacity(mesh.positions.len() * 6);
                 for (p, n) in mesh.positions.iter().zip(&mesh.normals) {
@@ -61,7 +76,7 @@ impl SceneRenderer {
                 gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, stride, 0);
                 gl.enable_vertex_attrib_array(1);
                 gl.vertex_attrib_pointer_f32(1, 3, glow::FLOAT, false, stride, 3 * 4);
-                self.objects.push(ObjectBuffers { vao, vbo, vertex_count: mesh.positions.len() as i32 });
+                self.objects.push(ObjectBuffers { vao, vbo, vertex_count: mesh.positions.len() as i32, center });
             }
             self.built_count = scene.objects.len();
         }
@@ -84,8 +99,7 @@ impl SceneRenderer {
                 AMBIENT,
             );
             for (obj, buf) in scene.objects.iter().zip(&self.objects) {
-                let center = mesh_center(obj);
-                let model = camera_gl::model_matrix(&obj.transform, center);
+                let model = camera_gl::model_matrix(&obj.transform, buf.center);
                 uniform_mat4(gl, self.program, "u_model", &model);
                 let (color, emissive) = preview_color(&obj.material);
                 gl.uniform_3_f32(
@@ -103,24 +117,6 @@ impl SceneRenderer {
         }
         let _ = viewport_px; // glow uses the callback's scissor/viewport
     }
-}
-
-/// Compute the axis-aligned centroid of the render mesh for use as the pivot
-/// point in `model_matrix`. (Shape::build is private; we derive from the
-/// public render_mesh instead.)
-fn mesh_center(obj: &crate::scene::ObjectSpec) -> glam::Vec3 {
-    let mesh = obj.shape.render_mesh();
-    if mesh.positions.is_empty() {
-        return glam::Vec3::ZERO;
-    }
-    let mut min = glam::Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
-    let mut max = glam::Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
-    for p in &mesh.positions {
-        let v = glam::Vec3::new(p[0], p[1], p[2]);
-        min = min.min(v);
-        max = max.max(v);
-    }
-    (min + max) * 0.5
 }
 
 /// Preview color and whether the material is emissive (drawn unlit at full color).
