@@ -237,15 +237,22 @@ impl eframe::App for ViewerApp {
                 }
                 Mode::Edit => {
                     let mut changed = false;
+                    // `dragged()` stays true while the button is held even when
+                    // the mouse is still, so only treat it as a camera change
+                    // when the pointer actually moved. A stationary hold then
+                    // lets the render keep accumulating passes from the current
+                    // view, while moving restarts with a fresh sample per frame.
                     if response.dragged() {
-                        let shift = ui.input(|i| i.modifiers.shift);
-                        let mut scene = self.scene.lock().unwrap();
-                        if shift {
-                            orbit::pan(&mut scene.camera, response.drag_delta());
-                        } else {
-                            orbit::orbit(&mut scene.camera, response.drag_delta());
+                        let delta = response.drag_delta();
+                        if delta != egui::Vec2::ZERO {
+                            let mut scene = self.scene.lock().unwrap();
+                            if ui.input(|i| i.modifiers.shift) {
+                                orbit::pan(&mut scene.camera, delta);
+                            } else {
+                                orbit::orbit(&mut scene.camera, delta);
+                            }
+                            changed = true;
                         }
-                        changed = true;
                     }
                     let scroll = ui.input(|i| i.smooth_scroll_delta.y);
                     if response.hovered() && scroll != 0.0 {
