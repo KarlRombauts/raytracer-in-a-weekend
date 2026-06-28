@@ -228,6 +228,9 @@ impl Camera {
             }
             let shadow = Ray::new_t(hit.p, dir, ray.time);
             // Stop just short of the light so its own surface is not an occluder.
+            // For a light almost touching the surface (dist < 0.002) this interval
+            // inverts (max < min); that is safe — every `contains` is then false,
+            // so the light simply counts as unoccluded. Do not "fix" it into a panic.
             let shadow_interval = Interval::new(0.001, dist - 0.001);
             if world.intersect(&shadow, &shadow_interval).is_none() {
                 direct += albedo * light.emit * cos;
