@@ -43,6 +43,30 @@ impl IntersectGroup {
     pub fn clear(&mut self) {
         self.objects.clear();
     }
+
+    /// Average solid-angle PDF of sampling `dir` (from `origin`) toward any
+    /// registered light. 0 when there are no lights.
+    pub fn light_pdf(&self, origin: Point3, dir: Vec3) -> f32 {
+        if self.lights.is_empty() {
+            return 0.0;
+        }
+        let sum: f32 = self
+            .lights
+            .iter()
+            .map(|l| l.geom.pdf_value(origin, dir))
+            .sum();
+        sum / self.lights.len() as f32
+    }
+
+    /// A random (unnormalized) direction from `origin` toward a uniformly chosen
+    /// registered light. `None` when there are no lights.
+    pub fn sample_light_dir(&self, origin: Point3, rng: &mut SmallRng) -> Option<Vec3> {
+        if self.lights.is_empty() {
+            return None;
+        }
+        let i = rng.random_range(0..self.lights.len());
+        Some(self.lights[i].geom.random_dir(origin, rng))
+    }
 }
 
 impl Intersect for IntersectGroup {
@@ -74,6 +98,63 @@ impl Intersect for IntersectGroup {
         }
         let i = rng.random_range(0..self.objects.len());
         self.objects[i].sample_point(rng)
+    }
+}
+
+#[cfg(test)]
+mod light_mixture_tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::geometry::Quad;
+    use crate::material::Lambertian;
+    use crate::vec3::{Point3, Vec3};
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+    use std::sync::Arc;
+
+    // Overhead quad light on the y=2 plane, area 4 (same as the analytic
+    // pdf_value setup: pdf_value((0,0,0),(0,2,0)) == 1.0).
+    fn overhead_light() -> Arc<dyn Intersect> {
+        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
+        Arc::new(Quad::new(
+            Point3::new(-1.0, 2.0, -1.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 2.0),
+            mat,
+        ))
+    }
+
+    #[test]
+    fn light_pdf_is_zero_without_lights() {
+        let w = IntersectGroup::new();
+        assert_eq!(w.light_pdf(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0)), 0.0);
+    }
+
+    #[test]
+    fn light_pdf_averages_single_light() {
+        let mut w = IntersectGroup::new();
+        w.lights.push(Light { geom: overhead_light(), emit: Color::new(1.0, 1.0, 1.0) });
+        // One light => average == that light's pdf_value; analytic value is 1.0.
+        let p = w.light_pdf(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0));
+        assert!((p - 1.0).abs() < 1e-5, "p={p}");
+    }
+
+    #[test]
+    fn sample_light_dir_is_none_without_lights() {
+        let w = IntersectGroup::new();
+        let mut rng = SmallRng::seed_from_u64(1);
+        assert!(w.sample_light_dir(Point3::new(0.0, 0.0, 0.0), &mut rng).is_none());
+    }
+
+    #[test]
+    fn sample_light_dir_points_toward_the_light() {
+        let mut w = IntersectGroup::new();
+        w.lights.push(Light { geom: overhead_light(), emit: Color::new(1.0, 1.0, 1.0) });
+        let mut rng = SmallRng::seed_from_u64(2);
+        for _ in 0..100 {
+            let d = w.sample_light_dir(Point3::new(0.0, 0.0, 0.0), &mut rng).unwrap();
+            assert!(d.y > 0.0, "expected upward dir toward overhead light, got {:?}", d);
+        }
     }
 }
 
