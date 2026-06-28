@@ -8,7 +8,7 @@ use eframe::egui;
 use super::icons;
 use crate::camera::CameraConfig;
 use crate::color::Color;
-use crate::scene::{self, MaterialSpec, ObjectSpec, Shape, TextureSpec, Transform};
+use crate::scene::{self, Asset, CellTexture, MaterialSpec, ObjectSpec, Shape, TextureSpec, Transform};
 use crate::vec3::{Point3, Vec3};
 
 /// `label | value` row (u32), Blender-style, optionally clamped to `range`.
@@ -328,19 +328,9 @@ fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
     });
 
     match m {
-        MaterialSpec::Lambertian { albedo } => {
-            let mut c = albedo.preview_color();
-            if color_prop(ui, "Color", &mut c) {
-                *albedo = TextureSpec::solid(c);
-                changed = true;
-            }
-        }
+        MaterialSpec::Lambertian { albedo } => changed |= texture_controls(ui, albedo),
         MaterialSpec::Glossy { albedo, roughness } => {
-            let mut c = albedo.preview_color();
-            if color_prop(ui, "Color", &mut c) {
-                *albedo = TextureSpec::solid(c);
-                changed = true;
-            }
+            changed |= texture_controls(ui, albedo);
             changed |= axis_row(ui, "Roughness", roughness, 0.01, "", Some(3), Some(0.0..=1.0));
         }
         MaterialSpec::Metal { albedo, fuzz } => {
@@ -374,6 +364,127 @@ fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
             }
         }
     }
+    changed
+}
+
+/// Full texture editor: a type dropdown + per-type parameters. Used for the
+/// albedo of Diffuse/Glossy materials.
+fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
+    let mut changed = false;
+    let current = match t {
+        TextureSpec::Solid { .. } => "Color",
+        TextureSpec::Checker { .. } => "Checker",
+        TextureSpec::Noise { .. } => "Noise",
+        TextureSpec::Image { .. } => "Image",
+    };
+
+    changed |= prop_row(ui, "Texture", |ui| {
+        let mut c = false;
+        egui::ComboBox::from_id_salt("texture_type")
+            .selected_text(current)
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                let prev = t.preview_color();
+                if ui.selectable_label(matches!(t, TextureSpec::Solid { .. }), "Color").clicked() {
+                    *t = TextureSpec::Solid { color: prev };
+                    c = true;
+                }
+                if ui.selectable_label(matches!(t, TextureSpec::Checker { .. }), "Checker").clicked() {
+                    *t = TextureSpec::Checker {
+                        scale: 1.0,
+                        even: CellTexture::Solid { color: prev },
+                        odd: CellTexture::Solid { color: Color::new(1.0, 1.0, 1.0) },
+                    };
+                    c = true;
+                }
+                if ui.selectable_label(matches!(t, TextureSpec::Noise { .. }), "Noise").clicked() {
+                    *t = TextureSpec::Noise { scale: 4.0 };
+                    c = true;
+                }
+                if ui.selectable_label(matches!(t, TextureSpec::Image { .. }), "Image").clicked() {
+                    *t = TextureSpec::Image { asset: Asset::empty() };
+                    c = true;
+                }
+            });
+        c
+    });
+
+    match t {
+        TextureSpec::Solid { color } => changed |= color_prop(ui, "Color", color),
+        TextureSpec::Checker { scale, even, odd } => {
+            changed |= axis_row(ui, "Scale", scale, 0.01, "", Some(3), Some(0.01..=100.0));
+            changed |= cell_texture_controls(ui, "checker_even", even);
+            changed |= cell_texture_controls(ui, "checker_odd", odd);
+        }
+        TextureSpec::Noise { scale } => {
+            changed |= axis_row(ui, "Scale", scale, 0.01, "", Some(3), Some(0.01..=100.0));
+        }
+        TextureSpec::Image { asset } => changed |= image_picker_row(ui, asset),
+    }
+    changed
+}
+
+/// Editor for one checker cell (Solid / Noise / Image — no nested checker).
+fn cell_texture_controls(ui: &mut egui::Ui, id: &str, t: &mut CellTexture) -> bool {
+    let mut changed = false;
+    let current = match t {
+        CellTexture::Solid { .. } => "Color",
+        CellTexture::Noise { .. } => "Noise",
+        CellTexture::Image { .. } => "Image",
+    };
+
+    changed |= prop_row(ui, "Cell", |ui| {
+        let mut c = false;
+        egui::ComboBox::from_id_salt(id)
+            .selected_text(current)
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(matches!(t, CellTexture::Solid { .. }), "Color").clicked() {
+                    *t = CellTexture::Solid { color: Color::new(0.0, 0.0, 0.0) };
+                    c = true;
+                }
+                if ui.selectable_label(matches!(t, CellTexture::Noise { .. }), "Noise").clicked() {
+                    *t = CellTexture::Noise { scale: 4.0 };
+                    c = true;
+                }
+                if ui.selectable_label(matches!(t, CellTexture::Image { .. }), "Image").clicked() {
+                    *t = CellTexture::Image { asset: Asset::empty() };
+                    c = true;
+                }
+            });
+        c
+    });
+
+    match t {
+        CellTexture::Solid { color } => changed |= color_prop(ui, "Color", color),
+        CellTexture::Noise { scale } => {
+            changed |= axis_row(ui, "Scale", scale, 0.01, "", Some(3), Some(0.01..=100.0));
+        }
+        CellTexture::Image { asset } => changed |= image_picker_row(ui, asset),
+    }
+    changed
+}
+
+/// A row showing the current image label and a button that opens a native file
+/// dialog, reading the chosen file's bytes straight into the embedded `Asset`.
+fn image_picker_row(ui: &mut egui::Ui, asset: &mut Asset) -> bool {
+    let mut changed = false;
+    prop_row(ui, "Image", |ui| {
+        let label = asset.label.clone().unwrap_or_else(|| "(none)".to_string());
+        if ui.button("Choose\u{2026}").clicked() {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Image", &["png", "jpg", "jpeg"])
+                .pick_file()
+            {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    asset.bytes = bytes.into();
+                    asset.label = path.file_name().map(|s| s.to_string_lossy().into_owned());
+                    changed = true;
+                }
+            }
+        }
+        ui.label(label);
+    });
     changed
 }
 
