@@ -8,9 +8,13 @@ use crate::camera::Camera;
 use crate::render::ProgressiveRenderer;
 use crate::scene::{build_world, Scene};
 
-/// Frame handed from the render thread to the UI thread.
+/// Frame handed from the render thread to the UI thread. `width`/`height`
+/// always match the dimensions of `rgba`, so the UI can resize its texture
+/// when the render resolution changes.
 pub struct SharedFrame {
     pub rgba: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
     pub passes: u32,
     pub total: u32,
     pub done: bool,
@@ -39,6 +43,8 @@ impl RenderTask {
     ) -> Self {
         let shared = Arc::new(Mutex::new(SharedFrame {
             rgba: vec![0u8; (width * height * 4) as usize],
+            width,
+            height,
             passes: 0,
             total: initial_total,
             done: false,
@@ -67,7 +73,17 @@ impl RenderTask {
                 let (w, h) = (camera.image_width(), camera.image_height());
 
                 {
+                    // Restart accumulation, but keep showing the previous
+                    // frame until the first new pass lands. Only a resolution
+                    // change reallocates (to black); retaining the old pixels
+                    // avoids a black flash on every camera drag, which restarts
+                    // the render on each mouse move.
                     let mut s = shared_bg.lock().unwrap();
+                    if s.width != w || s.height != h {
+                        s.width = w;
+                        s.height = h;
+                        s.rgba = vec![0u8; (w * h * 4) as usize];
+                    }
                     s.passes = 0;
                     s.total = target;
                     s.done = false;
@@ -78,11 +94,6 @@ impl RenderTask {
                 let start = Instant::now();
                 let mut cancelled = false;
                 for _ in 0..target {
-                    // Bail out between passes if another edit landed.
-                    if generation_bg.load(Ordering::Relaxed) != last_gen {
-                        cancelled = true;
-                        break;
-                    }
                     renderer.add_pass(&camera, &world);
                     let rgba = renderer.to_rgba();
                     {
@@ -92,6 +103,13 @@ impl RenderTask {
                         s.elapsed = start.elapsed().as_secs_f64();
                     }
                     ctx.request_repaint();
+                    // Bail only AFTER publishing this pass, so even a fast drag
+                    // (which restarts the render every mouse move) still lands
+                    // at least one noisy sample on screen instead of nothing.
+                    if generation_bg.load(Ordering::Relaxed) != last_gen {
+                        cancelled = true;
+                        break;
+                    }
                 }
 
                 if !cancelled {

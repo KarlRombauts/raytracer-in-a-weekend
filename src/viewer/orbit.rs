@@ -24,7 +24,7 @@ pub fn orbit(cam: &mut CameraConfig, delta: egui::Vec2) {
     let mut azimuth = offset.z.atan2(offset.x);
     let mut elevation = (offset.y / radius).clamp(-1.0, 1.0).asin();
 
-    azimuth -= delta.x * ORBIT_SENS;
+    azimuth += delta.x * ORBIT_SENS;
     elevation += delta.y * ORBIT_SENS;
     let max_el = MAX_ELEVATION.to_radians();
     elevation = elevation.clamp(-max_el, max_el);
