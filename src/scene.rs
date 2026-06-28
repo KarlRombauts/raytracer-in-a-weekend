@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::camera::CameraConfig;
 use crate::color::Color;
 use crate::geometry::{make_box, ObjData, Quad, Rotate, Scale, Sphere, Translate};
-use crate::group::IntersectGroup;
+use crate::group::{IntersectGroup, Light};
 use crate::material::{Dielectric, DiffuseLight, Glossy, Lambertian, Material, Metal};
 use crate::ray::{Intersect, BVH};
 use crate::vec3::{Point3, Vec3};
@@ -158,7 +158,14 @@ impl ObjectSpec {
         })
     }
 
-    fn build(&self) -> Arc<dyn Intersect> {
+    /// World-space centre of the object's base geometry, ignoring its transform.
+    /// This is the pivot `build` rotates and scales about, and the point the GL
+    /// preview centres on — so it's where the transform gizmo should sit.
+    pub(crate) fn pivot(&self) -> Vec3 {
+        self.shape.build(self.material.build()).bounding_box().center()
+    }
+
+    pub(crate) fn build(&self) -> Arc<dyn Intersect> {
         let t = &self.transform;
         let mut object = self.shape.build(self.material.build());
 
@@ -190,11 +197,19 @@ pub struct Scene {
 }
 
 /// Assemble the renderable world from the scene description. Cheap enough to
-/// call on every edit (Mesh handles are shared, not rebuilt).
+/// call on every edit (Mesh handles are shared, not rebuilt). Emissive objects
+/// are also registered in `world.lights` for direct light sampling.
 pub fn build_world(scene: &Scene) -> IntersectGroup {
     let mut world = IntersectGroup::new();
     for obj in &scene.objects {
-        world.add(obj.build());
+        let geom = obj.build();
+        world.add(geom.clone());
+        if let MaterialSpec::DiffuseLight { emit } = &obj.material {
+            world.lights.push(Light {
+                geom,
+                emit: *emit,
+            });
+        }
     }
     world
 }
@@ -233,6 +248,20 @@ pub fn placeable_bounds(objects: &[ObjectSpec]) -> Option<(Vec3, Vec3)> {
     }
 
     any.then_some((min, max))
+}
+
+#[cfg(test)]
+mod light_tests {
+    use super::*;
+    use crate::scenes::cornell_box;
+
+    #[test]
+    fn cornell_box_collects_one_light() {
+        let scene = cornell_box();
+        let world = build_world(&scene);
+        assert_eq!(world.lights.len(), 1, "expected exactly one light");
+        assert_eq!(world.lights[0].emit, Color::new(15.0, 15.0, 15.0));
+    }
 }
 
 #[cfg(test)]

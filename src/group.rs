@@ -1,3 +1,4 @@
+use crate::color::Color;
 use crate::interval::Interval;
 use crate::ray::*;
 use crate::vec3::{Point3, Vec3};
@@ -5,8 +6,16 @@ use rand::rngs::SmallRng;
 use rand::Rng;
 use std::sync::Arc;
 
+/// An emissive object the integrator can sample directly (next event
+/// estimation). Pairs a sampleable geometry handle with a constant emission.
+pub struct Light {
+    pub geom: Arc<dyn Intersect>,
+    pub emit: Color,
+}
+
 pub struct IntersectGroup {
     pub objects: Vec<Arc<dyn Intersect>>,
+    pub lights: Vec<Light>,
     bbox: AABB,
 }
 
@@ -14,6 +23,7 @@ impl IntersectGroup {
     pub fn new() -> Self {
         IntersectGroup {
             objects: Vec::new(),
+            lights: Vec::new(),
             bbox: AABB::EMPTY,
         }
     }
@@ -70,7 +80,6 @@ impl Intersect for IntersectGroup {
 #[cfg(test)]
 mod sample_tests {
     use super::*;
-    use crate::color::Color;
     use crate::geometry::Quad;
     use crate::material::Lambertian;
     use crate::vec3::{Point3, Vec3};
