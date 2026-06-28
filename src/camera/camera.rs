@@ -97,6 +97,20 @@ impl From<CameraConfig> for Camera {
     }
 }
 
+/// Power heuristic (β = 2) MIS weight for a technique with PDF `a` competing
+/// against a technique with PDF `b`: `a² / (a² + b²)`. Returns 0 (not NaN) when
+/// both PDFs are zero.
+fn power_heuristic(a: f32, b: f32) -> f32 {
+    let a2 = a * a;
+    let b2 = b * b;
+    let denom = a2 + b2;
+    if denom > 0.0 {
+        a2 / denom
+    } else {
+        0.0
+    }
+}
+
 /// Cosine-weighted hemisphere direction about `normal` (PDF = cos/PI), using the
 /// `normal + random_unit` trick. Returns a unit vector.
 fn cosine_direction(normal: &Vec3, rng: &mut SmallRng) -> Vec3 {
@@ -354,6 +368,30 @@ mod mixture_tests {
         assert!(with_nee > 0.0 && pure_gi > 0.0, "both lit: nee={with_nee} gi={pure_gi}");
         let rel = (with_nee - pure_gi).abs() / pure_gi;
         assert!(rel < 0.15, "means should agree (unbiased): nee={with_nee} gi={pure_gi} rel={rel}");
+    }
+}
+
+#[cfg(test)]
+mod power_heuristic_tests {
+    use super::power_heuristic;
+
+    #[test]
+    fn beta2_weights() {
+        // 3^2 / (3^2 + 4^2) = 9/25 = 0.36
+        assert!((power_heuristic(3.0, 4.0) - 0.36).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dominant_pdf_gets_full_weight() {
+        assert!((power_heuristic(5.0, 0.0) - 1.0).abs() < 1e-6);
+        assert!(power_heuristic(0.0, 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn both_zero_is_zero_not_nan() {
+        let w = power_heuristic(0.0, 0.0);
+        assert_eq!(w, 0.0);
+        assert!(!w.is_nan());
     }
 }
 
