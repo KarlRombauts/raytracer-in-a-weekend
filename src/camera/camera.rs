@@ -95,6 +95,16 @@ impl From<CameraConfig> for Camera {
     }
 }
 
+/// Cosine-weighted hemisphere direction about `normal` (PDF = cos/PI), using the
+/// `normal + random_unit` trick. Returns a unit vector.
+fn cosine_direction(normal: &Vec3, rng: &mut SmallRng) -> Vec3 {
+    let mut d = *normal + Vec3::random_unit(rng);
+    if d.near_zero() {
+        d = *normal;
+    }
+    d.unit()
+}
+
 impl Camera {
     pub fn render(&self, world: &IntersectGroup) {
         let start = Instant::now();
@@ -116,7 +126,7 @@ impl Camera {
                 let mut pixel_color = Color::ZERO;
                 for s in 0..self.samples {
                     let ray = self.get_ray(i, j, s, &mut rng);
-                    pixel_color += self.ray_color(&ray, self.max_depth, world, &mut rng);
+                    pixel_color += self.ray_color(&ray, world, &mut rng);
                 }
 
                 pixel_color *= self.pixel_samples_scale;
@@ -161,7 +171,7 @@ impl Camera {
         rng: &mut SmallRng,
     ) -> Color {
         let ray = self.get_ray(i, j, sample_index, rng);
-        self.ray_color_direct(&ray, world, rng)
+        self.ray_color(&ray, world, rng)
     }
 
     fn dof_disk_sample(&self, rng: &mut SmallRng) -> Vec3 {
@@ -191,177 +201,69 @@ impl Camera {
         self.basis_u
     }
 
-    /// Direct-lighting integrator: shade a hit by sampling each light via
-    /// next-event estimation (one shadow ray per light). The contribution per
-    /// light is `(albedo / π) * emit * cos_surface / pdf`, where `pdf` carries
-    /// the solid-angle geometry term (dist², cos_light, area) — so the result is
-    /// unbiased for planar lights. No indirect bounce yet.
-    fn ray_color_direct(
-        &self,
-        ray: &Ray,
-        world: &IntersectGroup,
-        rng: &mut SmallRng,
-    ) -> Color {
-        let interval = Interval::new(0.001, f32::INFINITY);
-        let Some(hit) = world.intersect(ray, &interval) else {
-            return self.background;
-        };
-
-        let emitted = hit.material.emitted(hit.u, hit.v, hit.p);
-
-        // No scatter => the surface is a light (or pure absorber); show its emission.
-        let Some((_, albedo)) = hit.material.scatter(ray, &hit, rng) else {
-            return emitted;
-        };
-
-        let mut direct = Color::ZERO;
-        for light in &world.lights {
-            // Unnormalized direction toward a random point on the light; that
-            // point sits at parameter t = 1 along `dir`.
-            let dir = light.geom.random_dir(hit.p, rng);
-            let pdf = light.geom.pdf_value(hit.p, dir);
-            if pdf <= 0.0 {
-                continue;
-            }
-            let unit = dir.unit();
-            let cos_surface = hit.normal.dot(&unit);
-            if cos_surface <= 0.0 {
-                continue; // light is behind the surface
-            }
-            let shadow = Ray::new_t(hit.p, dir, ray.time);
-            // Check for blockers strictly before the light (at t = 1).
-            let shadow_interval = Interval::new(0.001, 1.0 - 1e-4);
-            if world.intersect(&shadow, &shadow_interval).is_none() {
-                // Geometry term (cos_light, area, dist^2) lives inside `pdf`.
-                direct += (albedo / std::f32::consts::PI) * light.emit * cos_surface / pdf;
-            }
-        }
-
-        emitted + direct
-    }
-
-    #[allow(dead_code)]
-    fn ray_color(
-        &self,
-        ray: &Ray,
-        depth: u32,
-        world: &IntersectGroup,
-        rng: &mut SmallRng,
-    ) -> Color {
-        // Iterative path tracing: accumulate emission weighted by the running
-        // product of attenuations (throughput). Equivalent to the recursive
-        // `emit + attenuation * ray_color(...)` but without per-bounce stack
-        // frames, keeping the loop state in registers.
+    /// Mixture-PDF path tracer. One ray per bounce. At a diffuse (non-specular)
+    /// hit the outgoing ray is drawn from a 50/50 mixture of a cosine-weighted
+    /// direction and a direction toward a registered light, weighted by
+    /// `albedo * scattering_pdf / p_mixture`. Specular materials use their own
+    /// scattered ray. Emission is accumulated at every hit (one ray per bounce, so
+    /// no double counting).
+    fn ray_color(&self, ray: &Ray, world: &IntersectGroup, rng: &mut SmallRng) -> Color {
         let interval = Interval::new(0.001, f32::INFINITY);
         let mut color = Color::ZERO;
         let mut throughput = Color::ones();
         let mut current = ray.clone();
 
-        for _ in 0..depth {
+        for _ in 0..self.max_depth {
             let Some(hit) = world.intersect(&current, &interval) else {
                 color += throughput * self.background;
-                return color;
+                break;
             };
 
             color += throughput * hit.material.emitted(hit.u, hit.v, hit.p);
 
-            match hit.material.scatter(&current, &hit, rng) {
-                Some((scattered, attenuation)) => {
-                    throughput = throughput * attenuation;
-                    current = scattered;
-                }
-                None => return color,
+            let Some((scattered, atten)) = hit.material.scatter(&current, &hit, rng) else {
+                break; // pure light / absorber
+            };
+
+            if hit.material.is_specular() {
+                throughput = throughput * atten;
+                current = scattered;
+                continue;
             }
+
+            // Lambertian: sample one outgoing ray from the cosine/light mixture.
+            let albedo = atten;
+            let dir = if !world.lights.is_empty() && rng.random::<f32>() < 0.5 {
+                match world.sample_light_dir(hit.p, rng) {
+                    Some(d) => d,
+                    None => cosine_direction(&hit.normal, rng),
+                }
+            } else {
+                cosine_direction(&hit.normal, rng)
+            };
+
+            let s = hit.material.scattering_pdf(&hit, &dir);
+            if s <= 0.0 {
+                break; // direction below the surface contributes nothing
+            }
+            let p = if world.lights.is_empty() {
+                s
+            } else {
+                0.5 * s + 0.5 * world.light_pdf(hit.p, dir)
+            };
+            if p <= 0.0 {
+                break;
+            }
+            throughput = throughput * albedo * (s / p);
+            current = Ray::new_t(hit.p, dir, current.time);
         }
 
-        // Depth exhausted: matches the recursive base case `ray_color(_, 0) == 0`,
-        // contributing nothing further.
         color
     }
 }
 
 #[cfg(test)]
-mod direct_tests {
-    use super::*;
-    use crate::camera::CameraConfig;
-    use crate::color::Color;
-    use crate::geometry::Quad;
-    use crate::group::{IntersectGroup, Light};
-    use crate::material::{DiffuseLight, Lambertian};
-    use crate::vec3::{Point3, Vec3};
-    use rand::rngs::SmallRng;
-    use rand::SeedableRng;
-    use std::sync::Arc;
-
-    fn test_camera() -> Camera {
-        Camera::from(
-            CameraConfig::builder()
-                .image_width(1)
-                .aspect_ratio(1.0)
-                .background(Color::ZERO)
-                .build(),
-        )
-    }
-
-    fn floor() -> Arc<Quad> {
-        let mat = Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0)));
-        Arc::new(Quad::new(
-            Point3::new(-1.0, 0.0, -1.0),
-            Vec3::new(2.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 2.0),
-            mat,
-        ))
-    }
-
-    fn light_quad() -> Arc<Quad> {
-        let mat = Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0)));
-        Arc::new(Quad::new(
-            Point3::new(-1.0, 2.0, -1.0),
-            Vec3::new(2.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 2.0),
-            mat,
-        ))
-    }
-
-    #[test]
-    fn occluded_point_is_darker_than_lit_point() {
-        let cam = test_camera();
-        // Camera ray straight down onto the floor centre at (0,0,0).
-        let ray = Ray::new(Point3::new(0.0, 1.0, 0.0), Vec3::new(0.0, -1.0, 0.0));
-
-        let mut lit = IntersectGroup::new();
-        lit.add(floor());
-        lit.add(light_quad());
-        lit.lights.push(Light { geom: light_quad(), emit: Color::new(5.0, 5.0, 5.0) });
-
-        let mut rng = SmallRng::seed_from_u64(1);
-        let lit_color = cam.ray_color_direct(&ray, &lit, &mut rng);
-        assert!(lit_color.x > 0.0, "expected lit floor, got {:?}", lit_color);
-
-        // Same scene plus a blocker quad between the floor and the light.
-        let mut blocked = IntersectGroup::new();
-        blocked.add(floor());
-        blocked.add(light_quad());
-        let blocker_mat = Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0)));
-        blocked.add(Arc::new(Quad::new(
-            Point3::new(-1.0, 1.0, -1.0),
-            Vec3::new(2.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 2.0),
-            blocker_mat,
-        )));
-        blocked.lights.push(Light { geom: light_quad(), emit: Color::new(5.0, 5.0, 5.0) });
-        let occ_color = cam.ray_color_direct(&ray, &blocked, &mut rng);
-        assert!(
-            occ_color.x < lit_color.x,
-            "occluded should be darker: lit {:?} occ {:?}",
-            lit_color,
-            occ_color
-        );
-    }
-}
-
-#[cfg(test)]
-mod pdf_direct_tests {
+mod mixture_tests {
     use super::*;
     use crate::camera::CameraConfig;
     use crate::color::Color;
@@ -374,7 +276,7 @@ mod pdf_direct_tests {
     use rand::SeedableRng;
     use std::sync::Arc;
 
-    fn test_camera() -> Camera {
+    fn cam() -> Camera {
         Camera::from(
             CameraConfig::builder()
                 .image_width(1)
@@ -387,56 +289,68 @@ mod pdf_direct_tests {
     fn floor() -> Arc<dyn Intersect> {
         let mat = Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0)));
         Arc::new(Quad::new(
-            Point3::new(-100.0, 0.0, -100.0),
-            Vec3::new(200.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 200.0),
+            Point3::new(-5.0, 0.0, -5.0),
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 10.0),
             mat,
         ))
     }
 
-    // Small (1x1) downward-facing light directly overhead at height h.
-    fn small_light(h: f32) -> Arc<dyn Intersect> {
+    // Large overhead emitter (covers a big solid angle so pure-GI sampling
+    // converges with feasible sample counts).
+    fn ceiling_light() -> Arc<dyn Intersect> {
         let mat = Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0)));
         Arc::new(Quad::new(
-            Point3::new(-0.5, h, -0.5),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
+            Point3::new(-5.0, 2.0, -5.0),
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 10.0),
             mat,
         ))
     }
 
-    fn world_with_light(h: f32) -> IntersectGroup {
-        let mut w = IntersectGroup::new();
-        w.add(floor());
-        let lq = small_light(h);
-        w.add(lq.clone());
-        w.lights.push(Light { geom: lq, emit: Color::new(5.0, 5.0, 5.0) });
-        w
+    #[test]
+    fn camera_sees_emitter_emission() {
+        // Ray straight up into the emitter; no floor. The first hit is the
+        // emitter: emission is added, scatter() is None, path ends.
+        let c = cam();
+        let mut world = IntersectGroup::new();
+        world.add(ceiling_light());
+        let ray = Ray::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
+        let mut rng = SmallRng::seed_from_u64(1);
+        let col = c.ray_color(&ray, &world, &mut rng);
+        assert!((col.x - 5.0).abs() < 1e-4, "expected emitter color, got {:?}", col);
     }
 
-    fn avg_direct(h: f32) -> f32 {
-        let cam = test_camera();
-        let world = world_with_light(h);
+    fn avg_floor_color(register_light: bool) -> f32 {
+        let c = cam();
+        let mut world = IntersectGroup::new();
+        world.add(floor());
+        let light = ceiling_light();
+        world.add(light.clone());
+        if register_light {
+            world.lights.push(Light { geom: light, emit: Color::new(5.0, 5.0, 5.0) });
+        }
+        // Look straight down at the floor centre.
         let ray = Ray::new(Point3::new(0.0, 1.0, 0.0), Vec3::new(0.0, -1.0, 0.0));
-        let mut rng = SmallRng::seed_from_u64(42);
-        let n = 4000;
+        let mut rng = SmallRng::seed_from_u64(7);
+        let n = 8000;
         let mut sum = 0.0;
         for _ in 0..n {
-            sum += cam.ray_color_direct(&ray, &world, &mut rng).x;
+            sum += c.ray_color(&ray, &world, &mut rng).x;
         }
         sum / n as f32
     }
 
     #[test]
-    fn direct_falls_off_with_inverse_square() {
-        // A small overhead light approximates a point source, so doubling its
-        // height should quarter the direct illumination (the dist^2 / cos_light
-        // / area geometry term, all inside pdf_value).
-        let near = avg_direct(10.0);
-        let far = avg_direct(20.0);
-        assert!(near > 0.0 && far > 0.0, "both should be lit: near={near} far={far}");
-        let ratio = near / far;
-        assert!((ratio - 4.0).abs() < 0.6, "expected ~4x falloff, got {ratio}");
+    fn mixture_matches_pure_gi_mean() {
+        // With the light registered, the diffuse bounce is mixture-sampled
+        // (light + cosine); unregistered, it is pure cosine GI. Both estimators
+        // are unbiased, so their means must agree (mixture only cuts variance).
+        let with_nee = avg_floor_color(true);
+        let pure_gi = avg_floor_color(false);
+        assert!(with_nee > 0.0 && pure_gi > 0.0, "both lit: nee={with_nee} gi={pure_gi}");
+        let rel = (with_nee - pure_gi).abs() / pure_gi;
+        assert!(rel < 0.15, "means should agree (unbiased): nee={with_nee} gi={pure_gi} rel={rel}");
     }
 }
 
