@@ -6,8 +6,108 @@ use crate::color::Color;
 use crate::geometry::{make_box, ObjData, Quad, Rotate, Scale, Sphere, Translate};
 use crate::group::{IntersectGroup, Light};
 use crate::material::{Dielectric, DiffuseLight, Glossy, Lambertian, Material, Metal};
+use crate::texture::{
+    CheckerTexture, ImageTexture, NoiseTexture, SolidColor, Texture,
+};
 use crate::ray::{Intersect, BVH};
 use crate::vec3::{Point3, Vec3};
+
+/// An embedded binary asset (image bytes now; meshes in Phase 2). Bytes are the
+/// single source of truth, so a scene is self-contained and portable. `label`
+/// is for display only (e.g. "earth.png").
+#[derive(Clone)]
+pub struct Asset {
+    pub bytes: Arc<[u8]>,
+    pub label: Option<String>,
+}
+
+impl Asset {
+    /// An asset with no bytes yet — builds to the magenta placeholder until a
+    /// file is chosen in the editor.
+    pub fn empty() -> Self {
+        Asset { bytes: Arc::from([] as [u8; 0]), label: None }
+    }
+}
+
+/// The magenta sentinel used when an image asset fails to decode.
+fn magenta() -> Arc<dyn Texture> {
+    Arc::new(SolidColor::from_color(Color::new(1.0, 0.0, 1.0)))
+}
+
+/// Plain-data description of a texture, mirroring the core `Texture` types.
+#[derive(Clone)]
+pub enum TextureSpec {
+    Solid { color: Color },
+    Checker { scale: f32, even: CellTexture, odd: CellTexture },
+    Noise { scale: f32 },
+    Image { asset: Asset },
+}
+
+/// A checker cell. Deliberately omits `Checker`, so checker-in-checker
+/// recursion is unrepresentable (one level of nesting only).
+#[derive(Clone)]
+pub enum CellTexture {
+    Solid { color: Color },
+    Noise { scale: f32 },
+    Image { asset: Asset },
+}
+
+fn build_image(asset: &Asset) -> Arc<dyn Texture> {
+    match ImageTexture::from_bytes(&asset.bytes) {
+        Ok(t) => Arc::new(t),
+        Err(_) => magenta(),
+    }
+}
+
+impl CellTexture {
+    fn build(&self) -> Arc<dyn Texture> {
+        match self {
+            CellTexture::Solid { color } => Arc::new(SolidColor::from_color(*color)),
+            CellTexture::Noise { scale } => Arc::new(NoiseTexture::new(*scale)),
+            CellTexture::Image { asset } => build_image(asset),
+        }
+    }
+
+    fn preview_color(&self) -> Color {
+        match self {
+            CellTexture::Solid { color } => *color,
+            CellTexture::Noise { .. } => Color::new(0.5, 0.5, 0.5),
+            CellTexture::Image { .. } => Color::new(0.5, 0.5, 0.5),
+        }
+    }
+}
+
+impl TextureSpec {
+    /// A bare flat color is just a solid texture.
+    pub fn solid(color: Color) -> Self {
+        TextureSpec::Solid { color }
+    }
+
+    pub fn build(&self) -> Arc<dyn Texture> {
+        match self {
+            TextureSpec::Solid { color } => Arc::new(SolidColor::from_color(*color)),
+            TextureSpec::Checker { scale, even, odd } => {
+                Arc::new(CheckerTexture::from_textures(*scale, even.build(), odd.build()))
+            }
+            TextureSpec::Noise { scale } => Arc::new(NoiseTexture::new(*scale)),
+            TextureSpec::Image { asset } => build_image(asset),
+        }
+    }
+
+    /// A representative flat color for the rasterized preview and the editor's
+    /// type-switch carry-over. Cheap and deterministic — never decodes an image
+    /// (the preview runs every frame), so images report a neutral gray.
+    pub fn preview_color(&self) -> Color {
+        match self {
+            TextureSpec::Solid { color } => *color,
+            TextureSpec::Checker { even, odd, .. } => {
+                (even.preview_color() + odd.preview_color()) * 0.5
+            }
+            TextureSpec::Noise { .. } => Color::new(0.5, 0.5, 0.5),
+            TextureSpec::Image { .. } => Color::new(0.5, 0.5, 0.5),
+        }
+    }
+}
 
 /// Plain-data description of a material. Built into an `Arc<dyn Material>` only
 /// when the world is (re)assembled, so the editor can mutate it freely.
@@ -321,5 +421,50 @@ mod render_mesh_tests {
         assert!(!sphere.render_mesh().positions.is_empty());
         assert_eq!(quad.render_mesh().positions.len(), 6);
         assert_eq!(bx.render_mesh().positions.len(), 36);
+    }
+}
+
+#[cfg(test)]
+mod texture_spec_tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::vec3::Point3;
+
+    #[test]
+    fn solid_builds_and_previews_its_color() {
+        let t = TextureSpec::solid(Color::new(0.2, 0.4, 0.6));
+        let built = t.build();
+        let c = built.value(0.0, 0.0, &Point3::new(0.0, 0.0, 0.0));
+        assert!((c.x - 0.2).abs() < 1e-6 && (c.y - 0.4).abs() < 1e-6 && (c.z - 0.6).abs() < 1e-6);
+        assert_eq!(t.preview_color(), Color::new(0.2, 0.4, 0.6));
+    }
+
+    #[test]
+    fn checker_previews_the_average_of_its_cells() {
+        let t = TextureSpec::Checker {
+            scale: 1.0,
+            even: CellTexture::Solid { color: Color::new(0.0, 0.0, 0.0) },
+            odd: CellTexture::Solid { color: Color::new(1.0, 1.0, 1.0) },
+        };
+        let _ = t.build(); // builds without panic
+        let p = t.preview_color();
+        assert!((p.x - 0.5).abs() < 1e-6 && (p.y - 0.5).abs() < 1e-6 && (p.z - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn noise_previews_mid_gray() {
+        let t = TextureSpec::Noise { scale: 4.0 };
+        let _ = t.build();
+        assert_eq!(t.preview_color(), Color::new(0.5, 0.5, 0.5));
+    }
+
+    #[test]
+    fn bad_image_builds_to_magenta_not_a_panic() {
+        let t = TextureSpec::Image { asset: Asset { bytes: vec![1, 2, 3].into(), label: None } };
+        let built = t.build(); // must not panic
+        let c = built.value(0.5, 0.5, &Point3::new(0.0, 0.0, 0.0));
+        assert_eq!(c, Color::new(1.0, 0.0, 1.0));
+        // Image preview is a constant neutral gray (no per-frame decode).
+        assert_eq!(t.preview_color(), Color::new(0.5, 0.5, 0.5));
     }
 }
