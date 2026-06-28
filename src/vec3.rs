@@ -136,6 +136,13 @@ impl Vec3 {
         }
     }
 
+    /// Rotate `self` about `axis` (assumed unit length) by `angle_rad`,
+    /// right-handed (Rodrigues' rotation formula).
+    pub fn rotate_about_axis(&self, axis: &Vec3, angle_rad: f32) -> Vec3 {
+        let (sin, cos) = angle_rad.sin_cos();
+        *self * cos + axis.cross(self) * sin + *axis * (axis.dot(self) * (1.0 - cos))
+    }
+
     pub fn near_zero(&self) -> bool {
         let s: f32 = 1e-8;
         return (self.x.abs() < s) && (self.y.abs() < s) && (self.z.abs() < s);
@@ -244,5 +251,30 @@ impl Index<u32> for Vec3 {
             2 => &self.z,
             _ => panic!("Vec3 index out of bounds: {}", index),
         }
+    }
+}
+
+#[cfg(test)]
+mod orbit_rotate_tests {
+    use super::Vec3;
+    use std::f32::consts::PI;
+
+    fn close(a: Vec3, b: Vec3) -> bool {
+        (a - b).length() < 1e-5
+    }
+
+    #[test]
+    fn rotates_x_to_y_about_z() {
+        let x = Vec3::new(1.0, 0.0, 0.0);
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let r = x.rotate_about_axis(&z, PI / 2.0);
+        assert!(close(r, Vec3::new(0.0, 1.0, 0.0)), "got {:?}", r);
+    }
+
+    #[test]
+    fn rotation_about_own_axis_is_noop() {
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let r = z.rotate_about_axis(&z, 1.234);
+        assert!(close(r, z), "got {:?}", r);
     }
 }
