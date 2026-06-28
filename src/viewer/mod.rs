@@ -45,6 +45,9 @@ pub fn run(scene: Scene) {
 
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Glow,
+        // The Edit-mode GL preview needs a depth buffer; egui's surface has
+        // none by default, so DEPTH_TEST would otherwise be a silent no-op.
+        depth_buffer: 24,
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([width as f32 + 290.0, height as f32 + 48.0]),
         ..Default::default()

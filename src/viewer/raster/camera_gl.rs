@@ -10,22 +10,21 @@ fn g(v: crate::vec3::Vec3) -> Vec3 {
     Vec3::new(v.x, v.y, v.z)
 }
 
-/// Right-handed view matrix; `v_up` rolled about the forward axis by `roll`
-/// (degrees), matching `Camera::from`.
+/// Right-handed view matrix; `v_up` rolled about `w = look_from − look_at`
+/// (the same axis as `Camera::from`), matching the path tracer exactly.
 pub fn view_matrix(cam: &CameraConfig) -> Mat4 {
     let eye = g(cam.look_from);
     let target = g(cam.look_at);
-    let forward = (target - eye).normalize();
+    let w = (eye - target).normalize();
     let up = g(cam.v_up);
-    let rolled_up = glam::Quat::from_axis_angle(forward, cam.roll.to_radians()) * up;
+    let rolled_up = glam::Quat::from_axis_angle(w, cam.roll.to_radians()) * up;
     Mat4::look_at_rh(eye, target, rolled_up)
 }
 
-/// GL-NDC perspective (z ∈ [−1, 1]) using the config's vertical fov.
-pub fn projection_matrix(cam: &CameraConfig, near: f32, far: f32) -> Mat4 {
-    let aspect = cam.image_width as f32
-        / ((cam.image_width as f64 / cam.aspect_ratio) as f32).max(1.0);
-    Mat4::perspective_rh_gl(cam.fov.to_radians(), aspect, near, far)
+/// GL-NDC perspective (z ∈ [−1, 1]) using the config's vertical fov and the
+/// `aspect` (width / height) of the actual viewport it is rendered into.
+pub fn projection_matrix(cam: &CameraConfig, aspect: f32, near: f32, far: f32) -> Mat4 {
+    Mat4::perspective_rh_gl(cam.fov.to_radians(), aspect.max(1e-3), near, far)
 }
 
 /// Object model matrix: scale + Euler rotation about `center`, then translate —
@@ -34,12 +33,9 @@ pub fn model_matrix(t: &Transform, center: Vec3) -> Mat4 {
     let translate = Mat4::from_translation(g(t.translate));
     let to_center = Mat4::from_translation(center);
     let from_center = Mat4::from_translation(-center);
-    let rot = Mat4::from_euler(
-        glam::EulerRot::XYZ,
-        t.rotate.x.to_radians(),
-        t.rotate.y.to_radians(),
-        t.rotate.z.to_radians(),
-    );
+    let rot = Mat4::from_rotation_z(t.rotate.z.to_radians())
+        * Mat4::from_rotation_y(t.rotate.y.to_radians())
+        * Mat4::from_rotation_x(t.rotate.x.to_radians());
     let scale = Mat4::from_scale(g(t.scale));
     translate * to_center * rot * scale * from_center
 }
@@ -69,7 +65,7 @@ mod tests {
 
     #[test]
     fn projection_keeps_a_centered_point_centered() {
-        let p = projection_matrix(&cfg(), 0.1, 100.0);
+        let p = projection_matrix(&cfg(), 1.0, 0.1, 100.0);
         let clip = p.project_point3(Vec3::new(0.0, 0.0, -5.0));
         assert!(clip.x.abs() < 1e-4 && clip.y.abs() < 1e-4, "clip={clip:?}");
     }
@@ -87,5 +83,57 @@ mod tests {
         let m = model_matrix(&t, Vec3::ZERO);
         let p = m.transform_point3(Vec3::new(0.0, 0.0, 0.0));
         assert!((p - Vec3::new(2.0, 0.0, 0.0)).length() < 1e-5, "p={p:?}");
+    }
+
+    /// Fix 1: model_matrix rotation order must match the path tracer's Rz*Ry*Rx.
+    /// With EulerRot::XYZ the test FAILS; with explicit Rz*Ry*Rx it PASSES.
+    #[test]
+    fn model_rotation_order_matches_path_tracer() {
+        let mut t = Transform::identity();
+        t.rotate = crate::vec3::Vec3::new(30.0, 40.0, 50.0);
+        let m = model_matrix(&t, Vec3::ZERO);
+
+        let (rx_r, ry_r, rz_r) = (30_f32.to_radians(), 40_f32.to_radians(), 50_f32.to_radians());
+        let expected = Mat4::from_rotation_z(rz_r)
+            * Mat4::from_rotation_y(ry_r)
+            * Mat4::from_rotation_x(rx_r);
+
+        let test_point = Vec3::new(1.0, 2.0, 3.0);
+        let got = m.transform_point3(test_point);
+        let exp = expected.transform_point3(test_point);
+        assert!(
+            (got - exp).length() < 1e-4,
+            "rotation order mismatch: got={got:?} expected={exp:?}"
+        );
+    }
+
+    /// Fix 2: view_matrix roll must spin about w = (look_from - look_at), matching Camera::from.
+    /// With forward-axis roll the test FAILS; with w = -forward it PASSES.
+    #[test]
+    fn view_matrix_roll_matches_camera_from() {
+        // look_from=(0,0,5), look_at=(0,0,0), v_up=(0,1,0), roll=90°
+        let mut cam = cfg();
+        cam.roll = 90.0;
+
+        // Path-tracer reference: rotate v_up about w = (look_from - look_at).unit()
+        let look_from = crate::vec3::Vec3::new(0.0, 0.0, 5.0);
+        let look_at = crate::vec3::Vec3::new(0.0, 0.0, 0.0);
+        let w = (look_from - look_at).unit(); // (0,0,1)
+        let v_up = crate::vec3::Vec3::new(0.0, 1.0, 0.0);
+        let pt_rolled_up = v_up.rotate_about_axis(&w, 90_f32.to_radians());
+
+        // GL reference: world-up extracted from inverse view matrix (column 1).
+        let v = view_matrix(&cam);
+        let gl_up = v.inverse().transform_vector3(Vec3::Y);
+
+        // Convert path-tracer up to glam for comparison
+        let pt_up = Vec3::new(pt_rolled_up.x, pt_rolled_up.y, pt_rolled_up.z).normalize();
+        let gl_up_n = gl_up.normalize();
+
+        let dot = gl_up_n.dot(pt_up);
+        assert!(
+            dot > 0.99,
+            "roll axis mismatch: GL up={gl_up_n:?}, PT up={pt_up:?}, dot={dot}"
+        );
     }
 }

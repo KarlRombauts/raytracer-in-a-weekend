@@ -19,6 +19,9 @@ pub struct SceneRenderer {
     program: glow::Program,
     objects: Vec<ObjectBuffers>,
     built_count: usize, // object count the buffers were built for
+    /// World-space AABB of the whole scene, used to pick near/far planes that
+    /// don't clip the scene. Recomputed on rebuild.
+    bounds: Option<(glam::Vec3, glam::Vec3)>,
 }
 
 impl SceneRenderer {
@@ -31,7 +34,12 @@ impl SceneRenderer {
         let vert = format!("{shader_version}{VERT}");
         let frag = format!("{shader_version}{FRAG}");
         let program = unsafe { link_program(gl, &vert, &frag) };
-        SceneRenderer { program, objects: Vec::new(), built_count: usize::MAX }
+        SceneRenderer {
+            program,
+            objects: Vec::new(),
+            built_count: usize::MAX,
+            bounds: None,
+        }
     }
 
     fn rebuild(&mut self, gl: &glow::Context, scene: &Scene) {
@@ -40,22 +48,39 @@ impl SceneRenderer {
                 gl.delete_vertex_array(o.vao);
                 gl.delete_buffer(o.vbo);
             }
+            let mut wmin = glam::Vec3::splat(f32::INFINITY);
+            let mut wmax = glam::Vec3::splat(f32::NEG_INFINITY);
             for obj in &scene.objects {
                 let mesh = obj.shape.render_mesh();
-                // Compute the AABB centre once here so paint() never needs to
-                // re-tessellate the mesh just to find the pivot point.
+                // Local-space AABB of this object's geometry.
+                let mut lmin = glam::Vec3::splat(f32::INFINITY);
+                let mut lmax = glam::Vec3::splat(f32::NEG_INFINITY);
+                for p in &mesh.positions {
+                    let v = glam::Vec3::new(p[0], p[1], p[2]);
+                    lmin = lmin.min(v);
+                    lmax = lmax.max(v);
+                }
+                // Pivot centre (cached so paint() never re-tessellates).
                 let center = if mesh.positions.is_empty() {
                     glam::Vec3::ZERO
                 } else {
-                    let mut min = glam::Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
-                    let mut max = glam::Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
-                    for p in &mesh.positions {
-                        let v = glam::Vec3::new(p[0], p[1], p[2]);
-                        min = min.min(v);
-                        max = max.max(v);
-                    }
-                    (min + max) * 0.5
+                    (lmin + lmax) * 0.5
                 };
+                // Accumulate the scene's world-space bounds by transforming this
+                // object's 8 AABB corners through its model matrix.
+                if !mesh.positions.is_empty() {
+                    let model = camera_gl::model_matrix(&obj.transform, center);
+                    for i in 0..8u32 {
+                        let corner = glam::Vec3::new(
+                            if i & 1 == 0 { lmin.x } else { lmax.x },
+                            if i & 2 == 0 { lmin.y } else { lmax.y },
+                            if i & 4 == 0 { lmin.z } else { lmax.z },
+                        );
+                        let wc = model.transform_point3(corner);
+                        wmin = wmin.min(wc);
+                        wmax = wmax.max(wc);
+                    }
+                }
                 // Interleave position+normal as 6 f32 per vertex.
                 let mut data: Vec<f32> = Vec::with_capacity(mesh.positions.len() * 6);
                 for (p, n) in mesh.positions.iter().zip(&mesh.normals) {
@@ -79,7 +104,36 @@ impl SceneRenderer {
                 self.objects.push(ObjectBuffers { vao, vbo, vertex_count: mesh.positions.len() as i32, center });
             }
             self.built_count = scene.objects.len();
+            self.bounds = if wmin.x.is_finite() {
+                Some((wmin, wmax))
+            } else {
+                None
+            };
         }
+    }
+
+    /// Near/far planes that bracket the whole scene from the current eye, so
+    /// large scenes (e.g. the Cornell box) aren't clipped and small ones keep
+    /// depth precision. Falls back to a fixed range when bounds are unknown.
+    fn near_far(&self, eye: glam::Vec3) -> (f32, f32) {
+        let Some((bmin, bmax)) = self.bounds else {
+            return (0.05, 1000.0);
+        };
+        let mut dmin = f32::INFINITY;
+        let mut dmax = 0.0f32;
+        for i in 0..8u32 {
+            let c = glam::Vec3::new(
+                if i & 1 == 0 { bmin.x } else { bmax.x },
+                if i & 2 == 0 { bmin.y } else { bmax.y },
+                if i & 4 == 0 { bmin.z } else { bmax.z },
+            );
+            let d = (c - eye).length();
+            dmin = dmin.min(d);
+            dmax = dmax.max(d);
+        }
+        let near = (dmin * 0.5).max(0.01);
+        let far = (dmax * 1.5).max(near + 0.1);
+        (near, far)
     }
 
     pub fn paint(&mut self, gl: &glow::Context, scene: &Scene, viewport_px: (f32, f32)) {
@@ -87,7 +141,19 @@ impl SceneRenderer {
             self.rebuild(gl, scene);
         }
         let view = camera_gl::view_matrix(&scene.camera);
-        let proj = camera_gl::projection_matrix(&scene.camera, 0.05, 1000.0);
+        // Aspect from the actual viewport so the preview isn't stretched.
+        let aspect = if viewport_px.1 > 0.0 {
+            viewport_px.0 / viewport_px.1
+        } else {
+            1.0
+        };
+        let eye = glam::Vec3::new(
+            scene.camera.look_from.x,
+            scene.camera.look_from.y,
+            scene.camera.look_from.z,
+        );
+        let (near, far) = self.near_far(eye);
+        let proj = camera_gl::projection_matrix(&scene.camera, aspect, near, far);
         unsafe {
             gl.enable(glow::DEPTH_TEST);
             gl.clear(glow::DEPTH_BUFFER_BIT);
@@ -115,7 +181,6 @@ impl SceneRenderer {
             }
             gl.disable(glow::DEPTH_TEST);
         }
-        let _ = viewport_px; // glow uses the callback's scissor/viewport
     }
 }
 
