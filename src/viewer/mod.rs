@@ -1,6 +1,7 @@
 mod controls;
 mod icons;
 mod orbit;
+mod raster;
 mod render_task;
 mod view_transform;
 
