@@ -69,6 +69,8 @@ struct ViewerApp {
     initial_camera: crate::camera::CameraConfig,
     /// egui time (seconds) of the last camera motion, for the preview debounce.
     last_interact: f64,
+    /// GL rasterizer for the Edit-mode preview.
+    gl_renderer: Arc<Mutex<raster::renderer::SceneRenderer>>,
 }
 
 impl ViewerApp {
@@ -78,6 +80,9 @@ impl ViewerApp {
         let initial_camera = scene.camera.clone();
         let scene = Arc::new(Mutex::new(scene));
         let render = RenderTask::spawn(cc.egui_ctx.clone(), scene.clone(), width, height, total);
+
+        let gl = cc.gl.as_ref().expect("eframe glow context");
+        let gl_renderer = Arc::new(Mutex::new(raster::renderer::SceneRenderer::new(gl)));
 
         ViewerApp {
             scene,
@@ -89,6 +94,7 @@ impl ViewerApp {
             mode: Mode::Render,
             initial_camera,
             last_interact: -1.0,
+            gl_renderer,
         }
     }
 }
@@ -126,6 +132,9 @@ impl eframe::App for ViewerApp {
         }
 
         // --- Side panel: status + editable scene ---
+        // Capture the mode before the panel renders so we can detect a
+        // Edit→Render transition and invalidate the path trace once.
+        let mode_before = self.mode;
         let mut dirty = false;
         let mut selected = self.selected;
         {
@@ -219,14 +228,14 @@ impl eframe::App for ViewerApp {
         if dirty {
             self.render.invalidate();
         }
+        // Switching back from Edit to Render: the path trace was not running
+        // during Edit, so invalidate now to restart it at the current camera.
+        if mode_before == Mode::Edit && self.mode == Mode::Render {
+            self.render.invalidate();
+        }
 
-        // --- Central panel: zoomable / pannable image ---
+        // --- Central panel: path-traced image or GL preview ---
         egui::CentralPanel::default().show(ui, |ui| {
-            let Some(t) = &self.texture else {
-                ui.centered_and_justified(|ui| ui.label("Rendering…"));
-                return;
-            };
-
             let vp = ui.available_rect_before_wrap();
             let response = ui.allocate_rect(vp, egui::Sense::click_and_drag());
 
@@ -250,6 +259,26 @@ impl eframe::App for ViewerApp {
                             .input(|i| i.pointer.hover_pos())
                             .unwrap_or_else(|| vp.center());
                         self.view.zoom_at(vp, aspect, cursor, scroll);
+                    }
+
+                    // Paint the path-traced image, clipped to the viewport so
+                    // zoomed overflow hides.
+                    match &self.texture {
+                        Some(t) => {
+                            let rect = self.view.image_rect(vp, aspect);
+                            ui.painter_at(vp).image(
+                                t.id(),
+                                rect,
+                                egui::Rect::from_min_max(
+                                    egui::pos2(0.0, 0.0),
+                                    egui::pos2(1.0, 1.0),
+                                ),
+                                egui::Color32::WHITE,
+                            );
+                        }
+                        None => {
+                            ui.centered_and_justified(|ui| ui.label("Rendering…"));
+                        }
                     }
                 }
                 Mode::Edit => {
@@ -282,6 +311,8 @@ impl eframe::App for ViewerApp {
 
                     // Reduced-resolution preview while actively interacting;
                     // snap back to full quality once motion has stopped.
+                    // These code paths are intentionally left in place (they
+                    // become inert in Edit since we no longer call invalidate).
                     let interacting = (now - self.last_interact) < PREVIEW_DEBOUNCE as f64;
                     let want_scale = if interacting { PREVIEW_SCALE } else { 1 };
                     let scale_changed = self.render.preview_scale() != want_scale;
@@ -289,7 +320,9 @@ impl eframe::App for ViewerApp {
                         self.render.set_preview_scale(want_scale);
                     }
                     if moved || scale_changed {
-                        self.render.invalidate();
+                        // In Edit mode the GL view is instant; just request a
+                        // repaint rather than restarting the path trace.
+                        ui.ctx().request_repaint();
                     }
                     if interacting {
                         // Wake after the debounce window so the full-res switch
@@ -297,17 +330,24 @@ impl eframe::App for ViewerApp {
                         ui.ctx()
                             .request_repaint_after(Duration::from_secs_f32(PREVIEW_DEBOUNCE));
                     }
+
+                    // Paint the GL rasterised preview via an egui paint callback.
+                    let scene = self.scene.clone();
+                    let renderer = self.gl_renderer.clone();
+                    let rect = vp;
+                    let cb = eframe::egui_glow::CallbackFn::new(move |_info, painter| {
+                        let scene = scene.lock().unwrap();
+                        renderer
+                            .lock()
+                            .unwrap()
+                            .paint(painter.gl(), &scene, (rect.width(), rect.height()));
+                    });
+                    ui.painter().add(egui::PaintCallback {
+                        rect,
+                        callback: std::sync::Arc::new(cb),
+                    });
                 }
             }
-
-            // Paint the image, clipped to the viewport so zoomed overflow hides.
-            let rect = self.view.image_rect(vp, aspect);
-            ui.painter_at(vp).image(
-                t.id(),
-                rect,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
         });
     }
 }
