@@ -6,9 +6,12 @@
 
 /// R2 low-discrepancy point for `index`, each component in [0, 1).
 pub fn r2(index: u32) -> (f32, f32) {
-    // Plastic-constant multipliers (the 2D golden-ratio analogue).
-    let x = (index as f32 * 0.7548776662).fract();
-    let y = (index as f32 * 0.5698402909).fract();
+    // Plastic-constant multipliers (the 2D golden-ratio analogue). The product
+    // is formed in f64 so the fractional part survives for large indices: an
+    // f32 `index` loses integer precision past 2^24, which would silently
+    // collapse every sample onto the pixel center.
+    let x = (index as f64 * 0.7548776662).fract() as f32;
+    let y = (index as f64 * 0.5698402909).fract() as f32;
     (x, y)
 }
 
@@ -34,7 +37,7 @@ fn wang_hash(mut x: u32) -> u32 {
 }
 
 /// Sub-pixel offset for sample `sample_index` of pixel `(i, j)`, each component
-/// in [-0.5, 0.5). Drop-in replacement for the old random `sample_square`.
+/// in [-0.5, 0.5). This is the camera's per-sample anti-aliasing jitter.
 pub fn stratified_offset(i: u32, j: u32, sample_index: u32) -> (f32, f32) {
     let (rx, ry) = r2(sample_index);
     let (ox, oy) = hash01(i, j);
