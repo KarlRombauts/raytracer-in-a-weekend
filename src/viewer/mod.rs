@@ -44,6 +44,7 @@ pub fn run(scene: Scene) {
     let height = camera.image_height();
 
     let options = eframe::NativeOptions {
+        renderer: eframe::Renderer::Glow,
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([width as f32 + 290.0, height as f32 + 48.0]),
         ..Default::default()
