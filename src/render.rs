@@ -40,7 +40,7 @@ impl ProgressiveRenderer {
             // Seed per pixel AND per pass so each pass draws fresh samples
             // (otherwise accumulation would average identical samples).
             let mut rng = SmallRng::seed_from_u64(((passes as u64) << 40) ^ idx as u64);
-            *c += camera.sample_pixel(i, j, world, &mut rng);
+            *c += camera.sample_pixel(i, j, passes, world, &mut rng);
         });
         self.passes += 1;
     }

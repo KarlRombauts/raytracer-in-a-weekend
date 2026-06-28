@@ -12,6 +12,7 @@ use crate::color::Color;
 use crate::group::*;
 use crate::interval::Interval;
 use crate::ray::{Intersect, Ray};
+use crate::sampling::stratified_offset;
 use crate::vec3::{Point3, Vec3};
 
 pub struct Camera {
@@ -113,8 +114,8 @@ impl Camera {
                 // renders are reproducible and threads never share RNG state.
                 let mut rng = SmallRng::seed_from_u64(((j as u64) << 32) | i as u64);
                 let mut pixel_color = Color::ZERO;
-                for _ in 0..self.samples {
-                    let ray = self.get_ray(i, j, &mut rng);
+                for s in 0..self.samples {
+                    let ray = self.get_ray(i, j, s, &mut rng);
                     pixel_color += self.ray_color(&ray, self.max_depth, world, &mut rng);
                 }
 
@@ -155,10 +156,11 @@ impl Camera {
         &self,
         i: u32,
         j: u32,
+        sample_index: u32,
         world: &IntersectGroup,
         rng: &mut SmallRng,
     ) -> Color {
-        let ray = self.get_ray(i, j, rng);
+        let ray = self.get_ray(i, j, sample_index, rng);
         self.ray_color(&ray, self.max_depth, world, rng)
     }
 
@@ -167,11 +169,11 @@ impl Camera {
         return self.center + (p.x * self.dof_disk_u) + (p.y * self.dof_disk_v);
     }
 
-    fn get_ray(&self, i: u32, j: u32, rng: &mut SmallRng) -> Ray {
-        let offset = self.sample_square(rng);
+    fn get_ray(&self, i: u32, j: u32, sample_index: u32, rng: &mut SmallRng) -> Ray {
+        let (dx, dy) = stratified_offset(i, j, sample_index);
         let pixel_sample = self.pixel00_loc
-            + ((i as f32 + offset.x) * self.pixel_delta_u)
-            + ((j as f32 + offset.y) * self.pixel_delta_v);
+            + ((i as f32 + dx) * self.pixel_delta_u)
+            + ((j as f32 + dy) * self.pixel_delta_v);
 
         let ray_origin = if self.dof_angle <= 0. {
             self.center
@@ -182,10 +184,6 @@ impl Camera {
 
         let ray_time = rng.random::<f32>();
         Ray::new_t(ray_origin, ray_direction, ray_time)
-    }
-
-    fn sample_square(&self, rng: &mut SmallRng) -> Vec3 {
-        Vec3::new(rng.random::<f32>() - 0.5, rng.random::<f32>() - 0.5, 0.0)
     }
 
     #[cfg(test)]
