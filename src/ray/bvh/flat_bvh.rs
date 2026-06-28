@@ -1,11 +1,13 @@
 use crate::geometry::triangle;
 use crate::interval::Interval;
-use crate::vec3::Vec3;
+use crate::vec3::{Point3, Vec3};
 use core::f32;
 use std::fmt;
 use std::{path::Display, sync::Arc};
 
 use crate::ray::{hit_record, BVHNode, HitRecord, Intersect, Ray, AABB};
+use rand::rngs::SmallRng;
+use rand::Rng;
 
 pub struct BVHFlatNode {
     pub left: u32,
@@ -329,6 +331,14 @@ impl<T: Intersect> Intersect for BVH<T> {
     fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>> {
         return self.intersectBVH(ray, ray_t);
     }
+
+    fn sample_point(&self, rng: &mut SmallRng) -> Point3 {
+        if self.primitives.is_empty() {
+            return self.center();
+        }
+        let i = rng.random_range(0..self.primitives.len());
+        self.primitives[i].sample_point(rng)
+    }
 }
 
 pub struct BVHStats {
@@ -356,5 +366,49 @@ impl fmt::Display for BVHStats {
         writeln!(f, "  - Min: {}", self.min_prim_count)?;
         writeln!(f, "  - Max: {}", self.max_prim_count)?;
         writeln!(f, "  - Mean: {:.3}", self.avg_prim_count)
+    }
+}
+
+#[cfg(test)]
+mod sample_tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::geometry::Triangle;
+    use crate::material::Lambertian;
+    use crate::vec3::Point3;
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+    use std::sync::Arc;
+
+    #[test]
+    fn bvh_samples_point_on_a_primitive() {
+        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
+        let t1 = Triangle::from_points(
+            &Point3::new(0.0, 0.0, 0.0),
+            &Point3::new(1.0, 0.0, 0.0),
+            &Point3::new(0.0, 1.0, 0.0),
+            mat.clone(),
+        );
+        let t2 = Triangle::from_points(
+            &Point3::new(0.0, 0.0, 5.0),
+            &Point3::new(1.0, 0.0, 5.0),
+            &Point3::new(0.0, 1.0, 5.0),
+            mat,
+        );
+        let bvh = BVH::build(vec![t1, t2]);
+        let mut rng = SmallRng::seed_from_u64(6);
+        for _ in 0..500 {
+            let p = bvh.sample_point(&mut rng);
+            assert!(
+                p.x >= -1e-4 && p.y >= -1e-4 && p.x + p.y <= 1.0 + 1e-4,
+                "bad bary: {:?}",
+                p
+            );
+            assert!(
+                p.z.abs() < 1e-3 || (p.z - 5.0).abs() < 1e-3,
+                "off both tris: z={}",
+                p.z
+            );
+        }
     }
 }

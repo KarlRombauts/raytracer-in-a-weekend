@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use crate::interval::Interval;
 use crate::ray::{HitRecord, Intersect, Ray, AABB};
-use crate::vec3::Vec3;
+use crate::vec3::{Point3, Vec3};
+use rand::rngs::SmallRng;
 
 /// Translates a wrapped object by `offset`. Implemented by moving the ray in
 /// the opposite direction, intersecting, then shifting the hit point back.
@@ -38,6 +39,10 @@ impl Intersect for Translate {
 
     fn center(&self) -> Vec3 {
         self.bbox.center()
+    }
+
+    fn sample_point(&self, rng: &mut SmallRng) -> Point3 {
+        self.object.sample_point(rng) + self.offset
     }
 }
 
@@ -83,6 +88,10 @@ impl Intersect for Scale {
 
     fn center(&self) -> Vec3 {
         self.bbox.center()
+    }
+
+    fn sample_point(&self, rng: &mut SmallRng) -> Point3 {
+        self.object.sample_point(rng) * self.scale
     }
 }
 
@@ -154,6 +163,10 @@ impl Intersect for Rotate {
     fn center(&self) -> Vec3 {
         self.bbox.center()
     }
+
+    fn sample_point(&self, rng: &mut SmallRng) -> Point3 {
+        apply(&self.fwd, self.object.sample_point(rng))
+    }
 }
 
 /// Multiply a row-major 3x3 matrix by a vector.
@@ -176,6 +189,38 @@ fn mat_mul(a: &[Vec3; 3], b: &[Vec3; 3]) -> [Vec3; 3] {
         Vec3::new(a[1].dot(&bt[0]), a[1].dot(&bt[1]), a[1].dot(&bt[2])),
         Vec3::new(a[2].dot(&bt[0]), a[2].dot(&bt[1]), a[2].dot(&bt[2])),
     ]
+}
+
+#[cfg(test)]
+mod sample_tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::geometry::Quad;
+    use crate::material::Lambertian;
+    use crate::vec3::{Point3, Vec3};
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+    use std::sync::Arc;
+
+    #[test]
+    fn translate_forwards_sampled_point() {
+        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
+        let quad = Arc::new(Quad::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+            mat,
+        ));
+        let offset = Vec3::new(5.0, 1.0, -3.0);
+        let t = Translate::new(quad, offset);
+        let mut rng = SmallRng::seed_from_u64(5);
+        for _ in 0..500 {
+            let p = t.sample_point(&mut rng);
+            assert!((5.0..=7.0).contains(&p.x), "x {}", p.x);
+            assert!((1.0..=3.0).contains(&p.y), "y {}", p.y);
+            assert!((p.z + 3.0).abs() < 1e-5, "z {}", p.z);
+        }
+    }
 }
 
 /// Forward (object->world) rotation matrix for Euler angles `degrees` (x,y,z),
