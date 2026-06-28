@@ -191,10 +191,11 @@ impl Camera {
         self.basis_u
     }
 
-    /// Direct-lighting integrator: shade a hit by sampling each light with a
-    /// shadow ray. No indirect bounce and no PDF/geometry weighting yet — the
-    /// contribution is `albedo * emit * cos`, so the result is intentionally
-    /// biased (a stepping stone toward full next-event estimation).
+    /// Direct-lighting integrator: shade a hit by sampling each light via
+    /// next-event estimation (one shadow ray per light). The contribution per
+    /// light is `(albedo / π) * emit * cos_surface / pdf`, where `pdf` carries
+    /// the solid-angle geometry term (dist², cos_light, area) — so the result is
+    /// unbiased for planar lights. No indirect bounce yet.
     fn ray_color_direct(
         &self,
         ray: &Ray,
