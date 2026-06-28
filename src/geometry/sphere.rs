@@ -63,7 +63,7 @@ impl Intersect for Sphere {
         self.bbox.center()
     }
 
-    fn sample_point(&self, rng: &mut SmallRng) -> crate::vec3::Point3 {
+    fn sample_point(&self, rng: &mut SmallRng) -> Point3 {
         let center = self.center.at(0.0);
         center + self.radius * Vec3::random_unit(rng)
     }

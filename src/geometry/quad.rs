@@ -98,7 +98,7 @@ impl Intersect for Quad {
         &self.bbox
     }
 
-    fn sample_point(&self, rng: &mut SmallRng) -> crate::vec3::Point3 {
+    fn sample_point(&self, rng: &mut SmallRng) -> Point3 {
         let a: f32 = rng.random();
         let b: f32 = rng.random();
         self.q + a * self.u + b * self.v
@@ -125,11 +125,24 @@ mod sample_tests {
             mat,
         );
         let mut rng = SmallRng::seed_from_u64(1);
+        let mut xs: Vec<f32> = Vec::with_capacity(500);
+        let mut ys: Vec<f32> = Vec::with_capacity(500);
         for _ in 0..500 {
             let p = q.sample_point(&mut rng);
             assert!(p.z.abs() < 1e-5, "off-plane: {:?}", p);
             assert!((0.0..=2.0).contains(&p.x), "x out: {}", p.x);
             assert!((0.0..=3.0).contains(&p.y), "y out: {}", p.y);
+            xs.push(p.x);
+            ys.push(p.y);
         }
+        // Spread check: the centroid is (1.0, 1.5, 0.0). If sample_point were replaced
+        // by the default center() all 500 x-values would equal 1.0 and all y-values
+        // would equal 1.5.  A real uniform sample must cover the full [0,2]×[0,3] range.
+        let x_range = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+            - xs.iter().cloned().fold(f32::INFINITY, f32::min);
+        let y_range = ys.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+            - ys.iter().cloned().fold(f32::INFINITY, f32::min);
+        assert!(x_range > 1.0, "x spread too small ({}); samples may not vary", x_range);
+        assert!(y_range > 1.5, "y spread too small ({}); samples may not vary", y_range);
     }
 }

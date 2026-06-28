@@ -122,7 +122,7 @@ impl Intersect for Triangle {
         &self.bbox
     }
 
-    fn sample_point(&self, rng: &mut SmallRng) -> crate::vec3::Point3 {
+    fn sample_point(&self, rng: &mut SmallRng) -> Point3 {
         let r1: f32 = rng.random();
         let r2: f32 = rng.random();
         let su = r1.sqrt();
@@ -155,11 +155,24 @@ mod sample_tests {
             mat,
         );
         let mut rng = SmallRng::seed_from_u64(2);
+        let mut xs: Vec<f32> = Vec::with_capacity(500);
+        let mut ys: Vec<f32> = Vec::with_capacity(500);
         for _ in 0..500 {
             let p = tri.sample_point(&mut rng);
             assert!(p.z.abs() < 1e-5, "off-plane: {:?}", p);
             assert!(p.x >= -1e-5 && p.y >= -1e-5, "negative bary: {:?}", p);
             assert!(p.x + p.y <= 1.0 + 1e-5, "outside tri: {:?}", p);
+            xs.push(p.x);
+            ys.push(p.y);
         }
+        // Spread check: the centroid is (1/3, 1/3, 0). If sample_point were replaced
+        // by the default center() all 500 x-values would equal ~0.333 and y-values
+        // would equal ~0.333.  A real uniform sample must spread across the triangle.
+        let x_range = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+            - xs.iter().cloned().fold(f32::INFINITY, f32::min);
+        let y_range = ys.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+            - ys.iter().cloned().fold(f32::INFINITY, f32::min);
+        assert!(x_range > 0.5, "x spread too small ({}); samples may not vary", x_range);
+        assert!(y_range > 0.5, "y spread too small ({}); samples may not vary", y_range);
     }
 }
