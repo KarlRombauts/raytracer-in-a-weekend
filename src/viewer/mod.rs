@@ -435,6 +435,15 @@ impl eframe::App for ViewerApp {
                         )
                     };
 
+                    // Fill the render area with the scene's sky colour, gamma-
+                    // matched to the path-traced background via the same
+                    // `to_rgb_vec`, so the Edit preview shows the same backdrop
+                    // the render will. The GL pass clears depth only, so this
+                    // egui fill stays visible behind the geometry.
+                    let [sr, sg, sb] = self.scene.lock().unwrap().camera.background.to_rgb_vec();
+                    ui.painter()
+                        .rect_filled(rect, 0.0, egui::Color32::from_rgb(sr, sg, sb));
+
                     // 1) Paint the GL rasterised preview (drawn first, so the
                     //    gizmo overlays it). The outline tracks `selected`.
                     let scene_arc = self.scene.clone();
