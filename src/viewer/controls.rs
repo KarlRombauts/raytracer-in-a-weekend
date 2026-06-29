@@ -1,65 +1,18 @@
 //! egui widgets that edit a `Scene` in place. Each returns whether the value
 //! changed, so the caller can invalidate the render only when something edited.
 
-use std::ops::RangeInclusive;
-
 use eframe::egui;
 
-use super::{icons, widgets};
-use crate::camera::CameraConfig;
+use super::{icons, theme, widgets};
 use crate::color::Color;
 use crate::scene::{
     self, Asset, CellTexture, Mapping, MaterialSpec, ObjectSpec, Shape, TextureSpec, Transform,
 };
 use crate::vec3::{Point3, Vec3};
 
-/// `label | value` row (u32), Blender-style, optionally clamped to `range`.
-fn int_row(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut u32,
-    range: Option<RangeInclusive<u32>>,
-) -> bool {
-    let mut dv = egui::DragValue::new(value).speed(1.0);
-    if let Some(r) = range {
-        dv = dv.range(r);
-    }
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        let h = ui.spacing().interact_size.y;
-        ui.allocate_ui_with_layout(
-            egui::vec2(AXIS_LABEL_W, h),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                ui.label(label);
-            },
-        );
-        changed = ui.add_sized([ui.available_width(), h], dv).changed();
-    });
-    changed
-}
-
-/// A `label | content` row (Blender-style): right-aligned label in a fixed
-/// column, then `content` (combo, swatch, …) filling the rest of the width.
-/// Shares `AXIS_LABEL_W` with `axis_row` so labels line up across sections.
-fn prop_row<R>(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    ui.horizontal(|ui| {
-        let h = ui.spacing().interact_size.y;
-        ui.allocate_ui_with_layout(
-            egui::vec2(AXIS_LABEL_W, h),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                ui.label(label);
-            },
-        );
-        content(ui)
-    })
-    .inner
-}
-
 /// A right-aligned-label colour-swatch row.
 fn color_prop(ui: &mut egui::Ui, label: &str, c: &mut Color) -> bool {
-    prop_row(ui, label, |ui| {
+    widgets::prop_row(ui, label, |ui| {
         let mut rgb = [c.x, c.y, c.z];
         let changed = ui.color_edit_button_rgb(&mut rgb).changed();
         if changed {
@@ -67,104 +20,6 @@ fn color_prop(ui: &mut egui::Ui, label: &str, c: &mut Color) -> bool {
         }
         changed
     })
-}
-
-// --- Sections ---
-
-pub fn camera_controls(ui: &mut egui::Ui, cam: &mut CameraConfig) -> bool {
-    let mut c = false;
-
-    section_header(ui, icons::CROSSHAIR, "View");
-    ui.indent("cam_view", |ui| {
-        c |= axis_vec(ui, "Position", &mut cam.look_from, 1.0, "", None, None);
-        ui.add_space(4.0);
-        c |= axis_vec(ui, "Target", &mut cam.look_at, 1.0, "", None, None);
-        ui.add_space(4.0);
-        c |= axis_row(
-            ui,
-            "Roll",
-            &mut cam.roll,
-            0.5,
-            "°",
-            Some(1),
-            Some(-180.0..=180.0),
-        );
-    });
-
-    section_header(ui, icons::APERTURE, "Lens");
-    ui.indent("cam_lens", |ui| {
-        c |= axis_row(
-            ui,
-            "FOV",
-            &mut cam.fov,
-            0.2,
-            "°",
-            Some(1),
-            Some(1.0..=179.0),
-        );
-        c |= axis_row(
-            ui,
-            "DoF",
-            &mut cam.dof_angle,
-            0.05,
-            "°",
-            Some(2),
-            Some(0.0..=180.0),
-        );
-        c |= axis_row(
-            ui,
-            "Focus",
-            &mut cam.focus_dist,
-            1.0,
-            "",
-            Some(1),
-            Some(0.001..=1.0e6),
-        );
-    });
-
-    section_header(ui, icons::IMAGE, "Output");
-    ui.indent("cam_output", |ui| {
-        // Resolution: width and height are edited independently — changing one
-        // adjusts the aspect ratio so the other stays put.
-        let cur_h = ((cam.image_width as f64 / cam.aspect_ratio).round().max(1.0)) as u32;
-        c |= prop_row(ui, "Width", |ui| {
-            let h = ui.spacing().interact_size.y;
-            let mut w = cam.image_width;
-            if ui
-                .add_sized(
-                    [ui.available_width(), h],
-                    egui::DragValue::new(&mut w).speed(4.0).range(1..=8192),
-                )
-                .changed()
-            {
-                cam.image_width = w.max(1);
-                cam.aspect_ratio = cam.image_width as f64 / cur_h as f64;
-                true
-            } else {
-                false
-            }
-        });
-        c |= prop_row(ui, "Height", |ui| {
-            let h = ui.spacing().interact_size.y;
-            let mut hpx = cur_h;
-            if ui
-                .add_sized(
-                    [ui.available_width(), h],
-                    egui::DragValue::new(&mut hpx).speed(4.0).range(1..=8192),
-                )
-                .changed()
-            {
-                cam.aspect_ratio = cam.image_width as f64 / hpx.max(1) as f64;
-                true
-            } else {
-                false
-            }
-        });
-        c |= int_row(ui, "Samples", &mut cam.samples, Some(1..=100_000));
-        c |= int_row(ui, "Max Bounces", &mut cam.max_depth, Some(1..=1_000));
-    });
-
-    c
 }
 
 /// A Phosphor type icon for the object list.
@@ -175,93 +30,6 @@ pub(crate) fn shape_icon(s: &Shape) -> &'static str {
         Shape::Box { .. } => icons::CUBE,
         Shape::Mesh { .. } => icons::POLYGON,
     }
-}
-
-/// Selectable list of objects + buttons to add new ones. Returns whether the
-/// object set changed (selection changes alone don't require a re-render).
-pub fn object_list(
-    ui: &mut egui::Ui,
-    objects: &mut Vec<ObjectSpec>,
-    selected: &mut Option<usize>,
-) -> bool {
-    let mut changed = false;
-
-    for (i, obj) in objects.iter().enumerate() {
-        let label = format!("{}  {}", shape_icon(&obj.shape), obj.name);
-        if ui.selectable_label(*selected == Some(i), label).clicked() {
-            *selected = Some(i);
-        }
-    }
-
-    ui.add_space(4.0);
-    ui.horizontal_wrapped(|ui| {
-        if ui
-            .button(format!("{}  {}  Sphere", icons::PLUS, icons::SPHERE))
-            .clicked()
-        {
-            objects.push(default_sphere(objects.len()));
-            *selected = Some(objects.len() - 1);
-            changed = true;
-        }
-        if ui
-            .button(format!("{}  {}  Box", icons::PLUS, icons::CUBE))
-            .clicked()
-        {
-            objects.push(default_box(objects.len()));
-            *selected = Some(objects.len() - 1);
-            changed = true;
-        }
-        changed |= import_obj(ui, objects, selected);
-    });
-    changed
-}
-
-/// A bold, iconed sub-heading used to group the settings.
-fn section_header(ui: &mut egui::Ui, icon: &str, title: &str) {
-    ui.add_space(6.0);
-    ui.label(egui::RichText::new(format!("{}  {}", icon, title)).strong());
-}
-
-/// Editor for a single selected object (name, material, geometry, transform).
-pub fn object_settings(ui: &mut egui::Ui, obj: &mut ObjectSpec) -> bool {
-    let mut changed = false;
-
-    // Renaming is cosmetic, so it doesn't invalidate the render.
-    ui.horizontal(|ui| {
-        ui.label("name");
-        ui.text_edit_singleline(&mut obj.name);
-    });
-
-    let is_mesh = matches!(obj.shape, Shape::Mesh { .. });
-
-    section_header(ui, icons::PALETTE, "Material");
-    ui.indent("material_body", |ui| {
-        if is_mesh {
-            // A mesh's material is baked into its triangles at import; editing
-            // it would mean rebuilding the BVH, so it's fixed here.
-            ui.weak("baked at import");
-        } else {
-            changed |= material_controls(ui, &mut obj.material);
-        }
-    });
-
-    // Geometry is shown only for primitives with intuitive parameters. Quads
-    // (cryptic q/u/v) and meshes are positioned via the Transform section.
-    let show_geometry = matches!(obj.shape, Shape::Sphere { .. } | Shape::Box { .. });
-    if show_geometry {
-        section_header(ui, icons::SHAPES, "Geometry");
-        ui.indent("geometry_body", |ui| {
-            changed |= shape_controls(ui, &mut obj.shape);
-        });
-    }
-
-    // Transform applies to every object — it wraps the geometry (including a
-    // mesh's BVH) with Translate/Rotate/Scale, with no rebuild.
-    section_header(ui, icons::ARROWS_OUT_CARDINAL, "Transform");
-    ui.indent("transform_body", |ui| {
-        changed |= transform_controls(ui, &mut obj.transform);
-    });
-    changed
 }
 
 /// Base colour shared across material types (used to carry it over on a type
@@ -558,7 +326,7 @@ fn cell_texture_controls(ui: &mut egui::Ui, id: &str, t: &mut CellTexture) -> bo
         CellTexture::Image { .. } => "Image",
     };
 
-    changed |= prop_row(ui, "Cell", |ui| {
+    changed |= widgets::prop_row(ui, "Cell", |ui| {
         let mut c = false;
         egui::ComboBox::from_id_salt(id)
             .selected_text(current)
@@ -599,9 +367,13 @@ fn cell_texture_controls(ui: &mut egui::Ui, id: &str, t: &mut CellTexture) -> bo
     match t {
         CellTexture::Solid { color } => changed |= color_prop(ui, "Color", color),
         CellTexture::Noise { scale, depth } => {
-            changed |= axis_row(ui, "Scale", scale, 0.01, "", Some(3), Some(0.01..=100.0));
+            changed |= widgets::prop_row(ui, "Scale", |ui| {
+                widgets::axis_field(ui, widgets::Axis::None, scale, 0.01, Some(3), "", Some(0.01..=100.0))
+            });
             let mut d = *depth as f32;
-            if axis_row(ui, "Detail", &mut d, 1.0, "", Some(0), Some(1.0..=10.0)) {
+            if widgets::prop_row(ui, "Detail", |ui| {
+                widgets::axis_field(ui, widgets::Axis::None, &mut d, 1.0, Some(0), "", Some(1.0..=10.0))
+            }) {
                 *depth = d.round().clamp(1.0, 10.0) as u32;
                 changed = true;
             }
@@ -615,7 +387,7 @@ fn cell_texture_controls(ui: &mut egui::Ui, id: &str, t: &mut CellTexture) -> bo
 /// dialog, reading the chosen file's bytes straight into the embedded `Asset`.
 fn image_picker_row(ui: &mut egui::Ui, asset: &mut Asset) -> bool {
     let mut changed = false;
-    prop_row(ui, "Image", |ui| {
+    widgets::prop_row(ui, "Image", |ui| {
         let label = asset.label.clone().unwrap_or_else(|| "(none)".to_string());
         #[cfg(not(target_arch = "wasm32"))]
         if ui.button("Choose\u{2026}").clicked() {
@@ -658,94 +430,28 @@ fn pick(
     }
 }
 
-// --- Blender-style stacked axis rows: right-aligned label, full-width field ---
-
-const AXIS_LABEL_W: f32 = 84.0;
-
-/// One `label | [ value ]` row: a right-aligned label in a fixed column, then a
-/// drag field that fills the rest of the width (Blender property style).
-fn axis_row(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut f32,
-    speed: f32,
-    suffix: &str,
-    decimals: Option<usize>,
-    range: Option<RangeInclusive<f32>>,
-) -> bool {
-    let mut dv = egui::DragValue::new(value).speed(speed);
-    if !suffix.is_empty() {
-        dv = dv.suffix(suffix);
-    }
-    if let Some(d) = decimals {
-        dv = dv.fixed_decimals(d);
-    }
-    if let Some(r) = range {
-        dv = dv.range(r);
-    }
-
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        let h = ui.spacing().interact_size.y;
-        ui.allocate_ui_with_layout(
-            egui::vec2(AXIS_LABEL_W, h),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                ui.label(label);
-            },
-        );
-        changed = ui.add_sized([ui.available_width(), h], dv).changed();
-    });
-    changed
-}
-
-/// A `name X` / `Y` / `Z` stack, Blender-style (only the first row is named).
-fn axis_vec(
-    ui: &mut egui::Ui,
-    name: &str,
-    v: &mut Vec3,
-    speed: f32,
-    suffix: &str,
-    decimals: Option<usize>,
-    range: Option<RangeInclusive<f32>>,
-) -> bool {
-    let mut c = false;
-    c |= axis_row(
-        ui,
-        &format!("{name} X"),
-        &mut v.x,
-        speed,
-        suffix,
-        decimals,
-        range.clone(),
-    );
-    c |= axis_row(ui, "Y", &mut v.y, speed, suffix, decimals, range.clone());
-    c |= axis_row(ui, "Z", &mut v.z, speed, suffix, decimals, range);
-    c
-}
-
 pub(crate) fn shape_controls(ui: &mut egui::Ui, s: &mut Shape) -> bool {
     let mut changed = false;
     match s {
         Shape::Sphere { center, radius } => {
-            widgets::section_header(ui, "", "Center");
+            vec_label(ui, "Center");
             changed |= widgets::axis_vec(ui, center, 1.0, "", None, None);
             changed |= widgets::prop_row(ui, "Radius", |ui| {
                 widgets::axis_field(ui, widgets::Axis::None, radius, 0.5, None, "", Some(0.001..=1.0e6))
             });
         }
         Shape::Quad { q, u, v } => {
-            widgets::section_header(ui, "", "Q");
+            vec_label(ui, "Q");
             changed |= widgets::axis_vec(ui, q, 1.0, "", None, None);
-            widgets::section_header(ui, "", "U");
+            vec_label(ui, "U");
             changed |= widgets::axis_vec(ui, u, 1.0, "", None, None);
-            widgets::section_header(ui, "", "V");
+            vec_label(ui, "V");
             changed |= widgets::axis_vec(ui, v, 1.0, "", None, None);
         }
         Shape::Box { a, b } => {
-            widgets::section_header(ui, "", "Min");
+            vec_label(ui, "Min");
             changed |= widgets::axis_vec(ui, a, 1.0, "", None, None);
-            widgets::section_header(ui, "", "Max");
+            vec_label(ui, "Max");
             changed |= widgets::axis_vec(ui, b, 1.0, "", None, None);
         }
         Shape::Mesh { .. } => {}
@@ -755,13 +461,18 @@ pub(crate) fn shape_controls(ui: &mut egui::Ui, s: &mut Shape) -> bool {
 
 pub(crate) fn transform_controls(ui: &mut egui::Ui, t: &mut Transform) -> bool {
     let mut changed = false;
-    widgets::section_header(ui, "", "Location");
+    vec_label(ui, "Location");
     changed |= widgets::axis_vec(ui, &mut t.translate, 1.0, "", None, None);
-    widgets::section_header(ui, "", "Rotation");
+    vec_label(ui, "Rotation");
     changed |= widgets::axis_vec(ui, &mut t.rotate, 1.0, "°", None, Some(-360.0..=360.0));
-    widgets::section_header(ui, "", "Scale");
+    vec_label(ui, "Scale");
     changed |= widgets::axis_vec(ui, &mut t.scale, 0.01, "", Some(3), Some(0.001..=1.0e4));
     changed
+}
+
+/// A small muted per-vector caption (e.g. "Location"), matching `camera_tab`.
+fn vec_label(ui: &mut egui::Ui, name: &str) {
+    ui.label(egui::RichText::new(name).color(theme::TEXT_DIM).size(11.0));
 }
 
 pub(crate) fn default_sphere(n: usize) -> ObjectSpec {

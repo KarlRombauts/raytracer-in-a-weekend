@@ -21,6 +21,7 @@ pub fn overlays(
     egui::Area::new("vp_res".into())
         .fixed_pos(rect.left_top() + egui::vec2(16.0, 14.0))
         .order(egui::Order::Foreground)
+        .movable(false)
         .show(ui.ctx(), |ui| {
             widgets::overlay_frame().show(ui, |ui| {
                 ui.label(
@@ -35,6 +36,7 @@ pub fn overlays(
     egui::Area::new("vp_reset".into())
         .fixed_pos(rect.left_bottom() + egui::vec2(16.0, -44.0))
         .order(egui::Order::Foreground)
+        .movable(false)
         .show(ui.ctx(), |ui| {
             widgets::overlay_frame().show(ui, |ui| {
                 if ui

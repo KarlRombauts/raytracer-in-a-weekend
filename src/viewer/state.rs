@@ -17,7 +17,6 @@ pub struct UiState {
     pub mode: Mode,
     pub selected: Option<usize>,
     pub tab: Tab,
-    pub add_menu_open: bool,
     pub gizmo_local: bool,
     pub gizmo_modes: raster::gizmo::GizmoModes,
     /// egui time of the last camera motion (preview debounce).
@@ -30,7 +29,6 @@ impl Default for UiState {
             mode: Mode::Render,
             selected: None,
             tab: Tab::Object,
-            add_menu_open: false,
             gizmo_local: false,
             gizmo_modes: raster::gizmo::GizmoModes {
                 translate: true,

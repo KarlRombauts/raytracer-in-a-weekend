@@ -45,13 +45,6 @@ fn encode_rgba_png(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     bytes
 }
 
-/// A rounded, slightly-darker card to group related controls.
-fn card(ui: &egui::Ui) -> egui::Frame {
-    egui::Frame::group(ui.style())
-        .fill(egui::Color32::from_black_alpha(40))
-        .corner_radius(egui::CornerRadius::same(6))
-}
-
 /// Open a window and progressively render `scene`, refining one sample-per-pixel
 /// pass at a time. The side panel edits the scene live; each edit cancels the
 /// in-flight render and restarts. A Save image button lets the user explicitly
@@ -99,20 +92,14 @@ pub struct ViewerApp {
     texture: Option<egui::TextureHandle>,
     shown_pass: u32,
     view: ViewTransform,
-    /// Index of the object whose settings are shown (UI state, not scene data).
-    selected: Option<usize>,
-    mode: Mode,
     initial_camera: crate::camera::CameraConfig,
-    /// egui time (seconds) of the last camera motion, for the preview debounce.
-    last_interact: f64,
     /// GL rasterizer for the Edit-mode preview.
     gl_renderer: Arc<Mutex<raster::renderer::SceneRenderer>>,
     /// Persistent transform-gizmo state (holds drag state between frames).
     gizmo: transform_gizmo_egui::Gizmo,
-    /// Whether the gizmo manipulates in world (global) or object-local axes.
-    gizmo_local: bool,
-    /// Which handle groups (translate / rotate / scale) the gizmo shows.
-    gizmo_modes: raster::gizmo::GizmoModes,
+    /// All editor UI state (mode, selection, inspector tab, gizmo options,
+    /// preview debounce clock) lives here.
+    ui_state: state::UiState,
 }
 
 impl ViewerApp {
@@ -132,18 +119,10 @@ impl ViewerApp {
             texture: None,
             shown_pass: 0,
             view: ViewTransform::new(),
-            selected: None,
-            mode: Mode::Render,
             initial_camera,
-            last_interact: -1.0,
             gl_renderer,
             gizmo: transform_gizmo_egui::Gizmo::default(),
-            gizmo_local: false,
-            gizmo_modes: raster::gizmo::GizmoModes {
-                translate: true,
-                rotate: true,
-                scale: true,
-            },
+            ui_state: state::UiState::default(),
         }
     }
 }
@@ -186,166 +165,82 @@ impl eframe::App for ViewerApp {
             self.shown_pass = passes;
         }
 
-        // --- Side panel: status + editable scene ---
-        // Capture the mode before the panel renders so we can detect a
-        // Edit→Render transition and invalidate the path trace once.
-        let mode_before = self.mode;
+        // Capture the mode before the panels render so we can detect a
+        // Render↔Edit transition and pause/resume the path trace once.
+        let mode_before = self.ui_state.mode;
         let mut dirty = false;
-        let mut selected = self.selected;
-        {
-            let scene_arc = self.scene.clone();
-            let mut scene = scene_arc.lock().unwrap();
-            egui::Panel::left("controls")
-                .resizable(true)
-                .default_size(270.0)
-                .show(ui, |ui| {
-                    let frac = if total > 0 {
-                        passes as f32 / total as f32
-                    } else {
-                        0.0
-                    };
-                    ui.add(
-                        egui::ProgressBar::new(frac)
-                            .desired_height(14.0)
-                            .text(format!("pass {} / {}   ·   {:.1}s", passes, total, elapsed)),
-                    );
-                    ui.horizontal(|ui| {
-                        if done {
-                            ui.label("done");
-                        } else {
-                            ui.spinner();
-                            ui.label("rendering…");
-                        }
-                        if ui
-                            .button(format!("{}  Save image", icons::FLOPPY))
-                            .clicked()
-                        {
-                            let bytes = {
-                                // Re-encode the current shown frame from the
-                                // shared RGBA buffer (already gamma-corrected).
-                                let s = self.render.lock();
-                                encode_rgba_png(&s.rgba, s.width, s.height)
-                            };
-                            crate::platform::save_png("render.png", &bytes);
-                        }
-                    });
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(&mut self.mode, Mode::Render, "Render");
-                        ui.selectable_value(&mut self.mode, Mode::Edit, "Edit");
-                        if ui.button("Reset camera").clicked() {
-                            scene.camera = self.initial_camera.clone();
-                            self.render.invalidate();
-                        }
-                    });
-                    ui.separator();
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        egui::CollapsingHeader::new(format!("{}  Camera", icons::CAMERA))
-                            .default_open(true)
-                            .show(ui, |ui| {
-                                card(ui).show(ui, |ui| {
-                                    ui.set_min_width(ui.available_width());
-                                    dirty |= controls::camera_controls(ui, &mut scene.camera);
-                                });
-                            });
-                        egui::CollapsingHeader::new(format!("{}  Objects", icons::STACK))
-                            .default_open(true)
-                            .show(ui, |ui| {
-                                // Object list, in a card.
-                                card(ui).show(ui, |ui| {
-                                    ui.set_min_width(ui.available_width());
-                                    dirty |= controls::object_list(
-                                        ui,
-                                        &mut scene.objects,
-                                        &mut selected,
-                                    );
-                                });
-                                ui.add_space(6.0);
+        let mut actions: Vec<panels::Action> = Vec::new();
 
-                                // Selected-object settings, in their own card.
-                                match selected {
-                                    Some(i) if i < scene.objects.len() => {
-                                        card(ui).show(ui, |ui| {
-                                            ui.set_min_width(ui.available_width());
-                                            dirty |= controls::object_settings(
-                                                ui,
-                                                &mut scene.objects[i],
-                                            );
-                                            ui.add_space(6.0);
-                                            if ui
-                                                .button(format!("{}  Delete", icons::TRASH))
-                                                .clicked()
-                                            {
-                                                scene.objects.remove(i);
-                                                selected = None;
-                                                dirty = true;
-                                            }
-                                        });
-                                    }
-                                    Some(_) => selected = None,
-                                    None => {
-                                        ui.weak("Select an object to edit its settings.");
-                                    }
-                                }
-                            });
-                    });
-                });
-        }
-        self.selected = selected;
-        if dirty {
-            self.render.invalidate();
-        }
-        // The path trace is wasted work in Edit mode (the GL preview is shown
-        // instead), so pause it there and resume — restarting at the edited
-        // scene — when returning to Render.
-        if mode_before != self.mode {
-            match self.mode {
-                Mode::Edit => self.render.pause(),
-                Mode::Render => self.render.resume(),
-            }
-        }
-
-        // --- Top toolbar: gizmo handle-group toggles (Edit mode only) ---
-        if self.mode == Mode::Edit {
-            egui::Panel::top("gizmo_toolbar").show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add_space(2.0);
-                    ui.strong("Gizmo");
-                    ui.separator();
-                    let mut tool = |ui: &mut egui::Ui, on: &mut bool, icon: &str, tip: &str| {
-                        if ui
-                            .selectable_label(*on, format!("{icon}  {tip}"))
-                            .on_hover_text(format!("Toggle {tip} handles"))
-                            .clicked()
-                        {
-                            *on ^= true;
-                        }
-                    };
-                    tool(
-                        ui,
-                        &mut self.gizmo_modes.translate,
-                        icons::ARROWS_OUT_CARDINAL,
-                        "Move",
-                    );
-                    tool(
-                        ui,
-                        &mut self.gizmo_modes.rotate,
-                        icons::ARROWS_CLOCKWISE,
-                        "Rotate",
-                    );
-                    tool(ui, &mut self.gizmo_modes.scale, icons::RESIZE, "Scale");
-                    ui.separator();
-                    ui.checkbox(&mut self.gizmo_local, "Local axes");
-                });
+        // --- Top bar: logo, scene chip, mode toggle, save buttons ---
+        egui::Panel::top("top_bar")
+            .exact_size(54.0)
+            .frame(egui::Frame::NONE.fill(theme::BG_TOPBAR))
+            .show_inside(ui, |ui| {
+                let scene = self.scene.lock().unwrap();
+                actions.push(panels::show_top_bar(ui, &mut self.ui_state, &scene));
             });
-        }
 
-        // --- Central panel: path-traced image or GL preview ---
-        egui::CentralPanel::default().show(ui, |ui| {
+        // --- Left outliner: scene object rows + Add menu ---
+        egui::Panel::left("outliner")
+            .exact_size(286.0)
+            .resizable(false)
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::BG_PANEL)
+                    .inner_margin(egui::Margin::same(12)),
+            )
+            .show_inside(ui, |ui| {
+                let mut scene = self.scene.lock().unwrap();
+                dirty |= panels::show_outliner(ui, &mut self.ui_state, &mut scene);
+            });
+
+        // --- Right inspector: Object / Camera / Output tabs ---
+        egui::Panel::right("inspector")
+            .exact_size(342.0)
+            .resizable(false)
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::BG_PANEL)
+                    .inner_margin(egui::Margin::same(12)),
+            )
+            .show_inside(ui, |ui| {
+                let mut scene = self.scene.lock().unwrap();
+                dirty |= panels::show_inspector(ui, &mut self.ui_state, &mut scene);
+            });
+
+        // --- Status dock: progress line + status + Samples/Bounces + restart ---
+        egui::Panel::bottom("status_dock")
+            .exact_size(63.0)
+            .frame(egui::Frame::NONE.fill(theme::BG_TOPBAR))
+            .show_inside(ui, |ui| {
+                let mut scene = self.scene.lock().unwrap();
+                let out = panels::status_dock(
+                    ui,
+                    self.ui_state.mode,
+                    done,
+                    passes,
+                    total,
+                    elapsed as f32,
+                    &mut scene.camera,
+                );
+                if out.restart {
+                    actions.push(panels::Action::Restart);
+                }
+                dirty |= out.dirty;
+            });
+
+        // --- Central viewport: path-traced image or GL preview + overlays ---
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(theme::BG_VIEWPORT))
+            .show_inside(ui, |ui| {
             let vp = ui.available_rect_before_wrap();
             let response = ui.allocate_rect(vp, egui::Sense::click_and_drag());
 
-            match self.mode {
+            // The rect the path-traced image / GL preview occupies, captured so
+            // the overlays can pin to it after painting.
+            let mut image_rect = vp;
+
+            match self.ui_state.mode {
                 Mode::Render => {
                     // Leaving Edit mid-preview: restore full-resolution rendering.
                     if self.render.preview_scale() != 1 {
@@ -372,6 +267,7 @@ impl eframe::App for ViewerApp {
                     match &self.texture {
                         Some(t) => {
                             let rect = self.view.image_rect(vp, aspect);
+                            image_rect = rect.intersect(vp);
                             ui.painter_at(vp).image(
                                 t.id(),
                                 rect,
@@ -397,6 +293,7 @@ impl eframe::App for ViewerApp {
                         fit = egui::vec2(vp.height() * aspect, vp.height());
                     }
                     let rect = egui::Rect::from_center_size(vp.center(), fit);
+                    image_rect = rect;
                     let cam_proj = |s: &Scene| {
                         raster::camera_gl::projection_matrix(
                             &s.camera,
@@ -410,7 +307,7 @@ impl eframe::App for ViewerApp {
                     //    gizmo overlays it). The outline tracks `selected`.
                     let scene_arc = self.scene.clone();
                     let renderer = self.gl_renderer.clone();
-                    let selected = self.selected;
+                    let selected = self.ui_state.selected;
                     let cb = eframe::egui_glow::CallbackFn::new(move |info, painter| {
                         let scene = scene_arc.lock().unwrap();
                         renderer
@@ -428,7 +325,7 @@ impl eframe::App for ViewerApp {
                     //    camera or reselect.
                     let mut gizmo_active = false;
                     let mut moved = false;
-                    if let Some(i) = self.selected {
+                    if let Some(i) = self.ui_state.selected {
                         let mut scene = self.scene.lock().unwrap();
                         if i < scene.objects.len() {
                             let view = raster::camera_gl::view_matrix(&scene.camera);
@@ -440,8 +337,8 @@ impl eframe::App for ViewerApp {
                                 view,
                                 proj,
                                 rect,
-                                self.gizmo_local,
-                                self.gizmo_modes,
+                                self.ui_state.gizmo_local,
+                                self.ui_state.gizmo_modes,
                                 &mut scene.objects[i].transform,
                                 pivot,
                             );
@@ -502,21 +399,22 @@ impl eframe::App for ViewerApp {
                                     1.0 - 2.0 * (pos.y - rect.top()) / rect.height(),
                                 );
                                 let ray = raster::pick::screen_ray(view, proj, ndc);
-                                self.selected = raster::pick::pick(&s, &ray);
+                                self.ui_state.selected = raster::pick::pick(&s, &ray);
                             } else {
-                                self.selected = None;
+                                self.ui_state.selected = None;
                             }
                             ui.ctx().request_repaint();
                         }
                     }
                     if moved {
-                        self.last_interact = now;
+                        self.ui_state.last_interact = now;
                     }
 
                     // Reduced-resolution preview while actively interacting;
                     // snap back to full quality once motion has stopped. Inert in
                     // Edit (no invalidate), but kept for the Render handoff.
-                    let interacting = (now - self.last_interact) < PREVIEW_DEBOUNCE as f64;
+                    let interacting =
+                        (now - self.ui_state.last_interact) < PREVIEW_DEBOUNCE as f64;
                     let want_scale = if interacting { PREVIEW_SCALE } else { 1 };
                     let scale_changed = self.render.preview_scale() != want_scale;
                     if scale_changed {
@@ -533,6 +431,58 @@ impl eframe::App for ViewerApp {
                     }
                 }
             }
+
+            // Floating overlays (resolution badge, Reset-camera chip, Edit
+            // toolbar) on top of whatever was just painted.
+            let mut gm = self.ui_state.gizmo_modes;
+            let mut gl = self.ui_state.gizmo_local;
+            if panels::overlays(
+                ui,
+                image_rect,
+                self.ui_state.mode,
+                &mut gm,
+                &mut gl,
+                (img_w, img_h),
+            ) {
+                actions.push(panels::Action::ResetCamera);
+            }
+            self.ui_state.gizmo_modes = gm;
+            self.ui_state.gizmo_local = gl;
         });
+
+        // --- Apply panel actions + dirty centrally (all scene locks released) ---
+        for a in actions {
+            match a {
+                panels::Action::SaveImage => {
+                    let bytes = {
+                        // Re-encode the current shown frame from the shared RGBA
+                        // buffer (already gamma-corrected).
+                        let s = self.render.lock();
+                        encode_rgba_png(&s.rgba, s.width, s.height)
+                    };
+                    crate::platform::save_png("render.png", &bytes);
+                }
+                panels::Action::ResetCamera => {
+                    let mut scene = self.scene.lock().unwrap();
+                    scene.camera = self.initial_camera.clone();
+                    self.render.invalidate();
+                }
+                panels::Action::Restart => self.render.invalidate(),
+                panels::Action::None | panels::Action::SaveScene => {}
+            }
+        }
+        if dirty {
+            self.render.invalidate();
+        }
+
+        // The path trace is wasted work in Edit mode (the GL preview is shown
+        // instead), so pause it there and resume — restarting at the edited
+        // scene — when returning to Render.
+        if mode_before != self.ui_state.mode {
+            match self.ui_state.mode {
+                Mode::Edit => self.render.pause(),
+                Mode::Render => self.render.resume(),
+            }
+        }
     }
 }
