@@ -7,6 +7,7 @@ mod render_task;
 mod state;
 pub mod theme;
 mod view_transform;
+mod texture_library;
 mod widgets;
 
 use std::sync::{Arc, Mutex};

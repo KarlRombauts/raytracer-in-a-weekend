@@ -3,7 +3,7 @@
 
 use eframe::egui;
 
-use super::{icons, widgets};
+use super::{icons, theme, texture_library, widgets};
 use crate::color::Color;
 use crate::scene::{
     self, Asset, CellTexture, Mapping, MaterialSpec, ObjectSpec, Shape, TextureSpec, Transform,
@@ -266,52 +266,7 @@ pub(crate) fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
             }
         }
         TextureSpec::Image { asset, mapping } => {
-            changed |= image_picker_row(ui, asset);
-            use crate::texture::Projection;
-            let proj_label = match mapping.projection {
-                Projection::MeshUv => "Mesh UV",
-                Projection::Planar => "Planar",
-                Projection::Spherical => "Spherical",
-                Projection::Cylindrical => "Cylindrical",
-            };
-            widgets::prop_row(ui, "Projection", |ui| {
-                egui::ComboBox::from_id_salt("texture_projection")
-                    .selected_text(proj_label)
-                    .width(ui.available_width())
-                    .show_ui(ui, |ui| {
-                        for (p, label) in [
-                            (Projection::MeshUv, "Mesh UV"),
-                            (Projection::Planar, "Planar"),
-                            (Projection::Spherical, "Spherical"),
-                            (Projection::Cylindrical, "Cylindrical"),
-                        ] {
-                            if ui
-                                .selectable_label(mapping.projection == p, label)
-                                .clicked()
-                            {
-                                mapping.projection = p;
-                                changed = true;
-                            }
-                        }
-                    });
-            });
-            changed |= widgets::prop_row(ui, "Tile", |ui| {
-                widgets::axis_field(ui, widgets::Axis::None, &mut mapping.scale, 0.01, Some(3), "", Some(0.01..=100.0))
-            });
-            let mut offset_u = mapping.offset.0;
-            let mut offset_v = mapping.offset.1;
-            if widgets::prop_row(ui, "Offset U", |ui| {
-                widgets::axis_field(ui, widgets::Axis::None, &mut offset_u, 0.01, Some(3), "", Some(-10.0..=10.0))
-            }) {
-                mapping.offset.0 = offset_u;
-                changed = true;
-            }
-            if widgets::prop_row(ui, "Offset V", |ui| {
-                widgets::axis_field(ui, widgets::Axis::None, &mut offset_v, 0.01, Some(3), "", Some(-10.0..=10.0))
-            }) {
-                mapping.offset.1 = offset_v;
-                changed = true;
-            }
+            changed |= image_texture_card(ui, asset, mapping);
         }
     }
     changed
@@ -385,12 +340,29 @@ fn cell_texture_controls(ui: &mut egui::Ui, id: &str, t: &mut CellTexture) -> bo
 
 /// A row showing the current image label and a button that opens a native file
 /// dialog, reading the chosen file's bytes straight into the embedded `Asset`.
+/// Used by `cell_texture_controls` for the checker cell Image variant.
 fn image_picker_row(ui: &mut egui::Ui, asset: &mut Asset) -> bool {
     let mut changed = false;
     widgets::prop_row(ui, "Image", |ui| {
+        changed |= image_load_button(ui, asset);
         let label = asset.label.clone().unwrap_or_else(|| "(none)".to_string());
-        #[cfg(not(target_arch = "wasm32"))]
-        if ui.button("Choose\u{2026}").clicked() {
+        // Truncate long filenames so they don't overflow and push the panel wider.
+        ui.add(egui::Label::new(label).truncate());
+    });
+    changed
+}
+
+/// "Load image…" button: opens a native file picker (native-only; wasm shows a
+/// disabled button). Returns true if a new file was loaded into `asset`.
+/// Factored out so both `image_picker_row` (cell textures) and
+/// `image_texture_card` (full texture) share the rfd logic without duplication.
+fn image_load_button(ui: &mut egui::Ui, asset: &mut Asset) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if ui
+            .button(format!("{} Load image\u{2026}", icons::FOLDER))
+            .clicked()
+        {
             if let Some(path) = rfd::FileDialog::new()
                 .add_filter("Image", &["png", "jpg", "jpeg"])
                 .pick_file()
@@ -398,19 +370,273 @@ fn image_picker_row(ui: &mut egui::Ui, asset: &mut Asset) -> bool {
                 if let Ok(bytes) = std::fs::read(&path) {
                     asset.bytes = bytes.into();
                     asset.label = path.file_name().map(|s| s.to_string_lossy().into_owned());
-                    changed = true;
+                    return true;
                 }
             }
         }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = ui
-                .add_enabled(false, egui::Button::new("Choose\u{2026}"))
-                .on_disabled_hover_text("Image import isn't available in the browser yet");
-        }
-        // Truncate long filenames so they don't overflow and push the panel wider.
-        ui.add(egui::Label::new(label).truncate());
-    });
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = ui
+            .add_enabled(false, egui::Button::new("Load image\u{2026}"))
+            .on_disabled_hover_text("Image import isn't available in the browser yet");
+        let _ = asset;
+    }
+    false
+}
+
+/// Card-style editor for `TextureSpec::Image`. Shows a thumbnail, filename,
+/// load button, mapping controls, and a texture library preset grid.
+fn image_texture_card(
+    ui: &mut egui::Ui,
+    asset: &mut Asset,
+    mapping: &mut crate::scene::Mapping,
+) -> bool {
+    use crate::texture::Projection;
+
+    let mut changed = false;
+
+    egui::Frame::NONE
+        .fill(theme::FIELD_BG)
+        .stroke(egui::Stroke::new(1.0, theme::BORDER_FIELD))
+        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::same(10))
+        .show(ui, |ui| {
+            // ---- Top row: 58×58 thumbnail + filename + load button ----
+            ui.horizontal(|ui| {
+                let thumb_size = egui::vec2(58.0, 58.0);
+                let thumb_key = asset.label.as_deref().unwrap_or("__current__");
+                let have_image = !asset.bytes.is_empty();
+                let thumb_handle = if have_image {
+                    texture_library::texture_for(ui.ctx(), thumb_key, &asset.bytes)
+                } else {
+                    None
+                };
+
+                // Reserve the thumbnail area
+                let (thumb_rect, _) =
+                    ui.allocate_exact_size(thumb_size, egui::Sense::hover());
+                if let Some(ref handle) = thumb_handle {
+                    // Paint the image directly
+                    ui.painter().image(
+                        handle.id(),
+                        thumb_rect,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                    // Border on top
+                    ui.painter().rect_stroke(
+                        thumb_rect,
+                        egui::CornerRadius::same(6),
+                        egui::Stroke::new(1.0, theme::BORDER_FIELD),
+                    );
+                } else {
+                    // Placeholder: subtle checker + IMAGE icon
+                    let painter = ui.painter_at(thumb_rect);
+                    painter.rect_filled(
+                        thumb_rect,
+                        egui::CornerRadius::same(6),
+                        theme::FIELD_BG,
+                    );
+                    let cell = 8.0f32;
+                    let cols_n = (thumb_rect.width() / cell).ceil() as i32;
+                    let rows_n = (thumb_rect.height() / cell).ceil() as i32;
+                    for row in 0..rows_n {
+                        for col in 0..cols_n {
+                            if (row + col) % 2 == 0 {
+                                let r = egui::Rect::from_min_size(
+                                    egui::pos2(
+                                        thumb_rect.left() + col as f32 * cell,
+                                        thumb_rect.top() + row as f32 * cell,
+                                    ),
+                                    egui::vec2(cell, cell),
+                                )
+                                .intersect(thumb_rect);
+                                painter.rect_filled(
+                                    r,
+                                    egui::CornerRadius::ZERO,
+                                    egui::Color32::from_rgb(0x18, 0x19, 0x1e),
+                                );
+                            }
+                        }
+                    }
+                    painter.rect_stroke(
+                        thumb_rect,
+                        egui::CornerRadius::same(6),
+                        egui::Stroke::new(1.0, theme::BORDER_FIELD),
+                    );
+                    painter.text(
+                        thumb_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        icons::IMAGE,
+                        egui::FontId::proportional(22.0),
+                        theme::TEXT_DIM,
+                    );
+                }
+
+                // Right column: filename + load button
+                ui.vertical(|ui| {
+                    let name = asset.label.as_deref().unwrap_or("No image");
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(name)
+                                .color(theme::TEXT)
+                                .family(theme::semibold()),
+                        )
+                        .truncate(),
+                    );
+                    ui.add_space(4.0);
+                    changed |= image_load_button(ui, asset);
+                });
+            });
+
+            ui.add_space(8.0);
+
+            // ---- Mapping ----
+            let proj_label = match mapping.projection {
+                Projection::MeshUv => "Mesh UV",
+                Projection::Planar => "Planar",
+                Projection::Spherical => "Spherical",
+                Projection::Cylindrical => "Cylindrical",
+            };
+            widgets::prop_row(ui, "Mapping", |ui| {
+                egui::ComboBox::from_id_salt("texture_projection")
+                    .selected_text(proj_label)
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        for (p, label) in [
+                            (Projection::MeshUv, "Mesh UV"),
+                            (Projection::Planar, "Planar"),
+                            (Projection::Spherical, "Spherical"),
+                            (Projection::Cylindrical, "Cylindrical"),
+                        ] {
+                            if ui
+                                .selectable_label(mapping.projection == p, label)
+                                .clicked()
+                            {
+                                mapping.projection = p;
+                                changed = true;
+                            }
+                        }
+                    });
+            });
+            changed |= widgets::prop_row(ui, "Scale", |ui| {
+                widgets::axis_field(
+                    ui,
+                    widgets::Axis::None,
+                    &mut mapping.scale,
+                    0.01,
+                    Some(3),
+                    "",
+                    Some(0.01..=100.0),
+                )
+            });
+
+            let mut offset_u = mapping.offset.0;
+            let mut offset_v = mapping.offset.1;
+            if widgets::prop_row(ui, "Offset U", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("U")
+                            .monospace()
+                            .color(theme::AXIS_X)
+                            .size(11.0),
+                    );
+                    widgets::axis_field(
+                        ui,
+                        widgets::Axis::None,
+                        &mut offset_u,
+                        0.01,
+                        Some(3),
+                        "",
+                        Some(-10.0..=10.0),
+                    )
+                })
+                .inner
+            }) {
+                mapping.offset.0 = offset_u;
+                changed = true;
+            }
+            if widgets::prop_row(ui, "Offset V", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("V")
+                            .monospace()
+                            .color(theme::AXIS_Y)
+                            .size(11.0),
+                    );
+                    widgets::axis_field(
+                        ui,
+                        widgets::Axis::None,
+                        &mut offset_v,
+                        0.01,
+                        Some(3),
+                        "",
+                        Some(-10.0..=10.0),
+                    )
+                })
+                .inner
+            }) {
+                mapping.offset.1 = offset_v;
+                changed = true;
+            }
+
+            ui.add_space(8.0);
+
+            // ---- Texture library swatch grid ----
+            ui.label(
+                egui::RichText::new("Texture library")
+                    .color(theme::TEXT_MUTED)
+                    .size(11.0),
+            );
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                let swatch_size = egui::vec2(40.0, 40.0);
+                for preset in texture_library::presets() {
+                    let is_selected = asset.label.as_deref() == Some(preset.name);
+                    let border_color = if is_selected {
+                        theme::ACCENT
+                    } else {
+                        theme::BORDER_FIELD
+                    };
+
+                    let handle =
+                        texture_library::texture_for(ui.ctx(), preset.name, &preset.bytes);
+
+                    let response = if let Some(ref tex) = handle {
+                        ui.add(
+                            egui::ImageButton::new(egui::load::SizedTexture::new(
+                                tex.id(),
+                                swatch_size,
+                            ))
+                            .corner_radius(egui::CornerRadius::same(5))
+                            .frame(false),
+                        )
+                    } else {
+                        ui.add_sized(swatch_size, egui::Button::new(""))
+                    };
+
+                    // Accent border for selected preset, normal border otherwise
+                    let stroke_w = if is_selected { 2.0 } else { 1.0 };
+                    ui.painter().rect_stroke(
+                        response.rect,
+                        egui::CornerRadius::same(5),
+                        egui::Stroke::new(stroke_w, border_color),
+                    );
+
+                    if response.clicked() {
+                        *asset = Asset {
+                            bytes: preset.bytes.clone(),
+                            label: Some(preset.name.to_string()),
+                        };
+                        changed = true;
+                    }
+
+                    response.on_hover_text(preset.name);
+                }
+            });
+        });
+
     changed
 }
 
