@@ -136,10 +136,55 @@ pub fn interact(
         modes: mode_set(modes),
         orientation,
         visuals: visuals(),
+        // Match the egui pixel ratio so handle positions line up with the cursor
+        // on high-DPI / web canvases.
+        pixels_per_point: ui.ctx().pixels_per_point(),
         ..Default::default()
     });
     let current = to_gizmo_transform(transform, pivot);
-    if let Some((_result, updated)) = gizmo.interact(ui, &[current]) {
+
+    // Drive the gizmo ourselves instead of `Gizmo::interact`. The crate's egui
+    // wrapper derives `hovered` from a 1px interaction rect placed at the cursor;
+    // the instant a press carries any motion — as the browser does when it
+    // coalesces mousedown with the first mousemove — the pointer leaves that 1px
+    // rect, `hovered` reads false on the drag-start frame, the handle is never
+    // grabbed, and the drag falls through to camera orbit. Using the gizmo's own
+    // geometric pick for `hovered` is motion-independent, so a handle press grabs
+    // reliably. `pick_preview` is the same hit-test that drives the hover
+    // highlight, so "if it highlights, it grabs".
+    let cursor = ui.input(|i| i.pointer.hover_pos()).unwrap_or_default();
+    let hovered = gizmo.pick_preview((cursor.x, cursor.y));
+    let drag_started = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
+    let dragging = ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
+
+    let result = gizmo.update(
+        transform_gizmo_egui::GizmoInteraction {
+            cursor_pos: (cursor.x, cursor.y),
+            hovered,
+            drag_started,
+            dragging,
+        },
+        &[current],
+    );
+
+    // Paint the gizmo (same mesh build as the crate's egui wrapper).
+    let draw_data = gizmo.draw();
+    egui::Painter::new(ui.ctx().clone(), ui.layer_id(), viewport).add(egui::Mesh {
+        indices: draw_data.indices,
+        vertices: draw_data
+            .vertices
+            .into_iter()
+            .zip(draw_data.colors)
+            .map(|(pos, [r, g, b, a])| egui::epaint::Vertex {
+                pos: pos.into(),
+                uv: egui::Pos2::default(),
+                color: egui::Rgba::from_rgba_premultiplied(r, g, b, a).into(),
+            })
+            .collect(),
+        ..Default::default()
+    });
+
+    if let Some((_result, updated)) = result {
         if let Some(new) = updated.first() {
             *transform = from_gizmo_transform(new, pivot);
             return true;
