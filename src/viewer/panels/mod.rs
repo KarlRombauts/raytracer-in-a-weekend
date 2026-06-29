@@ -17,4 +17,6 @@ pub enum Action {
     LoadScene,
     ResetCamera,
     Restart,
+    /// Return to the library (Home) screen.
+    GoHome,
 }

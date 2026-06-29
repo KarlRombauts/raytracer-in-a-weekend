@@ -152,6 +152,20 @@ impl ViewerApp {
             scene_status: None,
         }
     }
+
+    /// Swap in a new scene, rebuild the Edit preview, restart the render, and
+    /// enter the editor. Centralizes the apply path shared by the Home screen
+    /// cards and the `.scene` file loader.
+    fn load_scene(&mut self, scene: Scene, name: impl Into<String>) {
+        let cam = scene.camera.clone();
+        *self.scene.lock().unwrap() = scene;
+        self.initial_camera = cam;
+        self.gl_renderer.lock().unwrap().mark_dirty();
+        self.ui_state.selected = None;
+        self.render.invalidate();
+        self.ui_state.scene_name = name.into();
+        self.ui_state.screen = state::Screen::Editor;
+    }
 }
 
 #[cfg(test)]
@@ -198,12 +212,11 @@ impl eframe::App for ViewerApp {
                     self.scene_picker = None;
                     match crate::scene_file::decode(&bytes) {
                         Ok(loaded) => {
-                            let loaded_camera = loaded.scene.camera.clone();
-                            *self.scene.lock().unwrap() = loaded.scene;
-                            self.initial_camera = loaded_camera;
-                            self.gl_renderer.lock().unwrap().mark_dirty();
-                            self.ui_state.selected = None;
-                            self.render.invalidate();
+                            let name = loaded
+                                .name
+                                .clone()
+                                .unwrap_or_else(|| "untitled".to_string());
+                            self.load_scene(loaded.scene, name);
                             self.scene_status = Some(("Loaded scene".to_string(), now));
                         }
                         Err(e) => self.scene_status = Some((format!("Load failed: {e}"), now)),
@@ -585,6 +598,7 @@ impl eframe::App for ViewerApp {
                     self.scene_picker = Some(crate::platform::pick_scene());
                     self.scene_status = None;
                 }
+                panels::Action::GoHome => self.ui_state.screen = state::Screen::Home,
                 panels::Action::None => {}
             }
         }
