@@ -8,7 +8,7 @@ use eframe::egui;
 use super::icons;
 use crate::camera::CameraConfig;
 use crate::color::Color;
-use crate::scene::{self, MaterialSpec, ObjectSpec, Shape, Transform};
+use crate::scene::{self, Asset, CellTexture, MaterialSpec, ObjectSpec, Shape, TextureSpec, Transform};
 use crate::vec3::{Point3, Vec3};
 
 /// `label | value` row (u32), Blender-style, optionally clamped to `range`.
@@ -259,12 +259,13 @@ pub fn object_settings(ui: &mut egui::Ui, obj: &mut ObjectSpec) -> bool {
 /// switch). Emission returns its normalised hue.
 fn shared_color(m: &MaterialSpec) -> Color {
     match m {
-        MaterialSpec::Lambertian { albedo } => *albedo,
-        MaterialSpec::Glossy { albedo, .. } => *albedo,
+        MaterialSpec::Lambertian { albedo } => albedo.preview_color(),
+        MaterialSpec::Glossy { albedo, .. } => albedo.preview_color(),
         MaterialSpec::Metal { albedo, .. } => *albedo,
         MaterialSpec::Dielectric { tint, .. } => *tint,
         MaterialSpec::DiffuseLight { emit } => {
-            *emit / emit.x.max(emit.y).max(emit.z).max(1e-4)
+            let e = emit.preview_color();
+            e / e.x.max(e.y).max(e.z).max(1e-4)
         }
     }
 }
@@ -301,13 +302,10 @@ fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
                 // Each builder receives the current shared colour/roughness so
                 // switching type keeps those values instead of resetting them.
                 c |= pick(ui, m, matches!(m, MaterialSpec::Lambertian { .. }), "Diffuse", |col, _| {
-                    MaterialSpec::Lambertian { albedo: col }
+                    MaterialSpec::Lambertian { albedo: TextureSpec::solid(col) }
                 });
                 c |= pick(ui, m, matches!(m, MaterialSpec::Glossy { .. }), "Glossy", |col, r| {
-                    MaterialSpec::Glossy {
-                        albedo: col,
-                        roughness: r,
-                    }
+                    MaterialSpec::Glossy { albedo: TextureSpec::solid(col), roughness: r }
                 });
                 c |= pick(ui, m, matches!(m, MaterialSpec::Metal { .. }), "Metal", |col, r| {
                     MaterialSpec::Metal {
@@ -323,18 +321,16 @@ fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
                     }
                 });
                 c |= pick(ui, m, matches!(m, MaterialSpec::DiffuseLight { .. }), "Emission", |col, _| {
-                    MaterialSpec::DiffuseLight {
-                        emit: col * 5.0,
-                    }
+                    MaterialSpec::DiffuseLight { emit: TextureSpec::solid(col * 5.0) }
                 });
             });
         c
     });
 
     match m {
-        MaterialSpec::Lambertian { albedo } => changed |= color_prop(ui, "Color", albedo),
+        MaterialSpec::Lambertian { albedo } => changed |= texture_controls(ui, albedo),
         MaterialSpec::Glossy { albedo, roughness } => {
-            changed |= color_prop(ui, "Color", albedo);
+            changed |= texture_controls(ui, albedo);
             changed |= axis_row(ui, "Roughness", roughness, 0.01, "", Some(3), Some(0.0..=1.0));
         }
         MaterialSpec::Metal { albedo, fuzz } => {
@@ -351,19 +347,144 @@ fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
             changed |= axis_row(ui, "IOR", ior, 0.01, "", Some(3), Some(1.0..=3.0));
         }
         MaterialSpec::DiffuseLight { emit } => {
-            // Split the HDR colour into a normalised hue + a strength multiplier.
-            let intensity = emit.x.max(emit.y).max(emit.z).max(1e-4);
-            let mut rgb = [emit.x / intensity, emit.y / intensity, emit.z / intensity];
+            let e = emit.preview_color();
+            let intensity = e.x.max(e.y).max(e.z).max(1e-4);
+            let mut rgb = [e.x / intensity, e.y / intensity, e.z / intensity];
             let mut strength = intensity;
             let col = prop_row(ui, "Color", |ui| ui.color_edit_button_rgb(&mut rgb).changed());
             let str_changed =
                 axis_row(ui, "Strength", &mut strength, 0.1, "", Some(2), Some(0.0..=10_000.0));
             if col || str_changed {
-                *emit = Color::new(rgb[0] * strength, rgb[1] * strength, rgb[2] * strength);
+                *emit = TextureSpec::solid(Color::new(
+                    rgb[0] * strength,
+                    rgb[1] * strength,
+                    rgb[2] * strength,
+                ));
                 changed = true;
             }
         }
     }
+    changed
+}
+
+/// Full texture editor: a type dropdown + per-type parameters. Used for the
+/// albedo of Diffuse/Glossy materials.
+fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
+    let mut changed = false;
+    let current = match t {
+        TextureSpec::Solid { .. } => "Color",
+        TextureSpec::Checker { .. } => "Checker",
+        TextureSpec::Noise { .. } => "Noise",
+        TextureSpec::Image { .. } => "Image",
+    };
+
+    changed |= prop_row(ui, "Texture", |ui| {
+        let mut c = false;
+        egui::ComboBox::from_id_salt("texture_type")
+            .selected_text(current)
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                let prev = t.preview_color();
+                if ui.selectable_label(matches!(t, TextureSpec::Solid { .. }), "Color").clicked() {
+                    *t = TextureSpec::Solid { color: prev };
+                    c = true;
+                }
+                if ui.selectable_label(matches!(t, TextureSpec::Checker { .. }), "Checker").clicked() {
+                    *t = TextureSpec::Checker {
+                        scale: 1.0,
+                        even: CellTexture::Solid { color: prev },
+                        odd: CellTexture::Solid { color: Color::new(1.0, 1.0, 1.0) },
+                    };
+                    c = true;
+                }
+                if ui.selectable_label(matches!(t, TextureSpec::Noise { .. }), "Noise").clicked() {
+                    *t = TextureSpec::Noise { scale: 4.0 };
+                    c = true;
+                }
+                if ui.selectable_label(matches!(t, TextureSpec::Image { .. }), "Image").clicked() {
+                    *t = TextureSpec::Image { asset: Asset::empty() };
+                    c = true;
+                }
+            });
+        c
+    });
+
+    match t {
+        TextureSpec::Solid { color } => changed |= color_prop(ui, "Color", color),
+        TextureSpec::Checker { scale, even, odd } => {
+            changed |= axis_row(ui, "Scale", scale, 0.01, "", Some(3), Some(0.01..=100.0));
+            changed |= cell_texture_controls(ui, "checker_even", even);
+            changed |= cell_texture_controls(ui, "checker_odd", odd);
+        }
+        TextureSpec::Noise { scale } => {
+            changed |= axis_row(ui, "Scale", scale, 0.01, "", Some(3), Some(0.01..=100.0));
+        }
+        TextureSpec::Image { asset } => changed |= image_picker_row(ui, asset),
+    }
+    changed
+}
+
+/// Editor for one checker cell (Solid / Noise / Image — no nested checker).
+fn cell_texture_controls(ui: &mut egui::Ui, id: &str, t: &mut CellTexture) -> bool {
+    let mut changed = false;
+    let current = match t {
+        CellTexture::Solid { .. } => "Color",
+        CellTexture::Noise { .. } => "Noise",
+        CellTexture::Image { .. } => "Image",
+    };
+
+    changed |= prop_row(ui, "Cell", |ui| {
+        let mut c = false;
+        egui::ComboBox::from_id_salt(id)
+            .selected_text(current)
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(matches!(t, CellTexture::Solid { .. }), "Color").clicked() {
+                    *t = CellTexture::Solid { color: Color::new(0.0, 0.0, 0.0) };
+                    c = true;
+                }
+                if ui.selectable_label(matches!(t, CellTexture::Noise { .. }), "Noise").clicked() {
+                    *t = CellTexture::Noise { scale: 4.0 };
+                    c = true;
+                }
+                if ui.selectable_label(matches!(t, CellTexture::Image { .. }), "Image").clicked() {
+                    *t = CellTexture::Image { asset: Asset::empty() };
+                    c = true;
+                }
+            });
+        c
+    });
+
+    match t {
+        CellTexture::Solid { color } => changed |= color_prop(ui, "Color", color),
+        CellTexture::Noise { scale } => {
+            changed |= axis_row(ui, "Scale", scale, 0.01, "", Some(3), Some(0.01..=100.0));
+        }
+        CellTexture::Image { asset } => changed |= image_picker_row(ui, asset),
+    }
+    changed
+}
+
+/// A row showing the current image label and a button that opens a native file
+/// dialog, reading the chosen file's bytes straight into the embedded `Asset`.
+fn image_picker_row(ui: &mut egui::Ui, asset: &mut Asset) -> bool {
+    let mut changed = false;
+    prop_row(ui, "Image", |ui| {
+        let label = asset.label.clone().unwrap_or_else(|| "(none)".to_string());
+        if ui.button("Choose\u{2026}").clicked() {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Image", &["png", "jpg", "jpeg"])
+                .pick_file()
+            {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    asset.bytes = bytes.into();
+                    asset.label = path.file_name().map(|s| s.to_string_lossy().into_owned());
+                    changed = true;
+                }
+            }
+        }
+        ui.label(label);
+    });
     changed
 }
 
@@ -481,7 +602,7 @@ fn default_sphere(n: usize) -> ObjectSpec {
             radius: 80.0,
         },
         material: MaterialSpec::Lambertian {
-            albedo: Color::new(0.8, 0.3, 0.3),
+            albedo: TextureSpec::solid(Color::new(0.8, 0.3, 0.3)),
         },
         transform: Transform::identity(),
     }
@@ -495,7 +616,7 @@ fn default_box(n: usize) -> ObjectSpec {
             b: Point3::new(360.0, 160.0, 360.0),
         },
         material: MaterialSpec::Lambertian {
-            albedo: Color::new(0.7, 0.7, 0.7),
+            albedo: TextureSpec::solid(Color::new(0.7, 0.7, 0.7)),
         },
         transform: Transform::identity(),
     }

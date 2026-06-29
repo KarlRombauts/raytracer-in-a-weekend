@@ -52,7 +52,7 @@ mod tests {
     use super::*;
     use crate::camera::CameraConfig;
     use crate::color::Color;
-    use crate::scene::{MaterialSpec, ObjectSpec, Shape, Transform};
+    use crate::scene::{MaterialSpec, ObjectSpec, Shape, TextureSpec, Transform};
     use super::super::camera_gl;
 
     fn looking_down_neg_z() -> CameraConfig {
@@ -77,7 +77,7 @@ mod tests {
                 radius,
             },
             material: MaterialSpec::Lambertian {
-                albedo: Color::new(0.5, 0.5, 0.5),
+                albedo: TextureSpec::solid(Color::new(0.5, 0.5, 0.5)),
             },
             transform: Transform::identity(),
         }
