@@ -111,6 +111,28 @@ fn power_heuristic(a: f32, b: f32) -> f32 {
     }
 }
 
+/// Path depth at which Russian roulette begins. Early bounces carry most of the
+/// energy, so they always survive (lower variance); only the long, dim tail is
+/// stochastically terminated.
+const MIN_RR_DEPTH: u32 = 3;
+
+/// Russian roulette: probabilistically terminate a path so its dim tail doesn't
+/// run the full `max_depth`, while keeping the estimator unbiased. Below
+/// `MIN_RR_DEPTH` the path always continues unchanged. Otherwise it survives
+/// with probability `p` — the brightest throughput channel, capped at 0.95 so
+/// the path can still die — and survivors are scaled by `1/p` so the expected
+/// contribution is unchanged. Returns `None` to terminate the path.
+fn russian_roulette(throughput: Color, depth: u32, rng: &mut SmallRng) -> Option<Color> {
+    if depth < MIN_RR_DEPTH {
+        return Some(throughput);
+    }
+    let p = throughput.x.max(throughput.y).max(throughput.z).min(0.95);
+    if p <= 0.0 || rng.random::<f32>() >= p {
+        return None;
+    }
+    Some(throughput / p)
+}
+
 /// Cosine-weighted hemisphere direction about `normal` (PDF = cos/PI), using the
 /// `normal + random_unit` trick. Returns a unit vector.
 fn cosine_direction(normal: &Vec3, rng: &mut SmallRng) -> Vec3 {
@@ -229,7 +251,7 @@ impl Camera {
         let mut specular_bounce = true;
         let mut prev_brdf_pdf = 0.0_f32;
 
-        for _ in 0..self.max_depth {
+        for depth in 0..self.max_depth {
             let Some(hit) = world.intersect(&current, &interval) else {
                 color += throughput * self.background;
                 break;
@@ -289,6 +311,12 @@ impl Camera {
                 break;
             }
             throughput = throughput * albedo;
+            // Russian roulette: terminate the dim tail early (unbiased) instead
+            // of always running to `max_depth`.
+            match russian_roulette(throughput, depth, rng) {
+                Some(t) => throughput = t,
+                None => break,
+            }
             prev_brdf_pdf = p_brdf;
             specular_bounce = false;
             current = Ray::new_t(hit.p, dir, current.time);
@@ -529,5 +557,52 @@ mod roll_tests {
         // Rolling 90° should swing the right axis onto the world vertical.
         let cam = Camera::from(cfg(90.0));
         assert!(cam.basis_u().y.abs() > 0.99, "u={:?}", cam.basis_u());
+    }
+}
+
+#[cfg(test)]
+mod russian_roulette_tests {
+    use super::*;
+    use crate::color::Color;
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+
+    #[test]
+    fn always_continues_unchanged_before_min_depth() {
+        let mut rng = SmallRng::seed_from_u64(1);
+        let t = Color::new(0.1, 0.2, 0.05);
+        for depth in 0..MIN_RR_DEPTH {
+            assert_eq!(
+                russian_roulette(t, depth, &mut rng),
+                Some(t),
+                "should not roulette at depth {depth}"
+            );
+        }
+    }
+
+    #[test]
+    fn preserves_expected_throughput() {
+        // The estimator must stay unbiased: averaging the (scaled) survivors,
+        // counting terminations as zero, recovers the original throughput.
+        let mut rng = SmallRng::seed_from_u64(7);
+        let t = Color::new(0.6, 0.3, 0.45);
+        let n = 400_000;
+        let mut sum = Color::ZERO;
+        for _ in 0..n {
+            if let Some(scaled) = russian_roulette(t, MIN_RR_DEPTH, &mut rng) {
+                sum += scaled;
+            }
+        }
+        let mean = sum / n as f32;
+        assert!((mean.x - t.x).abs() < 0.01, "x mean {} vs {}", mean.x, t.x);
+        assert!((mean.y - t.y).abs() < 0.01, "y mean {} vs {}", mean.y, t.y);
+        assert!((mean.z - t.z).abs() < 0.01, "z mean {} vs {}", mean.z, t.z);
+    }
+
+    #[test]
+    fn terminates_a_dead_path() {
+        // Zero throughput can contribute nothing, so it should always terminate.
+        let mut rng = SmallRng::seed_from_u64(3);
+        assert_eq!(russian_roulette(Color::ZERO, MIN_RR_DEPTH, &mut rng), None);
     }
 }
