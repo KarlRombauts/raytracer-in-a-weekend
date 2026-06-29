@@ -1,6 +1,7 @@
 pub mod checker_texture;
 pub mod image_loader;
 pub mod image_texture;
+pub mod mapped_texture;
 pub mod noise_texture;
 pub mod perlin;
 pub mod solid_color;
@@ -9,6 +10,7 @@ pub mod texture;
 pub use checker_texture::*;
 pub use image_loader::*;
 pub use image_texture::*;
+pub use mapped_texture::*;
 pub use noise_texture::*;
 pub use perlin::*;
 pub use solid_color::*;
