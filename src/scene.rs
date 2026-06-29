@@ -39,7 +39,7 @@ fn magenta() -> Arc<dyn Texture> {
 pub enum TextureSpec {
     Solid { color: Color },
     Checker { scale: f32, even: CellTexture, odd: CellTexture },
-    Noise { scale: f32 },
+    Noise { scale: f32, depth: u32 },
     Image { asset: Asset },
 }
 
@@ -48,7 +48,7 @@ pub enum TextureSpec {
 #[derive(Clone)]
 pub enum CellTexture {
     Solid { color: Color },
-    Noise { scale: f32 },
+    Noise { scale: f32, depth: u32 },
     Image { asset: Asset },
 }
 
@@ -63,7 +63,7 @@ impl CellTexture {
     fn build(&self) -> Arc<dyn Texture> {
         match self {
             CellTexture::Solid { color } => Arc::new(SolidColor::from_color(*color)),
-            CellTexture::Noise { scale } => Arc::new(NoiseTexture::new(*scale)),
+            CellTexture::Noise { scale, depth } => Arc::new(NoiseTexture::new(*scale, *depth)),
             CellTexture::Image { asset } => build_image(asset),
         }
     }
@@ -89,7 +89,7 @@ impl TextureSpec {
             TextureSpec::Checker { scale, even, odd } => {
                 Arc::new(CheckerTexture::from_textures(*scale, even.build(), odd.build()))
             }
-            TextureSpec::Noise { scale } => Arc::new(NoiseTexture::new(*scale)),
+            TextureSpec::Noise { scale, depth } => Arc::new(NoiseTexture::new(*scale, *depth)),
             TextureSpec::Image { asset } => build_image(asset),
         }
     }
@@ -460,7 +460,7 @@ mod texture_spec_tests {
 
     #[test]
     fn noise_previews_mid_gray() {
-        let t = TextureSpec::Noise { scale: 4.0 };
+        let t = TextureSpec::Noise { scale: 4.0, depth: 7 };
         let _ = t.build();
         assert_eq!(t.preview_color(), Color::new(0.5, 0.5, 0.5));
     }

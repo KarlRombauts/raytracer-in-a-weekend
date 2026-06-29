@@ -13,7 +13,7 @@ use crate::{
 };
 
 pub fn simple_light() {
-    let noise_texture = Arc::new(NoiseTexture::new(4.));
+    let noise_texture = Arc::new(NoiseTexture::new(4., 7));
     let noise_material = Arc::new(Lambertian::from_texture(noise_texture));
     let mut world = IntersectGroup::new();
     //ground

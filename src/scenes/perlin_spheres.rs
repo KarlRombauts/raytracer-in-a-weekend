@@ -11,7 +11,7 @@ use crate::{
 
 pub fn perlin_spheres() {
     let mut world = IntersectGroup::new();
-    let perlin_texture = Arc::new(NoiseTexture::new(4.));
+    let perlin_texture = Arc::new(NoiseTexture::new(4., 7));
 
     world.add(Arc::new(Sphere::stationary(
         Point3::new(0., -1000., 0.),

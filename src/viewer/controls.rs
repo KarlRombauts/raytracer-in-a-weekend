@@ -398,7 +398,7 @@ fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
                     c = true;
                 }
                 if ui.selectable_label(matches!(t, TextureSpec::Noise { .. }), "Noise").clicked() {
-                    *t = TextureSpec::Noise { scale: 4.0 };
+                    *t = TextureSpec::Noise { scale: 4.0, depth: 7 };
                     c = true;
                 }
                 if ui.selectable_label(matches!(t, TextureSpec::Image { .. }), "Image").clicked() {
@@ -416,8 +416,13 @@ fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
             changed |= cell_texture_controls(ui, "checker_even", even);
             changed |= cell_texture_controls(ui, "checker_odd", odd);
         }
-        TextureSpec::Noise { scale } => {
+        TextureSpec::Noise { scale, depth } => {
             changed |= axis_row(ui, "Scale", scale, 0.01, "", Some(3), Some(0.01..=100.0));
+            let mut d = *depth as f32;
+            if axis_row(ui, "Detail", &mut d, 1.0, "", Some(0), Some(1.0..=10.0)) {
+                *depth = d.round().clamp(1.0, 10.0) as u32;
+                changed = true;
+            }
         }
         TextureSpec::Image { asset } => changed |= image_picker_row(ui, asset),
     }
@@ -444,7 +449,7 @@ fn cell_texture_controls(ui: &mut egui::Ui, id: &str, t: &mut CellTexture) -> bo
                     c = true;
                 }
                 if ui.selectable_label(matches!(t, CellTexture::Noise { .. }), "Noise").clicked() {
-                    *t = CellTexture::Noise { scale: 4.0 };
+                    *t = CellTexture::Noise { scale: 4.0, depth: 7 };
                     c = true;
                 }
                 if ui.selectable_label(matches!(t, CellTexture::Image { .. }), "Image").clicked() {
@@ -457,8 +462,13 @@ fn cell_texture_controls(ui: &mut egui::Ui, id: &str, t: &mut CellTexture) -> bo
 
     match t {
         CellTexture::Solid { color } => changed |= color_prop(ui, "Color", color),
-        CellTexture::Noise { scale } => {
+        CellTexture::Noise { scale, depth } => {
             changed |= axis_row(ui, "Scale", scale, 0.01, "", Some(3), Some(0.01..=100.0));
+            let mut d = *depth as f32;
+            if axis_row(ui, "Detail", &mut d, 1.0, "", Some(0), Some(1.0..=10.0)) {
+                *depth = d.round().clamp(1.0, 10.0) as u32;
+                changed = true;
+            }
         }
         CellTexture::Image { asset } => changed |= image_picker_row(ui, asset),
     }
