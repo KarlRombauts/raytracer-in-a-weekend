@@ -1,8 +1,10 @@
 mod controls;
 mod icons;
 mod orbit;
+mod panels;
 mod raster;
 mod render_task;
+mod state;
 pub mod theme;
 mod view_transform;
 mod widgets;
@@ -17,11 +19,7 @@ use crate::scene::Scene;
 use render_task::RenderTask;
 use view_transform::ViewTransform;
 
-#[derive(Clone, Copy, PartialEq)]
-enum Mode {
-    Render,
-    Edit,
-}
+use state::Mode;
 
 /// Resolution divisor used while actively orbiting/panning, so the view tracks
 /// the mouse; the render snaps back to full quality once motion stops.
