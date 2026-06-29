@@ -22,6 +22,10 @@ view:
 # Render, then open the result.
 render-view: render view
 
+# Render pre-baked thumbnails for every library sample scene.
+thumbnails:
+    cargo run --release -- --gen-thumbnails
+
 # Remove build artifacts.
 clean:
     cargo clean

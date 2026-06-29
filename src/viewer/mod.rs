@@ -4,6 +4,7 @@ mod orbit;
 mod panels;
 mod raster;
 mod render_task;
+pub(crate) mod samples;
 mod state;
 pub mod theme;
 mod view_transform;

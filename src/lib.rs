@@ -22,6 +22,13 @@ pub fn run_default() {
     viewer::run(cornell_box());
 }
 
+/// Render pre-baked thumbnails for every library sample scene to
+/// `assets/thumbnails/`. Driven by `just thumbnails`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn gen_thumbnails() -> std::io::Result<()> {
+    viewer::samples::gen_thumbnails()
+}
+
 #[cfg(target_arch = "wasm32")]
 mod web {
     use wasm_bindgen::prelude::*;

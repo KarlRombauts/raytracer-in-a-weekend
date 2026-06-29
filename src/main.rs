@@ -1,5 +1,9 @@
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
+    if std::env::args().any(|a| a == "--gen-thumbnails") {
+        raytracer_in_a_weekend::gen_thumbnails().expect("thumbnail generation");
+        return;
+    }
     raytracer_in_a_weekend::run_default();
 }
 
