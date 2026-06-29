@@ -198,7 +198,10 @@ pub fn status_dock(
             ),
             (Mode::Render, false) => (theme::ACCENT, "Rendering\u{2026}".to_string()),
         };
-        ui.label(egui::RichText::new("●").color(dot).size(10.0));
+        // Draw a painter-filled circle instead of the "●" glyph (which may
+        // not be in our font and renders as "?" on some platforms).
+        let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
+        ui.painter().circle_filled(dot_rect.center(), 4.5, dot);
         ui.label(egui::RichText::new(text).color(theme::TEXT_STRONG));
         if mode == Mode::Render {
             ui.separator();

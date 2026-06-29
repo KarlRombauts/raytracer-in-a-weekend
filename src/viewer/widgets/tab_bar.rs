@@ -25,8 +25,15 @@ pub fn pill_tabs<T: PartialEq + Copy>(
             } else {
                 egui::Color32::TRANSPARENT
             };
+            // Active tab gets a 1px ACCENT inset border; inactive: no border.
+            let stroke = if active {
+                egui::Stroke::new(1.0, theme::ACCENT)
+            } else {
+                egui::Stroke::NONE
+            };
             let btn = egui::Button::new(text)
                 .fill(fill)
+                .stroke(stroke)
                 .corner_radius(egui::CornerRadius::same(7))
                 .min_size(egui::vec2(w, 31.0));
             if ui.add(btn).clicked() && !active {
@@ -65,8 +72,11 @@ pub fn segmented<M: PartialEq + Copy>(
                     } else {
                         egui::Color32::TRANSPARENT
                     };
+                    // Only active segment gets a stroke; inactive: no border.
+                    let stroke = egui::Stroke::NONE;
                     let btn = egui::Button::new(text)
                         .fill(fill)
+                        .stroke(stroke)
                         .corner_radius(egui::CornerRadius::same(7));
                     if ui.add(btn).clicked() && !active {
                         *current = val;

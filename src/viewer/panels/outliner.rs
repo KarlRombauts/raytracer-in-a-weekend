@@ -40,19 +40,40 @@ pub fn show_outliner(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> 
         .fill(egui::Color32::TRANSPARENT)
         .stroke(egui::Stroke::new(1.0, theme::BORDER_FIELD)),
     );
+    // Style with accent look when the popup is open (check after button is created,
+    // then repaint the button rect with accent fill + border overlay).
+    let popup_id = egui::Popup::default_response_id(&add);
+    let menu_open = egui::Popup::is_id_open(ui.ctx(), popup_id);
+    if menu_open {
+        ui.painter().rect_filled(add.rect, egui::CornerRadius::same(7), theme::accent_soft());
+        ui.painter().rect_stroke(
+            add.rect,
+            egui::CornerRadius::same(7),
+            egui::Stroke::new(1.0, theme::ACCENT),
+            egui::StrokeKind::Inside,
+        );
+    }
 
     egui::Popup::menu(&add).show(|ui| {
         // Opaque popup: match mockup bg #1c1e23 with border #34393f, ~10px radius.
         // We override the panel fill for this scope so the popup is fully opaque.
         ui.visuals_mut().panel_fill = egui::Color32::from_rgb(0x1c, 0x1e, 0x23);
         ui.visuals_mut().window_fill = egui::Color32::from_rgb(0x1c, 0x1e, 0x23);
+        // Softer shadow: large blur, low alpha.
+        ui.visuals_mut().popup_shadow = egui::Shadow {
+            offset: [0, 4],
+            blur: 24,
+            spread: 2,
+            color: egui::Color32::from_black_alpha(60),
+        };
 
         // Constrain width to roughly the panel content width (~262px).
         ui.set_min_width(262.0);
         ui.set_max_width(262.0);
 
-        // Tighten row spacing.
+        // Tighten row spacing; add left padding to item rows.
         ui.spacing_mut().item_spacing.y = 2.0;
+        ui.spacing_mut().button_padding.x = 10.0;
 
         ui.label(
             egui::RichText::new("PRIMITIVES")
@@ -103,7 +124,7 @@ pub fn show_outliner(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> 
             );
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(row_rect));
             child.horizontal(|ui| {
-                ui.add_space(4.0);
+                ui.add_space(10.0);
                 ui.label(
                     egui::RichText::new(icons::POLYGON)
                         .color(theme::TEXT_DIM)
@@ -163,6 +184,13 @@ pub fn show_outliner(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> 
                     egui::CornerRadius::same(7),
                     theme::selection_soft(),
                 );
+                // Inset 1px SELECTION border for selected row.
+                ui.painter().rect_stroke(
+                    row_rect,
+                    egui::CornerRadius::same(7),
+                    egui::Stroke::new(1.0, theme::SELECTION),
+                    egui::StrokeKind::Inside,
+                );
             } else {
                 // Subtle hover background when not selected.
                 let row_response =
@@ -176,8 +204,13 @@ pub fn show_outliner(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> 
                 }
             }
 
-            // Now draw row content inside the allocated rect.
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(row_rect));
+            // Now draw row content inside the allocated rect, with left padding.
+            let padded_rect = egui::Rect::from_min_max(
+                row_rect.min + egui::vec2(8.0, 0.0),
+                row_rect.max,
+            );
+            let mut eye_clicked = false;
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(padded_rect));
             child.horizontal(|ui| {
                 let icon_col = if selected {
                     theme::SELECTION
@@ -204,24 +237,25 @@ pub fn show_outliner(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> 
                     } else {
                         theme::TEXT_DIM
                     };
-                    if ui
-                        .add(
-                            egui::Button::new(egui::RichText::new(eye).color(col))
-                                .fill(egui::Color32::TRANSPARENT)
-                                .stroke(egui::Stroke::NONE),
-                        )
-                        .clicked()
-                    {
+                    let eye_resp = ui.add(
+                        egui::Button::new(egui::RichText::new(eye).color(col))
+                            .fill(egui::Color32::TRANSPARENT)
+                            .stroke(egui::Stroke::NONE),
+                    );
+                    if eye_resp.clicked() {
                         toggle_hidden = Some(i);
+                        eye_clicked = true;
                     }
                 });
             });
 
-            // Click on the row (outside the eye button) selects it.
-            let row_response =
-                ui.interact(row_rect, ui.id().with(("row", i)), egui::Sense::click());
-            if row_response.clicked() {
-                new_selection = Some(i);
+            // Click on the row selects it — but only when the eye wasn't clicked.
+            if !eye_clicked {
+                let row_response =
+                    ui.interact(row_rect, ui.id().with(("row", i)), egui::Sense::click());
+                if row_response.clicked() {
+                    new_selection = Some(i);
+                }
             }
         }
 

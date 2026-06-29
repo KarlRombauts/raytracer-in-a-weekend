@@ -408,7 +408,8 @@ fn image_picker_row(ui: &mut egui::Ui, asset: &mut Asset) -> bool {
                 .add_enabled(false, egui::Button::new("Choose\u{2026}"))
                 .on_disabled_hover_text("Image import isn't available in the browser yet");
         }
-        ui.label(label);
+        // Truncate long filenames so they don't overflow and push the panel wider.
+        ui.add(egui::Label::new(label).truncate());
     });
     changed
 }

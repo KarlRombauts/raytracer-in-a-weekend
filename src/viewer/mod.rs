@@ -174,7 +174,7 @@ impl eframe::App for ViewerApp {
         // --- Top bar: logo, scene chip, mode toggle, save buttons ---
         egui::Panel::top("top_bar")
             .exact_size(54.0)
-            .frame(egui::Frame::NONE.fill(theme::BG_TOPBAR))
+            .frame(egui::Frame::NONE.fill(theme::BG_TOPBAR).inner_margin(egui::Margin::symmetric(14, 0)))
             .show_inside(ui, |ui| {
                 let scene = self.scene.lock().unwrap();
                 actions.push(panels::show_top_bar(ui, &mut self.ui_state, &scene));
@@ -182,8 +182,9 @@ impl eframe::App for ViewerApp {
 
         // --- Left outliner: scene object rows + Add menu ---
         egui::Panel::left("outliner")
-            .exact_size(286.0)
-            .resizable(false)
+            .default_width(286.0)
+            .width_range(220.0..=460.0)
+            .resizable(true)
             .frame(
                 egui::Frame::NONE
                     .fill(theme::BG_PANEL)
@@ -196,8 +197,9 @@ impl eframe::App for ViewerApp {
 
         // --- Right inspector: Object / Camera / Output tabs ---
         egui::Panel::right("inspector")
-            .exact_size(342.0)
-            .resizable(false)
+            .default_width(342.0)
+            .width_range(280.0..=520.0)
+            .resizable(true)
             .frame(
                 egui::Frame::NONE
                     .fill(theme::BG_PANEL)
@@ -211,7 +213,7 @@ impl eframe::App for ViewerApp {
         // --- Status dock: progress line + status + Samples/Bounces + restart ---
         egui::Panel::bottom("status_dock")
             .exact_size(63.0)
-            .frame(egui::Frame::NONE.fill(theme::BG_TOPBAR))
+            .frame(egui::Frame::NONE.fill(theme::BG_TOPBAR).inner_margin(egui::Margin::symmetric(14, 0)))
             .show_inside(ui, |ui| {
                 let mut scene = self.scene.lock().unwrap();
                 let out = panels::status_dock(
