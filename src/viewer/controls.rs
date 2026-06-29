@@ -76,6 +76,7 @@ pub(crate) fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool
             .selected_text(current)
             .width(ui.available_width())
             .show_ui(ui, |ui| {
+                menu_item_style(ui);
                 // Each builder receives the current shared colour/roughness so
                 // switching type keeps those values instead of resetting them.
                 c |= pick(
@@ -199,6 +200,7 @@ pub(crate) fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
             .selected_text(current)
             .width(ui.available_width())
             .show_ui(ui, |ui| {
+                menu_item_style(ui);
                 let prev = t.preview_color();
                 if ui
                     .selectable_label(matches!(t, TextureSpec::Solid { .. }), "Color")
@@ -287,6 +289,7 @@ fn cell_texture_controls(ui: &mut egui::Ui, id: &str, t: &mut CellTexture) -> bo
             .selected_text(current)
             .width(ui.available_width())
             .show_ui(ui, |ui| {
+                menu_item_style(ui);
                 if ui
                     .selectable_label(matches!(t, CellTexture::Solid { .. }), "Color")
                     .clicked()
@@ -506,6 +509,7 @@ fn image_texture_card(
                     .selected_text(proj_label)
                     .width(ui.available_width())
                     .show_ui(ui, |ui| {
+                        menu_item_style(ui);
                         for (p, label) in [
                             (Projection::MeshUv, "Mesh UV"),
                             (Projection::Planar, "Planar"),
@@ -640,6 +644,18 @@ fn image_texture_card(
         });
 
     changed
+}
+
+/// Restyle a ComboBox popup so its `selectable_label` rows read like the clean
+/// Add-object menu: a borderless subtle hover fill instead of the BORDER_HOVER
+/// box, and a borderless accent-soft fill on the selected row instead of the
+/// heavy blue-bordered box the global widget visuals would draw.
+fn menu_item_style(ui: &mut egui::Ui) {
+    let v = ui.visuals_mut();
+    v.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+    v.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(0x25, 0x28, 0x2e);
+    v.selection.bg_fill = theme::accent_soft();
+    v.selection.stroke = egui::Stroke::NONE;
 }
 
 /// One selectable row inside the material combo. On click it sets `m` to

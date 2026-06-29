@@ -371,9 +371,23 @@ impl eframe::App for ViewerApp {
                             i.modifiers.shift,
                         )
                     });
+                    // Suppress viewport input when the pointer is over a floating
+                    // widget on top of the preview (gizmo toolbar, reset chip,
+                    // colour-picker popup, …). Those live in non-Background layers;
+                    // the bare viewport is the Background layer. Without this, the
+                    // raw pointer reads steal clicks/drags from those widgets —
+                    // clicking a gizmo toggle would deselect the object, and
+                    // dragging on the colour picker would orbit the camera.
+                    let ctx = ui.ctx().clone();
+                    let over_overlay = |p: egui::Pos2| {
+                        ctx.layer_id_at(p)
+                            .is_some_and(|l| l.order != egui::Order::Background)
+                    };
                     if !gizmo_active {
-                        // Orbit/pan only for drags that began inside the preview.
-                        let drag_in_view = down && origin.is_some_and(|o| rect.contains(o));
+                        // Orbit/pan only for drags that began inside the preview
+                        // (and not on an overlay/popup floating above it).
+                        let drag_in_view =
+                            down && origin.is_some_and(|o| rect.contains(o) && !over_overlay(o));
                         if drag_in_view && delta != egui::Vec2::ZERO {
                             let mut scene = self.scene.lock().unwrap();
                             if shift {
@@ -383,7 +397,7 @@ impl eframe::App for ViewerApp {
                             }
                             moved = true;
                         }
-                        if scroll != 0.0 && ptr.is_some_and(|p| rect.contains(p)) {
+                        if scroll != 0.0 && ptr.is_some_and(|p| rect.contains(p) && !over_overlay(p)) {
                             orbit::dolly(&mut self.scene.lock().unwrap().camera, scroll);
                             moved = true;
                         }
@@ -391,7 +405,7 @@ impl eframe::App for ViewerApp {
                         // click on empty space clears the selection. Same
                         // view/projection as the preview, so the pick matches
                         // what's drawn (near/far don't affect the ray).
-                        if clicked && ptr.is_some_and(|p| vp.contains(p)) {
+                        if clicked && ptr.is_some_and(|p| vp.contains(p) && !over_overlay(p)) {
                             let pos = ptr.unwrap();
                             if rect.contains(pos) {
                                 let s = self.scene.lock().unwrap();

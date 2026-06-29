@@ -43,7 +43,9 @@ pub fn overlays(
         .corner_radius(egui::CornerRadius::same(8))
         .inner_margin(egui::Margin::symmetric(8, 4));
     egui::Area::new("vp_reset".into())
-        .fixed_pos(rect.left_bottom() + egui::vec2(16.0, -40.0))
+        // Lift the chip so its gap to the viewport bottom (~14px) mirrors the
+        // resolution badge's 14px inset from the top. The chip is ~34px tall.
+        .fixed_pos(rect.left_bottom() + egui::vec2(16.0, -48.0))
         .order(egui::Order::Foreground)
         .movable(false)
         .show(ui.ctx(), |ui| {
@@ -207,12 +209,22 @@ pub fn status_dock(
     fill.set_width(line.width() * frac);
     ui.painter().rect_filled(fill, 0.0, theme::ACCENT);
 
-    // R6: vertically centre the status row in the remaining dock height.
+    // R6: vertically centre the status row within the dock height below the
+    // progress line. A horizontal layout's `Align::Center` only centres items
+    // against the row's own height, not the dock's, so we explicitly pad the
+    // top by half the leftover space. Zero the item spacing first to drop the
+    // default 8px gap egui inserts under the progress line.
+    ui.spacing_mut().item_spacing.y = 0.0;
     let remaining_h = ui.available_height();
+    // Centre against the full dock (the 3px progress line above us is part of
+    // it), then bias up a couple px so the row doesn't read bottom-heavy.
+    let top_pad = ((remaining_h - theme::FIELD_H) * 0.5 - 4.0).max(0.0);
     ui.allocate_ui_with_layout(
         egui::vec2(ui.available_width(), remaining_h),
-        egui::Layout::left_to_right(egui::Align::Center),
+        egui::Layout::top_down(egui::Align::Min),
         |ui| {
+        ui.add_space(top_pad);
+        ui.horizontal(|ui| {
         ui.add_space(6.0);
         let (dot, text) = match (mode, done) {
             (Mode::Edit, _) => (theme::TEXT_DIM, "Editing".to_string()),
@@ -257,6 +269,7 @@ pub fn status_dock(
             ui.allocate_ui(egui::vec2(78.0, theme::FIELD_H), |ui| {
                 out.dirty |= widgets::int_field(ui, &mut cam.samples, Some(1..=100_000));
             });
+        });
         });
     });
 

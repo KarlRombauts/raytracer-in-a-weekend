@@ -75,8 +75,9 @@ pub fn show_outliner(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> 
         ui.spacing_mut().item_spacing.y = 2.0;
         ui.spacing_mut().button_padding.x = 10.0;
 
-        // R1: small left indent matching section_header.
-        ui.add_space(6.0);
+        // Indent the category label to line up with the option icons below
+        // (primitive buttons use button_padding.x = 10; mesh rows add_space(10)).
+        ui.add_space(10.0);
         ui.label(
             egui::RichText::new("PRIMITIVES")
                 .size(10.0)
@@ -105,8 +106,9 @@ pub fn show_outliner(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> 
         }
 
         ui.separator();
-        // R1: small left indent matching section_header.
-        ui.add_space(6.0);
+        // Indent the category label to line up with the option icons below
+        // (primitive buttons use button_padding.x = 10; mesh rows add_space(10)).
+        ui.add_space(10.0);
         ui.label(
             egui::RichText::new("SAMPLE MESHES")
                 .size(10.0)
@@ -214,6 +216,7 @@ pub fn show_outliner(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> 
                 row_rect.max,
             );
             let mut eye_clicked = false;
+            let mut eye_rect: Option<egui::Rect> = None;
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(padded_rect));
             child.horizontal(|ui| {
                 let icon_col = if selected {
@@ -250,13 +253,21 @@ pub fn show_outliner(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> 
                         toggle_hidden = Some(i);
                         eye_clicked = true;
                     }
+                    eye_rect = Some(eye_resp.rect);
                 });
             });
 
-            // Click on the row selects it — but only when the eye wasn't clicked.
+            // Click on the row selects it. The interact rect must stop before the
+            // eye button: a full-row rect overlapping the eye ties at distance 0
+            // and, being registered last, wins egui's "topmost" tie-break — which
+            // would swallow the eye's click and break hide/unhide.
             if !eye_clicked {
+                let mut click_rect = row_rect;
+                if let Some(er) = eye_rect {
+                    click_rect.max.x = er.min.x;
+                }
                 let row_response =
-                    ui.interact(row_rect, ui.id().with(("row", i)), egui::Sense::click());
+                    ui.interact(click_rect, ui.id().with(("row", i)), egui::Sense::click());
                 if row_response.clicked() {
                     new_selection = Some(i);
                 }

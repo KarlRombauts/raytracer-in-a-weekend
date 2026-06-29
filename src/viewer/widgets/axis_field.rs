@@ -54,9 +54,11 @@ pub fn axis_field(
         .show(ui, |ui| {
             ui.set_height(theme::FIELD_H);
             ui.horizontal_centered(|ui| {
+                // Tighten the gap between the axis letter and its value box.
+                ui.spacing_mut().item_spacing.x = 2.0;
                 if let Some((g, c)) = axis.glyph() {
                     ui.allocate_ui_with_layout(
-                        egui::vec2(18.0, theme::FIELD_H),
+                        egui::vec2(14.0, theme::FIELD_H),
                         egui::Layout::centered_and_justified(egui::Direction::TopDown),
                         |ui| {
                             ui.label(egui::RichText::new(g).monospace().color(c));
