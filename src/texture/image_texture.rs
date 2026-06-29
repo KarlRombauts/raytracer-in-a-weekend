@@ -35,8 +35,11 @@ impl Texture for ImageTexture {
         u = u.clamp(0., 1.);
         v = 1.0 - v.clamp(0., 1.);
 
-        let i = (u * self.image.width() as f32) as u32;
-        let j = (v * self.image.height() as f32) as u32;
+        // u/v can be exactly 1.0 (clamp above, or MappedTexture's rem_euclid
+        // returning 1.0 for tiny-negative inputs), which would index one past the
+        // last pixel. Clamp to the last valid row/column.
+        let i = ((u * self.image.width() as f32) as u32).min(self.image.width() - 1);
+        let j = ((v * self.image.height() as f32) as u32).min(self.image.height() - 1);
         let pixel = self.image.get_pixel(i, j);
 
         return Color::new(pixel[0], pixel[1], pixel[2]);
@@ -73,5 +76,16 @@ mod tests {
     #[test]
     fn from_bytes_rejects_garbage() {
         assert!(ImageTexture::from_bytes(&[1, 2, 3, 4]).is_err());
+    }
+
+    #[test]
+    fn boundary_uv_does_not_panic() {
+        // u == 1.0 → i == width, and v == 0.0 → (1.0 - 0.0) → j == height: both
+        // are one past the last valid index. get_pixel must not be called OOB.
+        // MappedTexture's rem_euclid(1.0) can emit exactly 1.0 for tiny-negative
+        // inputs, so these boundary coordinates reach ImageTexture in practice.
+        let tex = ImageTexture::from_bytes(&red_png_bytes()).expect("valid png decodes");
+        let c = tex.value(1.0, 0.0, &Point3::new(0.0, 0.0, 0.0));
+        assert!(c.x > 0.99 && c.y < 0.01 && c.z < 0.01, "got {c:?}");
     }
 }
