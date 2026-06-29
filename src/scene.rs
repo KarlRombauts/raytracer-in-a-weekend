@@ -341,6 +341,19 @@ impl<'de> Deserialize<'de> for Shape {
             ShapeData::Quad { q, u, v } => Shape::Quad { q, u, v },
             ShapeData::Box { a, b } => Shape::Box { a, b },
             ShapeData::Mesh { data } => {
+                // Validate face indices before calling data.build(), which would
+                // panic with an out-of-bounds index. A corrupt .scene file must
+                // return Err rather than panic.
+                let n = data.verts.len() as u32;
+                for face in &data.faces {
+                    for &idx in face.iter() {
+                        if idx >= n {
+                            return Err(<D::Error as serde::de::Error>::custom(
+                                "mesh face index out of range",
+                            ));
+                        }
+                    }
+                }
                 let data = Arc::new(data);
                 let (object, render) = data.build();
                 Shape::Mesh { data, object, render }
