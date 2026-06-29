@@ -3,6 +3,7 @@ use rand::prelude::*;
 use rayon::prelude::*;
 use web_time::Instant;
 
+#[cfg(not(target_arch = "wasm32"))]
 use indicatif::{ProgressBar, ProgressStyle};
 
 use image;
@@ -122,6 +123,7 @@ fn cosine_direction(normal: &Vec3, rng: &mut SmallRng) -> Vec3 {
 }
 
 impl Camera {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn render(&self, world: &IntersectGroup) {
         let start = Instant::now();
         let bar = ProgressBar::new(self.image_height as u64 * self.image_width as u64);

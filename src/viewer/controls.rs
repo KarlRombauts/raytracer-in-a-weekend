@@ -177,6 +177,7 @@ pub fn object_list(
             *selected = Some(objects.len() - 1);
             changed = true;
         }
+        #[cfg(not(target_arch = "wasm32"))]
         if ui
             .button(format!("{}  {}  OBJ", icons::PLUS, icons::POLYGON))
             .clicked()
@@ -203,6 +204,9 @@ pub fn object_list(
                 }
             }
         }
+        #[cfg(target_arch = "wasm32")]
+        ui.add_enabled(false, egui::Button::new(format!("{}  {}  OBJ", icons::PLUS, icons::POLYGON)))
+            .on_disabled_hover_text("OBJ import isn't available in the browser yet");
     });
     changed
 }
@@ -519,6 +523,7 @@ fn image_picker_row(ui: &mut egui::Ui, asset: &mut Asset) -> bool {
     let mut changed = false;
     prop_row(ui, "Image", |ui| {
         let label = asset.label.clone().unwrap_or_else(|| "(none)".to_string());
+        #[cfg(not(target_arch = "wasm32"))]
         if ui.button("Choose\u{2026}").clicked() {
             if let Some(path) = rfd::FileDialog::new()
                 .add_filter("Image", &["png", "jpg", "jpeg"])
@@ -531,6 +536,9 @@ fn image_picker_row(ui: &mut egui::Ui, asset: &mut Asset) -> bool {
                 }
             }
         }
+        #[cfg(target_arch = "wasm32")]
+        ui.add_enabled(false, egui::Button::new("Choose\u{2026}"))
+            .on_disabled_hover_text("Image import isn't available in the browser yet");
         ui.label(label);
     });
     changed

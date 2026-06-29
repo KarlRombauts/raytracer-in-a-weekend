@@ -1,4 +1,16 @@
-[build]
-# Optimize for the machine doing the build/render (unlocks AVX etc. for the f32 math).
-# Remove or override this if you need a portable binary.
+# target-cpu=native unlocks AVX etc. for the f32 math on the host. Scoped to
+# non-wasm so it never leaks into the WebAssembly build.
+[target.'cfg(not(target_arch = "wasm32"))']
 rustflags = ["-C", "target-cpu=native"]
+
+# Threaded WebAssembly: shared memory + atomics for the Web Worker rayon pool,
+# and the wasm_js backend for getrandom. (build-std / nightly are supplied by
+# the `just web` recipe so native stays on stable.)
+[target.wasm32-unknown-unknown]
+rustflags = [
+  "-C", "target-feature=+atomics,+bulk-memory",
+  "-C", "link-arg=--shared-memory",
+  "-C", "link-arg=--max-memory=1073741824",
+  "-C", "link-arg=--import-memory",
+  "--cfg", "getrandom_backend=\"wasm_js\"",
+]
