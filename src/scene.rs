@@ -417,6 +417,16 @@ pub fn build_world(scene: &Scene) -> IntersectGroup {
     world
 }
 
+/// Duplicate the object at `i`: insert a clone right after it with " copy"
+/// appended to the name. Returns the new object's index, or None if `i` is out
+/// of range. Cheap — meshes share their `Arc` BVH.
+pub fn duplicate_object(objects: &mut Vec<ObjectSpec>, i: usize) -> Option<usize> {
+    let mut clone = objects.get(i)?.clone();
+    clone.name = format!("{} copy", clone.name);
+    objects.insert(i + 1, clone);
+    Some(i + 1)
+}
+
 /// Rough world-space bounds `(min, max)` of the placeable primitives, using
 /// their base shape parameters (ignoring transforms). Meshes are skipped — they
 /// can't be bounded without building them. Used to auto-fit imported meshes into
@@ -487,6 +497,17 @@ mod visibility_tests {
         // One fewer light registered when an emitter is hidden.
         assert_eq!(full.lights.len(), 2);
         assert_eq!(partial.lights.len(), 1);
+    }
+
+    #[test]
+    fn duplicate_inserts_clone_after_with_suffixed_name() {
+        let mut objs = vec![emissive("Light"), emissive("Box")];
+        let new_i = super::duplicate_object(&mut objs, 0).unwrap();
+        assert_eq!(new_i, 1);
+        assert_eq!(objs.len(), 3);
+        assert_eq!(objs[1].name, "Light copy");
+        assert_eq!(objs[2].name, "Box"); // original order preserved after the insert
+        assert!(super::duplicate_object(&mut objs, 99).is_none());
     }
 }
 
