@@ -1,7 +1,7 @@
 use core::f32;
 use rand::prelude::*;
 use rayon::prelude::*;
-use std::time::Instant;
+use web_time::Instant;
 
 use indicatif::{ProgressBar, ProgressStyle};
 

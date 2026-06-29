@@ -20,6 +20,7 @@ rfd = "0.17.2"
 bytemuck = "1"
 glow = "0.17"
 transform-gizmo-egui = "0.9"
+web-time = "1.1"
 
 [profile.release]
 opt-level = 3
