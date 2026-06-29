@@ -8,7 +8,7 @@ mod viewport;
 pub use inspector::show_inspector;
 pub use outliner::show_outliner;
 pub use top_bar::show_top_bar;
-pub use viewport::show_viewport;
+pub use viewport::{overlays, status_dock, StatusOut};
 
 /// One-shot actions a panel asks `ViewerApp` to perform after layout.
 #[derive(Clone, Copy, PartialEq)]
