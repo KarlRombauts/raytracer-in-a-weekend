@@ -32,16 +32,26 @@ pub fn show_top_bar(ui: &mut Ui, ui_state: &mut UiState, _scene: &Scene) -> Acti
                 .size(15.0),
         );
         ui.add_space(6.0);
-        // Scene chip with caret (display-only until save/load lands).
-        ui.label(
-            egui::RichText::new(format!(
-                "{}  cornell-box.scene  {}",
-                icons::FOLDER,
-                icons::CARET_DOWN
-            ))
-            .monospace()
-            .color(theme::TEXT),
-        );
+        // Scene chip → returns to the library (Home). Shows the live scene name.
+        let chip = ui
+            .add(
+                egui::Button::new(
+                    egui::RichText::new(format!(
+                        "{}  {}  {}",
+                        icons::FOLDER,
+                        ui_state.scene_name,
+                        icons::CARET_DOWN
+                    ))
+                    .monospace()
+                    .color(theme::TEXT),
+                )
+                .fill(theme::FIELD_BG)
+                .stroke(egui::Stroke::new(1.0, theme::BORDER_FIELD)),
+            )
+            .on_hover_text("Open another scene");
+        if chip.clicked() {
+            action = Action::GoHome;
+        }
 
         // RIGHT GROUP: save buttons — rendered right-to-left so they hug the
         // right edge while the center toggle is placed absolutely below.
