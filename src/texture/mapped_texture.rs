@@ -100,4 +100,21 @@ mod tests {
         let c = probe(Projection::MeshUv, 2.0, (0.0, 0.0)).value(0.6, 0.1, &Point3::new(0.0, 0.0, 0.0));
         assert!((c.x - 0.2).abs() < 1e-5, "expected wrapped 0.2, got {c:?}");
     }
+
+    #[test]
+    fn spherical_maps_axis_points() {
+        // d=(1,0,0): atan2(0,1)/2π+0.5 = 0.5; acos(0)/π = 0.5 → (0.5, 0.5).
+        let c = probe(Projection::Spherical, 1.0, (0.0, 0.0)).value(0.9, 0.9, &Point3::new(2.0, 0.0, 0.0));
+        assert!((c.x - 0.5).abs() < 1e-5 && (c.y - 0.5).abs() < 1e-5, "{c:?}");
+        // d=(0,1,0) (north pole): acos(1)/π = 0 → v = 0.
+        let c = probe(Projection::Spherical, 1.0, (0.0, 0.0)).value(0.0, 0.0, &Point3::new(0.0, 3.0, 0.0));
+        assert!(c.y.abs() < 1e-5, "north pole v should be 0, got {c:?}");
+    }
+
+    #[test]
+    fn cylindrical_maps_angle_and_height() {
+        // p=(1,0,h): atan2(0,1)/2π+0.5 = 0.5; height bv=p.y. With p.y=0.25 → v 0.25.
+        let c = probe(Projection::Cylindrical, 1.0, (0.0, 0.0)).value(0.9, 0.9, &Point3::new(1.0, 0.25, 0.0));
+        assert!((c.x - 0.5).abs() < 1e-5 && (c.y - 0.25).abs() < 1e-5, "{c:?}");
+    }
 }
