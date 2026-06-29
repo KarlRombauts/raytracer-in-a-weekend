@@ -16,3 +16,29 @@ pub fn save_png(suggested_name: &str, bytes: &[u8]) {
         }
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+pub fn save_png(suggested_name: &str, bytes: &[u8]) {
+    use wasm_bindgen::{JsCast, JsValue};
+
+    let array = js_sys::Uint8Array::from(bytes);
+    let parts = js_sys::Array::new();
+    parts.push(&array.buffer());
+    let opts = web_sys::BlobPropertyBag::new();
+    opts.set_type("image/png");
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts)
+        .expect("create blob");
+    let url = web_sys::Url::create_object_url_with_blob(&blob).expect("object url");
+
+    let document = web_sys::window().unwrap().document().unwrap();
+    let anchor: web_sys::HtmlAnchorElement = document
+        .create_element("a")
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    anchor.set_href(&url);
+    anchor.set_download(suggested_name);
+    anchor.click();
+    web_sys::Url::revoke_object_url(&url).ok();
+    let _ = JsValue::NULL;
+}

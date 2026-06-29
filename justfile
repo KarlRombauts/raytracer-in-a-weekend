@@ -25,3 +25,24 @@ render-view: render view
 # Remove build artifacts.
 clean:
     cargo clean
+
+# Pin a nightly that ships rust-src; override with `just nightly=... web`.
+nightly := "nightly"
+
+# Build the threaded WebAssembly bundle into ./dist (nightly + build-std, wasm only).
+web:
+    RUSTUP_TOOLCHAIN={{nightly}} \
+    CARGO_UNSTABLE_BUILD_STD="panic_abort,std" \
+    trunk build --release
+
+# Serve the threaded build locally with COOP/COEP isolation headers.
+serve:
+    RUSTUP_TOOLCHAIN={{nightly}} \
+    CARGO_UNSTABLE_BUILD_STD="panic_abort,std" \
+    trunk serve --release
+
+# Fast type-check for the wasm target (nightly + build-std, no bundling).
+web-check:
+    RUSTUP_TOOLCHAIN={{nightly}} \
+    CARGO_UNSTABLE_BUILD_STD="panic_abort,std" \
+    cargo check --target wasm32-unknown-unknown

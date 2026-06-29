@@ -52,6 +52,7 @@ fn card(ui: &egui::Ui) -> egui::Frame {
 /// Open a window and progressively render `scene`, refining one sample-per-pixel
 /// pass at a time. The side panel edits the scene live; each edit cancels the
 /// in-flight render and restarts. Saves `test.png` when a render completes.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run(scene: Scene) {
     let camera = Camera::from(scene.camera.clone());
     let width = camera.image_width();
@@ -78,7 +79,17 @@ pub fn run(scene: Scene) {
     .unwrap();
 }
 
-struct ViewerApp {
+/// Build the viewer app for the web runner (mirrors `run` minus the native
+/// window setup). Public so `lib::web` can construct it.
+#[cfg(target_arch = "wasm32")]
+pub fn web_app(cc: &eframe::CreationContext<'_>, scene: Scene) -> ViewerApp {
+    let camera = Camera::from(scene.camera.clone());
+    let width = camera.image_width();
+    let height = camera.image_height();
+    ViewerApp::new(cc, scene, width, height)
+}
+
+pub struct ViewerApp {
     scene: Arc<Mutex<Scene>>,
     render: RenderTask,
     texture: Option<egui::TextureHandle>,

@@ -12,5 +12,14 @@ rustflags = [
   "-C", "link-arg=--shared-memory",
   "-C", "link-arg=--max-memory=1073741824",
   "-C", "link-arg=--import-memory",
+  # wasm-bindgen-rayon's thread-id injection needs these TLS symbols exported,
+  # otherwise wasm-bindgen fails with "failed to find `__heap_base`".
+  "-C", "link-arg=--export=__wasm_init_tls",
+  "-C", "link-arg=--export=__tls_size",
+  "-C", "link-arg=--export=__tls_align",
+  "-C", "link-arg=--export=__tls_base",
+  # With `--import-memory`, lld won't auto-export `__heap_base`; wasm-bindgen's
+  # thread-id injection looks it up, so export it explicitly.
+  "-C", "link-arg=--export=__heap_base",
   "--cfg", "getrandom_backend=\"wasm_js\"",
 ]

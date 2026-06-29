@@ -205,8 +205,14 @@ pub fn object_list(
             }
         }
         #[cfg(target_arch = "wasm32")]
-        ui.add_enabled(false, egui::Button::new(format!("{}  {}  OBJ", icons::PLUS, icons::POLYGON)))
-            .on_disabled_hover_text("OBJ import isn't available in the browser yet");
+        {
+            let _ = ui
+                .add_enabled(
+                    false,
+                    egui::Button::new(format!("{}  {}  OBJ", icons::PLUS, icons::POLYGON)),
+                )
+                .on_disabled_hover_text("OBJ import isn't available in the browser yet");
+        }
     });
     changed
 }
@@ -537,8 +543,11 @@ fn image_picker_row(ui: &mut egui::Ui, asset: &mut Asset) -> bool {
             }
         }
         #[cfg(target_arch = "wasm32")]
-        ui.add_enabled(false, egui::Button::new("Choose\u{2026}"))
-            .on_disabled_hover_text("Image import isn't available in the browser yet");
+        {
+            let _ = ui
+                .add_enabled(false, egui::Button::new("Choose\u{2026}"))
+                .on_disabled_hover_text("Image import isn't available in the browser yet");
+        }
         ui.label(label);
     });
     changed

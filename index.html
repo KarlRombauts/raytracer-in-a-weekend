@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Raytracer</title>
+    <link data-trunk rel="rust" data-target-name="raytracer_in_a_weekend" data-wasm-opt="0" data-bindgen-target="web" />
+    <style>
+      html, body { margin: 0; height: 100%; background: #1e1e1e; }
+      #the_canvas_id { width: 100%; height: 100%; display: block; }
+    </style>
+  </head>
+  <body>
+    <canvas id="the_canvas_id"></canvas>
+    <!--
+      Trunk injects its own ES-module loader that calls `init()` on the hashed
+      `*.js` bundle and then fires `TrunkApplicationStarted`, exposing the
+      wasm-bindgen exports on `window.wasmBindings`. We hook that event rather
+      than importing the bundle by a fixed name (the emitted name is hashed).
+    -->
+    <script type="module">
+      window.addEventListener('TrunkApplicationStarted', async () => {
+        const handle = new window.wasmBindings.WebHandle();
+        await handle.start(document.getElementById('the_canvas_id'));
+      });
+    </script>
+  </body>
+</html>
