@@ -429,6 +429,7 @@ fn image_texture_card(
                         thumb_rect,
                         egui::CornerRadius::same(6),
                         egui::Stroke::new(1.0, theme::BORDER_FIELD),
+                        egui::StrokeKind::Inside,
                     );
                 } else {
                     // Placeholder: subtle checker + IMAGE icon
@@ -464,6 +465,7 @@ fn image_texture_card(
                         thumb_rect,
                         egui::CornerRadius::same(6),
                         egui::Stroke::new(1.0, theme::BORDER_FIELD),
+                        egui::StrokeKind::Inside,
                     );
                     painter.text(
                         thumb_rect.center(),
@@ -605,12 +607,11 @@ fn image_texture_card(
 
                     let response = if let Some(ref tex) = handle {
                         ui.add(
-                            egui::ImageButton::new(egui::load::SizedTexture::new(
+                            egui::Button::image(egui::load::SizedTexture::new(
                                 tex.id(),
                                 swatch_size,
                             ))
-                            .corner_radius(egui::CornerRadius::same(5))
-                            .frame(false),
+                            .corner_radius(egui::CornerRadius::same(5)),
                         )
                     } else {
                         ui.add_sized(swatch_size, egui::Button::new(""))
@@ -622,6 +623,7 @@ fn image_texture_card(
                         response.rect,
                         egui::CornerRadius::same(5),
                         egui::Stroke::new(stroke_w, border_color),
+                        egui::StrokeKind::Inside,
                     );
 
                     if response.clicked() {
