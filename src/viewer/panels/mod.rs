@@ -14,6 +14,7 @@ pub enum Action {
     None,
     SaveImage,
     SaveScene,
+    LoadScene,
     ResetCamera,
     Restart,
 }

@@ -264,12 +264,14 @@ mod mesh_serde_tests {
                 albedo: TextureSpec::solid(Color::new(0.7, 0.7, 0.7)),
             },
             transform: Transform::identity(),
+            hidden: false,
         };
         let sphere = ObjectSpec {
             name: "ball".to_string(),
             shape: Shape::Sphere { center: Vec3::new(2.0, 0.0, 0.0), radius: 1.5 },
             material: MaterialSpec::Metal { albedo: Color::new(0.8, 0.8, 0.8), fuzz: 0.1 },
             transform: Transform::identity(),
+            hidden: false,
         };
         Scene {
             camera: CameraConfig::builder().image_width(64).build(),
@@ -791,11 +793,15 @@ git commit -m "feat: native+web save_scene and async pick_scene"
 ## Task 5: Preview thumbnail + UI wiring + verification
 
 **Files:**
-- Modify: `src/viewer/mod.rs` (thumbnail helper + test; `ViewerApp` fields; Scene row; poll/apply loaded scene)
+- Modify: `src/viewer/panels/mod.rs` (add `Action::LoadScene`)
+- Modify: `src/viewer/panels/top_bar.rs` (enable "Save scene" pill, add "Load scene" pill)
+- Modify: `src/viewer/mod.rs` (thumbnail helper + test; `ViewerApp` fields; poll/apply loaded scene; `SaveScene`/`LoadScene` action handlers; status toast)
 
 **Interfaces:**
-- Consumes: `scene_file::{encode, decode}`, `platform::{save_scene, pick_scene, ScenePicker, PickStatus}`.
-- Produces: Save scene / Load scene buttons; loaded scenes replace the live scene.
+- Consumes: `scene_file::{encode, decode}`, `platform::{save_scene, pick_scene, ScenePicker, PickStatus}`, the Lumi `panels::Action` enum, `ui_state.selected`.
+- Produces: working top-bar Save scene / Load scene; loaded scenes replace the live scene + reset selection.
+
+> NOTE (Lumi UI): the viewer was rebuilt as the "Lumi" editor since the spec was written. Save/Load wire into the existing top-bar `Action` flow (`src/viewer/panels/top_bar.rs` emits actions; `src/viewer/mod.rs` handles them in a central `for a in actions` match). The top bar already has a **disabled "Save scene" pill** ("coming soon") to enable. Selection lives in `ui_state.selected`, not a `self.selected` field.
 
 - [ ] **Step 1: Write the thumbnail helper test**
 
@@ -859,9 +865,58 @@ fn scene_thumbnail(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
 Run: `cargo test --lib thumb_tests`
 Expected: 2 passed.
 
-- [ ] **Step 5: Add `ViewerApp` fields**
+- [ ] **Step 5: Add `Action::LoadScene`**
 
-In `src/viewer/mod.rs`, add two fields to `struct ViewerApp`:
+In `src/viewer/panels/mod.rs`, add a `LoadScene` variant to the `Action` enum (it already has `SaveScene`):
+
+```rust
+pub enum Action {
+    None,
+    SaveImage,
+    SaveScene,
+    LoadScene,
+    ResetCamera,
+    Restart,
+}
+```
+
+- [ ] **Step 6: Enable "Save scene" + add "Load scene" in the top bar**
+
+In `src/viewer/panels/top_bar.rs`, replace the disabled "Save scene" block:
+
+```rust
+            // "Save scene" — dark pill, disabled.
+            let _ = widgets::pill_button(
+                ui,
+                &format!("{}  Save scene", icons::FLOPPY),
+                false,
+                false,
+            )
+            .on_hover_text("Scene save/load is coming soon");
+```
+
+with enabled Save scene + a Load scene pill (the layout is `right_to_left`, so the first added pill is rightmost; this places Load scene just left of Save scene):
+
+```rust
+            // "Save scene" — dark pill.
+            if widgets::pill_button(ui, &format!("{}  Save scene", icons::FLOPPY), false, true)
+                .clicked()
+            {
+                action = Action::SaveScene;
+            }
+            // "Load scene" — dark pill.
+            if widgets::pill_button(ui, &format!("{}  Load scene", icons::FOLDER), false, true)
+                .clicked()
+            {
+                action = Action::LoadScene;
+            }
+```
+
+(`icons::FOLDER` already exists — it's used in the scene chip.)
+
+- [ ] **Step 7: Add `ViewerApp` fields + init**
+
+In `src/viewer/mod.rs`, add two fields to `struct ViewerApp` (after `ui_state`):
 
 ```rust
     /// In-flight scene-file load (None when idle).
@@ -870,14 +925,14 @@ In `src/viewer/mod.rs`, add two fields to `struct ViewerApp`:
     scene_status: Option<String>,
 ```
 
-Initialize them in `ViewerApp::new` (in the struct literal):
+Initialize them in `ViewerApp::new` (in the struct literal, after `ui_state: state::UiState::default(),`):
 
 ```rust
             scene_picker: None,
             scene_status: None,
 ```
 
-- [ ] **Step 6: Poll + apply a loaded scene (top of `ui`)**
+- [ ] **Step 8: Poll + apply a loaded scene (top of `ui`)**
 
 In `src/viewer/mod.rs`, in `fn ui`, immediately after `self.render.pump();`, add:
 
@@ -886,14 +941,14 @@ In `src/viewer/mod.rs`, in `fn ui`, immediately after `self.render.pump();`, add
         if let Some(status) = self.scene_picker.as_ref().map(|p| p.poll()) {
             match status {
                 crate::platform::PickStatus::Pending => {
-                    ctx.request_repaint(); // keep polling until it resolves
+                    ui.ctx().request_repaint(); // keep polling until it resolves
                 }
                 crate::platform::PickStatus::Done(bytes) => {
                     self.scene_picker = None;
                     match crate::scene_file::decode(&bytes) {
                         Ok(loaded) => {
                             *self.scene.lock().unwrap() = loaded.scene;
-                            self.selected = None;
+                            self.ui_state.selected = None;
                             self.render.invalidate();
                             self.scene_status = Some("Loaded scene".to_string());
                         }
@@ -909,50 +964,71 @@ In `src/viewer/mod.rs`, in `fn ui`, immediately after `self.render.pump();`, add
         }
 ```
 
-- [ ] **Step 7: Add the Scene row (Save / Load buttons)**
+- [ ] **Step 9: Handle the `SaveScene` / `LoadScene` actions**
 
-In `src/viewer/mod.rs`, inside the left panel, right after the Save-image `ui.horizontal(...)` block (the one containing `Save image`) and before its following `ui.separator();`, add:
+In `src/viewer/mod.rs`, in the central `for a in actions { match a { ... } }` block, replace the no-op arm:
 
 ```rust
-                    ui.horizontal(|ui| {
-                        if ui.button("Save scene\u{2026}").clicked() {
-                            let (rgba, w, h) = {
-                                let s = self.render.lock();
-                                (s.rgba.clone(), s.width, s.height)
-                            };
-                            let preview = scene_thumbnail(&rgba, w, h);
-                            let bytes = crate::scene_file::encode(&scene, None, &preview);
-                            crate::platform::save_scene("scene.scene", &bytes);
-                        }
-                        if ui.button("Load scene\u{2026}").clicked() {
-                            self.scene_picker = Some(crate::platform::pick_scene());
-                            self.scene_status = None;
-                        }
-                        if let Some(msg) = &self.scene_status {
-                            ui.weak(msg);
-                        }
-                    });
+                panels::Action::None | panels::Action::SaveScene => {}
 ```
 
-> `scene` here is the `MutexGuard<Scene>` already locked in the panel closure (`let mut scene = scene_arc.lock().unwrap();`). `encode(&scene, ...)` derefs it to `&Scene`. Assigning `self.scene_picker` / `self.scene_status` inside the closure is fine — they're different fields from the separately-locked `scene_arc`.
+with:
 
-- [ ] **Step 8: Build, test, and verify**
+```rust
+                panels::Action::SaveScene => {
+                    // Thumbnail from the currently displayed frame (gamma-corrected RGBA).
+                    let (rgba, w, h) = {
+                        let s = self.render.lock();
+                        (s.rgba.clone(), s.width, s.height)
+                    };
+                    let preview = scene_thumbnail(&rgba, w, h);
+                    let bytes = {
+                        let scene = self.scene.lock().unwrap();
+                        crate::scene_file::encode(&scene, None, &preview)
+                    };
+                    crate::platform::save_scene("scene.scene", &bytes);
+                    self.scene_status = Some("Saved scene".to_string());
+                }
+                panels::Action::LoadScene => {
+                    self.scene_picker = Some(crate::platform::pick_scene());
+                    self.scene_status = None;
+                }
+                panels::Action::None => {}
+```
+
+- [ ] **Step 10: Show the status message (toast)**
+
+In `src/viewer/mod.rs`, at the end of `fn ui` (after the panels/actions are handled), add a small bottom-centered toast that persists until the next save/load:
+
+```rust
+        if let Some(msg) = self.scene_status.clone() {
+            egui::Area::new(egui::Id::new("scene_status"))
+                .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.label(msg);
+                    });
+                });
+        }
+```
+
+- [ ] **Step 11: Build, test, and verify**
 
 Run: `cargo build && cargo test`
-Expected: compiles; all tests pass (including the new serde/scene_file/thumb tests).
+Expected: compiles; all tests pass (existing 100 + the new serde/scene_file/thumb tests).
 
 Run: `just web-check`
 Expected: wasm compiles.
 
-Manual (native): `cargo run` → edit the scene (move the short box) → **Save scene…** → choose a path → quit → `cargo run` → **Load scene…** → pick the file → the edited scene loads and renders (box in its moved position). Try **Load scene…** on a non-`.scene` file → a "Load failed: …" message appears, no crash.
+Manual (native): `cargo run` → Edit mode → move an object → top bar **Save scene** → choose a path → quit → `cargo run` → **Load scene** → pick the file → the edited scene loads and renders. **Load scene** on a non-`.scene` file → "Load failed: …" toast, no crash.
 
-Manual (web, optional): `just serve` → **Save scene…** downloads a `.scene`; **Load scene…** opens the browser file picker and loads it back.
+Manual (web, optional): `just serve` → **Save scene** downloads a `.scene`; **Load scene** opens the browser file picker and loads it back.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
-git add src/viewer/mod.rs
-git commit -m "feat: Save/Load scene UI with embedded preview thumbnail"
+git add src/viewer/panels/mod.rs src/viewer/panels/top_bar.rs src/viewer/mod.rs
+git commit -m "feat: Save/Load scene UI (top-bar) with embedded preview thumbnail"
 ```
 
 ---

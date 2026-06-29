@@ -75,6 +75,17 @@ impl ObjData {
         crate::geometry::RenderMesh::from_triangles_smooth(&self.verts, &self.faces)
     }
 
+    /// The mesh's positions and triangle indices — the portable, serializable
+    /// description of the geometry (everything else is rebuilt from these).
+    pub fn mesh_data(&self) -> (Vec<crate::vec3::Vec3>, Vec<[u32; 3]>) {
+        let faces = self
+            .faces
+            .iter()
+            .map(|[i, j, k]| [*i as u32, *j as u32, *k as u32])
+            .collect();
+        (self.verts.clone(), faces)
+    }
+
     pub fn into_mesh(self, material: Arc<dyn Material>) -> IntersectGroup {
         let mut group = IntersectGroup::new();
 

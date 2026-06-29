@@ -45,6 +45,9 @@ format.
 
   [postcard]: https://docs.rs/postcard
 
+  > Correction (2026-06-29): the codec is postcard + `lz4_flex`, not zstd — zstd's
+  > C binding does not build for wasm. See the scene-file save/load design.
+
 ## Scope for this phase
 
 **In:** a plain-data texture model that the material editor can author, built

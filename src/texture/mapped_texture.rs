@@ -3,9 +3,10 @@ use std::sync::Arc;
 use crate::color::Color;
 use crate::texture::Texture;
 use crate::vec3::Point3;
+use serde::{Deserialize, Serialize};
 
 /// How a texture's (u, v) lookup coordinates are derived for a hit.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Projection {
     /// Use the geometry's own (u, v).
     MeshUv,

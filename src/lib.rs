@@ -9,6 +9,7 @@ pub mod ray;
 pub mod render;
 pub mod sampling;
 pub mod scene;
+pub mod scene_file;
 pub mod scenes;
 pub mod texture;
 pub mod vec3;
