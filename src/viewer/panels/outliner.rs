@@ -1,10 +1,187 @@
-use eframe::egui::Ui;
+use eframe::egui::{self, Ui};
 
 use crate::scene::Scene;
 
-use super::super::state::UiState;
+use super::super::{
+    controls, icons,
+    state::{Tab, UiState},
+    theme,
+};
 
 /// Returns `true` if the scene was dirtied (needs a render restart).
-pub fn show_outliner(_ui: &mut Ui, _ui_state: &mut UiState, _scene: &mut Scene) -> bool {
-    false
+pub fn show_outliner(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> bool {
+    let mut dirty = false;
+
+    // Header: SCENE label + object count.
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(icons::STACK).color(theme::TEXT_MUTED));
+        ui.label(
+            egui::RichText::new("SCENE")
+                .family(theme::semibold())
+                .color(theme::TEXT_MUTED)
+                .size(11.0),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(
+                egui::RichText::new(format!("{}", scene.objects.len()))
+                    .monospace()
+                    .color(theme::TEXT_DIM),
+            );
+        });
+    });
+    ui.add_space(4.0);
+
+    // "Add object" button — opens a popup menu via Popup::menu (egui 0.34).
+    let add = ui.add_sized(
+        [ui.available_width(), 33.0],
+        egui::Button::new(
+            egui::RichText::new(format!("{}  Add object", icons::PLUS)).color(theme::TEXT_STRONG),
+        )
+        .fill(egui::Color32::TRANSPARENT)
+        .stroke(egui::Stroke::new(1.0, theme::BORDER_FIELD)),
+    );
+
+    egui::Popup::menu(&add).show(|ui| {
+        ui.set_min_width(220.0);
+
+        ui.label(
+            egui::RichText::new("PRIMITIVES")
+                .size(10.0)
+                .color(theme::TEXT_DIM),
+        );
+        if ui.button(format!("{}  Plane", icons::RECTANGLE)).clicked() {
+            let obj = controls::default_plane(scene.objects.len());
+            scene.objects.push(obj);
+            ui_state.selected = Some(scene.objects.len() - 1);
+            ui_state.tab = Tab::Object;
+            dirty = true;
+        }
+        if ui.button(format!("{}  Box", icons::CUBE)).clicked() {
+            let obj = controls::default_box(scene.objects.len());
+            scene.objects.push(obj);
+            ui_state.selected = Some(scene.objects.len() - 1);
+            ui_state.tab = Tab::Object;
+            dirty = true;
+        }
+        if ui.button(format!("{}  Sphere", icons::SPHERE)).clicked() {
+            let obj = controls::default_sphere(scene.objects.len());
+            scene.objects.push(obj);
+            ui_state.selected = Some(scene.objects.len() - 1);
+            ui_state.tab = Tab::Object;
+            dirty = true;
+        }
+
+        ui.separator();
+        ui.label(
+            egui::RichText::new("SAMPLE MESHES")
+                .size(10.0)
+                .color(theme::TEXT_DIM),
+        );
+        for m in [
+            "Suzanne",
+            "Stanford Bunny",
+            "Utah Teapot",
+            "Stanford Dragon",
+        ] {
+            ui.add_enabled(
+                false,
+                egui::Button::new(format!("{}  {}", icons::POLYGON, m)),
+            )
+            .on_disabled_hover_text("Bundled sample meshes are coming soon");
+        }
+
+        ui.separator();
+        if controls::import_obj(ui, &mut scene.objects, &mut ui_state.selected) {
+            ui_state.tab = Tab::Object;
+            dirty = true;
+        }
+    });
+
+    ui.add_space(6.0);
+
+    // Scrollable object rows.
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        let mut toggle_hidden: Option<usize> = None;
+        let mut new_selection: Option<usize> = None;
+
+        for (i, obj) in scene.objects.iter().enumerate() {
+            let selected = ui_state.selected == Some(i);
+
+            // Pre-allocate the full row rect so we can paint the selection
+            // highlight BEHIND the row content (painter goes below widgets).
+            let desired_height = ui.spacing().interact_size.y;
+            let (row_rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), desired_height),
+                egui::Sense::hover(),
+            );
+
+            // Paint selection highlight first so it sits behind text/buttons.
+            if selected {
+                ui.painter().rect_filled(
+                    row_rect,
+                    egui::CornerRadius::same(7),
+                    theme::selection_soft(),
+                );
+            }
+
+            // Now draw row content inside the allocated rect.
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(row_rect));
+            child.horizontal(|ui| {
+                let icon_col = if selected {
+                    theme::SELECTION
+                } else {
+                    theme::TEXT_MUTED
+                };
+                ui.label(egui::RichText::new(controls::shape_icon(&obj.shape)).color(icon_col));
+                let name_col = if selected {
+                    theme::SELECTION
+                } else {
+                    theme::TEXT
+                };
+                ui.label(egui::RichText::new(&obj.name).color(name_col));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let eye = if obj.hidden {
+                        icons::EYE_SLASH
+                    } else {
+                        icons::EYE
+                    };
+                    let col = if obj.hidden {
+                        theme::TEXT_DIM
+                    } else if selected {
+                        theme::SELECTION
+                    } else {
+                        theme::TEXT_DIM
+                    };
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new(eye).color(col))
+                                .fill(egui::Color32::TRANSPARENT)
+                                .stroke(egui::Stroke::NONE),
+                        )
+                        .clicked()
+                    {
+                        toggle_hidden = Some(i);
+                    }
+                });
+            });
+
+            // Click on the row (outside the eye button) selects it.
+            let row_response =
+                ui.interact(row_rect, ui.id().with(("row", i)), egui::Sense::click());
+            if row_response.clicked() {
+                new_selection = Some(i);
+            }
+        }
+
+        if let Some(i) = toggle_hidden {
+            scene.objects[i].hidden = !scene.objects[i].hidden;
+            dirty = true;
+        }
+        if let Some(i) = new_selection {
+            ui_state.selected = Some(i);
+            ui_state.tab = Tab::Object;
+        }
+    });
+
+    dirty
 }

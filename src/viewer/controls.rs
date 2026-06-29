@@ -168,7 +168,7 @@ pub fn camera_controls(ui: &mut egui::Ui, cam: &mut CameraConfig) -> bool {
 }
 
 /// A Phosphor type icon for the object list.
-fn shape_icon(s: &Shape) -> &'static str {
+pub(crate) fn shape_icon(s: &Shape) -> &'static str {
     match s {
         Shape::Sphere { .. } => icons::SPHERE,
         Shape::Quad { .. } => icons::RECTANGLE,
@@ -211,42 +211,7 @@ pub fn object_list(
             *selected = Some(objects.len() - 1);
             changed = true;
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        if ui
-            .button(format!("{}  {}  OBJ", icons::PLUS, icons::POLYGON))
-            .clicked()
-        {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Wavefront OBJ", &["obj"])
-                .pick_file()
-            {
-                // Auto-fit the import into the existing scene: centre it and
-                // scale it to a fraction of the scene's size, so it's visible
-                // regardless of the OBJ's native units.
-                let (center, size) = match scene::placeable_bounds(objects) {
-                    Some((min, max)) => {
-                        let extent = max - min;
-                        let span = extent.x.max(extent.y).max(extent.z);
-                        ((min + max) * 0.5, span * 0.33)
-                    }
-                    None => (Vec3::ZERO, 2.0),
-                };
-                if let Some(obj) = ObjectSpec::from_obj(&path, center, size) {
-                    objects.push(obj);
-                    *selected = Some(objects.len() - 1);
-                    changed = true;
-                }
-            }
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = ui
-                .add_enabled(
-                    false,
-                    egui::Button::new(format!("{}  {}  OBJ", icons::PLUS, icons::POLYGON)),
-                )
-                .on_disabled_hover_text("OBJ import isn't available in the browser yet");
-        }
+        changed |= import_obj(ui, objects, selected);
     });
     changed
 }
@@ -832,7 +797,7 @@ fn transform_controls(ui: &mut egui::Ui, t: &mut Transform) -> bool {
     changed
 }
 
-fn default_sphere(n: usize) -> ObjectSpec {
+pub(crate) fn default_sphere(n: usize) -> ObjectSpec {
     ObjectSpec {
         name: format!("Sphere {}", n),
         shape: Shape::Sphere {
@@ -847,7 +812,7 @@ fn default_sphere(n: usize) -> ObjectSpec {
     }
 }
 
-fn default_box(n: usize) -> ObjectSpec {
+pub(crate) fn default_box(n: usize) -> ObjectSpec {
     ObjectSpec {
         name: format!("Box {}", n),
         shape: Shape::Box {
@@ -860,4 +825,68 @@ fn default_box(n: usize) -> ObjectSpec {
         transform: Transform::identity(),
         hidden: false,
     }
+}
+
+/// A flat quad (floor-aligned, 200×200 units centered at scene origin).
+pub(crate) fn default_plane(n: usize) -> ObjectSpec {
+    ObjectSpec {
+        name: format!("Plane {}", n),
+        shape: Shape::Quad {
+            q: Point3::new(178.0, 0.0, 178.0),
+            u: Vec3::new(200.0, 0.0, 0.0),
+            v: Vec3::new(0.0, 0.0, 200.0),
+        },
+        material: MaterialSpec::Lambertian {
+            albedo: TextureSpec::solid(Color::new(0.7, 0.7, 0.7)),
+        },
+        transform: Transform::identity(),
+        hidden: false,
+    }
+}
+
+/// Show an "Import .obj" button and, when clicked, open a file picker and load
+/// the chosen mesh. Returns `true` if a new object was successfully added.
+///
+/// On wasm the button is shown disabled with an explanatory tooltip.
+pub(crate) fn import_obj(
+    ui: &mut egui::Ui,
+    objects: &mut Vec<ObjectSpec>,
+    selected: &mut Option<usize>,
+) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    if ui
+        .button(format!("{}  Import .obj\u{2026}", icons::FOLDER))
+        .clicked()
+    {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Wavefront OBJ", &["obj"])
+            .pick_file()
+        {
+            let (center, size) = match scene::placeable_bounds(objects) {
+                Some((min, max)) => {
+                    let extent = max - min;
+                    let span = extent.x.max(extent.y).max(extent.z);
+                    ((min + max) * 0.5, span * 0.33)
+                }
+                None => (Vec3::ZERO, 2.0),
+            };
+            if let Some(obj) = ObjectSpec::from_obj(&path, center, size) {
+                objects.push(obj);
+                *selected = Some(objects.len() - 1);
+                return true;
+            }
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = ui
+            .add_enabled(
+                false,
+                egui::Button::new(format!("{}  Import .obj\u{2026}", icons::FOLDER)),
+            )
+            .on_disabled_hover_text("OBJ import isn't available in the browser yet");
+        let _ = objects;
+        let _ = selected;
+    }
+    false
 }
