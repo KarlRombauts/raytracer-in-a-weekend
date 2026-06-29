@@ -8,7 +8,7 @@ use eframe::egui;
 use super::icons;
 use crate::camera::CameraConfig;
 use crate::color::Color;
-use crate::scene::{self, Asset, CellTexture, MaterialSpec, ObjectSpec, Shape, TextureSpec, Transform};
+use crate::scene::{self, Asset, CellTexture, Mapping, MaterialSpec, ObjectSpec, Shape, TextureSpec, Transform};
 use crate::vec3::{Point3, Vec3};
 
 /// `label | value` row (u32), Blender-style, optionally clamped to `range`.
@@ -402,7 +402,7 @@ fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
                     c = true;
                 }
                 if ui.selectable_label(matches!(t, TextureSpec::Image { .. }), "Image").clicked() {
-                    *t = TextureSpec::Image { asset: Asset::empty() };
+                    *t = TextureSpec::Image { asset: Asset::empty(), mapping: Mapping::default() };
                     c = true;
                 }
             });
@@ -424,7 +424,45 @@ fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
                 changed = true;
             }
         }
-        TextureSpec::Image { asset } => changed |= image_picker_row(ui, asset),
+        TextureSpec::Image { asset, mapping } => {
+            changed |= image_picker_row(ui, asset);
+            use crate::texture::Projection;
+            let proj_label = match mapping.projection {
+                Projection::MeshUv => "Mesh UV",
+                Projection::Planar => "Planar",
+                Projection::Spherical => "Spherical",
+                Projection::Cylindrical => "Cylindrical",
+            };
+            prop_row(ui, "Projection", |ui| {
+                egui::ComboBox::from_id_salt("texture_projection")
+                    .selected_text(proj_label)
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        for (p, label) in [
+                            (Projection::MeshUv, "Mesh UV"),
+                            (Projection::Planar, "Planar"),
+                            (Projection::Spherical, "Spherical"),
+                            (Projection::Cylindrical, "Cylindrical"),
+                        ] {
+                            if ui.selectable_label(mapping.projection == p, label).clicked() {
+                                mapping.projection = p;
+                                changed = true;
+                            }
+                        }
+                    });
+            });
+            changed |= axis_row(ui, "Tile", &mut mapping.scale, 0.01, "", Some(3), Some(0.01..=100.0));
+            let mut offset_u = mapping.offset.0;
+            let mut offset_v = mapping.offset.1;
+            if axis_row(ui, "Offset U", &mut offset_u, 0.01, "", Some(3), Some(-10.0..=10.0)) {
+                mapping.offset.0 = offset_u;
+                changed = true;
+            }
+            if axis_row(ui, "Offset V", &mut offset_v, 0.01, "", Some(3), Some(-10.0..=10.0)) {
+                mapping.offset.1 = offset_v;
+                changed = true;
+            }
+        }
     }
     changed
 }

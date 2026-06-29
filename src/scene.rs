@@ -7,7 +7,7 @@ use crate::geometry::{make_box, ObjData, Quad, Rotate, Scale, Sphere, Translate}
 use crate::group::{IntersectGroup, Light};
 use crate::material::{Dielectric, DiffuseLight, Glossy, Lambertian, Material, Metal};
 use crate::texture::{
-    CheckerTexture, ImageTexture, NoiseTexture, SolidColor, Texture,
+    CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, Projection, SolidColor, Texture,
 };
 use crate::ray::{Intersect, BVH};
 use crate::vec3::{Point3, Vec3};
@@ -29,6 +29,32 @@ impl Asset {
     }
 }
 
+/// How an image texture's UV coordinates are projected and scaled.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Mapping {
+    pub projection: Projection,
+    pub scale: f32,
+    pub offset: (f32, f32),
+}
+
+impl Default for Mapping {
+    fn default() -> Self {
+        Mapping {
+            projection: Projection::MeshUv,
+            scale: 1.0,
+            offset: (0.0, 0.0),
+        }
+    }
+}
+
+impl Mapping {
+    pub fn is_identity(&self) -> bool {
+        self.projection == Projection::MeshUv
+            && self.scale == 1.0
+            && self.offset == (0.0, 0.0)
+    }
+}
+
 /// The magenta sentinel used when an image asset fails to decode.
 fn magenta() -> Arc<dyn Texture> {
     Arc::new(SolidColor::from_color(Color::new(1.0, 0.0, 1.0)))
@@ -40,7 +66,7 @@ pub enum TextureSpec {
     Solid { color: Color },
     Checker { scale: f32, even: CellTexture, odd: CellTexture },
     Noise { scale: f32, depth: u32 },
-    Image { asset: Asset },
+    Image { asset: Asset, mapping: Mapping },
 }
 
 /// A checker cell. Deliberately omits `Checker`, so checker-in-checker
@@ -90,7 +116,19 @@ impl TextureSpec {
                 Arc::new(CheckerTexture::from_textures(*scale, even.build(), odd.build()))
             }
             TextureSpec::Noise { scale, depth } => Arc::new(NoiseTexture::new(*scale, *depth)),
-            TextureSpec::Image { asset } => build_image(asset),
+            TextureSpec::Image { asset, mapping } => {
+                let inner = build_image(asset);
+                if mapping.is_identity() {
+                    inner
+                } else {
+                    Arc::new(MappedTexture::new(
+                        inner,
+                        mapping.projection,
+                        mapping.scale,
+                        mapping.offset,
+                    ))
+                }
+            }
         }
     }
 
@@ -467,11 +505,33 @@ mod texture_spec_tests {
 
     #[test]
     fn bad_image_builds_to_magenta_not_a_panic() {
-        let t = TextureSpec::Image { asset: Asset { bytes: vec![1, 2, 3].into(), label: None } };
+        let t = TextureSpec::Image { asset: Asset { bytes: vec![1, 2, 3].into(), label: None }, mapping: Mapping::default() };
         let built = t.build(); // must not panic
         let c = built.value(0.5, 0.5, &Point3::new(0.0, 0.0, 0.0));
         assert_eq!(c, Color::new(1.0, 0.0, 1.0));
         // Image preview is a constant neutral gray (no per-frame decode).
         assert_eq!(t.preview_color(), Color::new(0.5, 0.5, 0.5));
+    }
+}
+
+#[cfg(test)]
+mod mapping_tests {
+    use super::*;
+
+    #[test]
+    fn default_mapping_is_identity() {
+        let m = Mapping::default();
+        assert!(m.is_identity());
+        assert_eq!(m.projection, crate::texture::Projection::MeshUv);
+        assert_eq!(m.scale, 1.0);
+        assert_eq!(m.offset, (0.0, 0.0));
+    }
+
+    #[test]
+    fn non_identity_when_changed() {
+        let m = Mapping { projection: crate::texture::Projection::Planar, scale: 1.0, offset: (0.0, 0.0) };
+        assert!(!m.is_identity());
+        let m2 = Mapping { scale: 2.0, ..Mapping::default() };
+        assert!(!m2.is_identity());
     }
 }
