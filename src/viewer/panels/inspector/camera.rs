@@ -24,5 +24,18 @@ pub fn camera_tab(ui: &mut Ui, cam: &mut CameraConfig) -> bool {
     c |= widgets::prop_row(ui, "Focus", |ui| {
         widgets::axis_field(ui, Axis::None, &mut cam.focus_dist, 1.0, Some(1), "", Some(0.001..=1.0e6))
     });
+
+    widgets::section_header(ui, icons::PALETTE, "World");
+    c |= widgets::prop_row(ui, "Sky", |ui| {
+        // `background` is the flat colour returned when a ray misses every
+        // object (the sky). egui edits it as linear RGB in 0..1.
+        let mut rgb = [cam.background.x, cam.background.y, cam.background.z];
+        if ui.color_edit_button_rgb(&mut rgb).changed() {
+            cam.background = crate::color::Color::new(rgb[0], rgb[1], rgb[2]);
+            true
+        } else {
+            false
+        }
+    });
     c
 }

@@ -24,10 +24,15 @@ pub fn overlays(
         .movable(false)
         .show(ui.ctx(), |ui| {
             widgets::overlay_frame().show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new(format!("{}  {} × {}", icons::IMAGE, res.0, res.1))
-                        .monospace()
-                        .color(theme::TEXT),
+                // Extend (don't wrap): the badge grows to fit the resolution
+                // text instead of wrapping "960 × 720" onto two lines.
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(format!("{}  {} × {}", icons::IMAGE, res.0, res.1))
+                            .monospace()
+                            .color(theme::TEXT),
+                    )
+                    .wrap_mode(egui::TextWrapMode::Extend),
                 );
             });
         });
