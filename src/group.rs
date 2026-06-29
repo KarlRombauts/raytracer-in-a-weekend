@@ -58,14 +58,22 @@ impl IntersectGroup {
         sum / self.lights.len() as f32
     }
 
-    /// A random (unnormalized) direction from `origin` toward a uniformly chosen
-    /// registered light. `None` when there are no lights.
-    pub fn sample_light_dir(&self, origin: Point3, rng: &mut SmallRng) -> Option<Vec3> {
+    /// A (unnormalized) direction from `origin` toward a registered light: `rng`
+    /// chooses which light (discrete), and the canonical uniforms `(u, v)` sample
+    /// a point on its surface — so the surface sample can be stratified by the
+    /// caller. `None` when there are no lights.
+    pub fn sample_light_dir(
+        &self,
+        origin: Point3,
+        u: f32,
+        v: f32,
+        rng: &mut SmallRng,
+    ) -> Option<Vec3> {
         if self.lights.is_empty() {
             return None;
         }
         let i = rng.random_range(0..self.lights.len());
-        Some(self.lights[i].geom.random_dir(origin, rng))
+        Some(self.lights[i].geom.random_dir(origin, u, v))
     }
 }
 
@@ -92,12 +100,17 @@ impl Intersect for IntersectGroup {
         closest_hit
     }
 
-    fn sample_point(&self, rng: &mut SmallRng) -> Point3 {
+    fn sample_point(&self, u: f32, v: f32) -> Point3 {
         if self.objects.is_empty() {
             return self.center();
         }
-        let i = rng.random_range(0..self.objects.len());
-        self.objects[i].sample_point(rng)
+        // Use `u` to pick the child, then its fractional part as a fresh uniform
+        // so the child's own surface sample stays well-distributed.
+        let n = self.objects.len();
+        let scaled = u * n as f32;
+        let i = (scaled as usize).min(n - 1);
+        let u2 = scaled - i as f32;
+        self.objects[i].sample_point(u2, v)
     }
 }
 
@@ -143,7 +156,7 @@ mod light_mixture_tests {
     fn sample_light_dir_is_none_without_lights() {
         let w = IntersectGroup::new();
         let mut rng = SmallRng::seed_from_u64(1);
-        assert!(w.sample_light_dir(Point3::new(0.0, 0.0, 0.0), &mut rng).is_none());
+        assert!(w.sample_light_dir(Point3::new(0.0, 0.0, 0.0), 0.5, 0.5, &mut rng).is_none());
     }
 
     #[test]
@@ -152,7 +165,8 @@ mod light_mixture_tests {
         w.lights.push(Light { geom: overhead_light(), emit: Color::new(1.0, 1.0, 1.0) });
         let mut rng = SmallRng::seed_from_u64(2);
         for _ in 0..100 {
-            let d = w.sample_light_dir(Point3::new(0.0, 0.0, 0.0), &mut rng).unwrap();
+            let (u, v) = (rng.random::<f32>(), rng.random::<f32>());
+            let d = w.sample_light_dir(Point3::new(0.0, 0.0, 0.0), u, v, &mut rng).unwrap();
             assert!(d.y > 0.0, "expected upward dir toward overhead light, got {:?}", d);
         }
     }
@@ -190,7 +204,7 @@ mod sample_tests {
         let mut rng = SmallRng::seed_from_u64(4);
         let (mut hit_a, mut hit_b) = (false, false);
         for _ in 0..500 {
-            let p = g.sample_point(&mut rng);
+            let p = g.sample_point(rng.random::<f32>(), rng.random::<f32>());
             let in_a = (0.0..=1.0).contains(&p.x);
             let in_b = (10.0..=11.0).contains(&p.x);
             assert!(in_a || in_b, "point on neither child: {:?}", p);

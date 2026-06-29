@@ -141,7 +141,9 @@ impl RenderEngine {
             return false; // nothing to do until the next invalidate
         };
 
-        if a.renderer.passes() >= a.target {
+        // Stop at the sample target or once every pixel has converged (adaptive
+        // sampling) — whichever comes first.
+        if a.renderer.passes() >= a.target || a.renderer.all_converged() {
             // Reached the target: mark done once (full-resolution only — reduced
             // previews are throwaway and snap back via a later invalidate).
             if !a.finished {
