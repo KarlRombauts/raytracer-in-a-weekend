@@ -168,6 +168,12 @@ impl ViewerApp {
         self.render.invalidate();
         self.ui_state.scene_name = name.into();
         self.ui_state.screen = state::Screen::Editor;
+        // The Home screen pauses the path trace; un-pause when we enter in Render
+        // mode (Edit mode stays paused and shows the GL preview). Without this the
+        // render stays frozen, since the resume below only fires on a mode change.
+        if self.ui_state.mode == Mode::Render {
+            self.render.resume();
+        }
     }
 }
 
