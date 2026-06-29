@@ -50,14 +50,10 @@ pub fn object_tab(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> boo
         return true;
     }
 
-    let is_mesh = matches!(scene.objects[i].shape, Shape::Mesh { .. });
-
+    // Meshes get full material editing too: their BVH is material-agnostic and
+    // the material is applied via a wrapper at world-build time (no rebuild).
     widgets::section_header(ui, icons::PALETTE, "Material");
-    if is_mesh {
-        ui.label(egui::RichText::new("baked at import").color(theme::TEXT_DIM));
-    } else {
-        dirty |= controls::material_controls(ui, &mut scene.objects[i].material);
-    }
+    dirty |= controls::material_controls(ui, &mut scene.objects[i].material);
 
     if matches!(scene.objects[i].shape, Shape::Sphere { .. } | Shape::Box { .. }) {
         widgets::section_header(ui, icons::SHAPES, "Geometry");

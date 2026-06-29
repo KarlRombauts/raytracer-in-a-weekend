@@ -7,8 +7,9 @@ use crate::camera::CameraConfig;
 use crate::color::Color;
 use crate::geometry::{ObjData, Quad, RenderMesh, Rotate, Scale, Sphere, Translate, Triangle, make_box};
 use crate::group::{IntersectGroup, Light};
+use crate::interval::Interval;
 use crate::material::{Dielectric, DiffuseLight, Glossy, Lambertian, Material, Metal};
-use crate::ray::{BVH, Intersect};
+use crate::ray::{HitRecord, Ray, AABB, BVH, Intersect};
 use crate::texture::{
     CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, Projection, SolidColor, Texture,
 };
@@ -237,8 +238,11 @@ pub struct MeshData {
 }
 
 impl MeshData {
-    /// Rebuild the runtime intersect handle (BVH) and the preview mesh from the
-    /// stored arrays. Bakes the default grey Lambertian, matching OBJ import.
+    /// Build the runtime intersect handle (BVH) and the preview mesh from the
+    /// stored arrays. The triangles bake a placeholder material; the object's
+    /// real material is applied cheaply at world-build time by wrapping this
+    /// BVH in a [`MaterialOverride`] (see `Shape::build`), so editing a mesh's
+    /// material never rebuilds the (material-independent) BVH.
     pub fn build(&self) -> (Arc<dyn Intersect>, Arc<RenderMesh>) {
         let material = MaterialSpec::Lambertian {
             albedo: TextureSpec::solid(Color::new(0.73, 0.73, 0.73)),
@@ -258,6 +262,35 @@ impl MeshData {
         let bvh = BVH::build(triangles);
         let render = Arc::new(RenderMesh::from_triangles_smooth(&self.verts, &faces_usize));
         (Arc::new(bvh), render)
+    }
+}
+
+/// Wraps a prebuilt, material-agnostic intersect handle (a mesh BVH) and
+/// overrides every hit's material with `material`. This lets a mesh's material
+/// be changed by swapping one `Arc` at world-build time, with **no BVH rebuild**
+/// — the spatial structure doesn't depend on the material.
+struct MaterialOverride {
+    inner: Arc<dyn Intersect>,
+    material: Arc<dyn Material>,
+}
+
+impl Intersect for MaterialOverride {
+    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>> {
+        let mut hit = self.inner.intersect(ray, ray_t)?;
+        hit.material = &*self.material;
+        Some(hit)
+    }
+    fn bounding_box(&self) -> &AABB {
+        self.inner.bounding_box()
+    }
+    fn center(&self) -> Vec3 {
+        self.inner.center()
+    }
+    fn sample_point(&self, u: f32, v: f32) -> Point3 {
+        self.inner.sample_point(u, v)
+    }
+    fn area(&self) -> f32 {
+        self.inner.area()
     }
 }
 
@@ -294,7 +327,12 @@ impl Shape {
             }
             Shape::Quad { q, u, v } => Arc::new(Quad::new(*q, *u, *v, material)),
             Shape::Box { a, b } => Arc::new(make_box(*a, *b, material)),
-            Shape::Mesh { object, .. } => object.clone(),
+            // Wrap the prebuilt (material-agnostic) BVH so the object's material
+            // is applied at hit time — no per-edit BVH rebuild.
+            Shape::Mesh { object, .. } => Arc::new(MaterialOverride {
+                inner: object.clone(),
+                material,
+            }),
         }
     }
 
