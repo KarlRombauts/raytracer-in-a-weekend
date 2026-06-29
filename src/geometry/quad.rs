@@ -6,8 +6,6 @@ use crate::{
     ray::{HitRecord, Intersect, Ray, AABB},
     vec3::{Point3, Vec3},
 };
-use rand::rngs::SmallRng;
-use rand::Rng;
 
 pub struct Quad {
     q: Point3,
@@ -98,10 +96,8 @@ impl Intersect for Quad {
         &self.bbox
     }
 
-    fn sample_point(&self, rng: &mut SmallRng) -> Point3 {
-        let a: f32 = rng.random();
-        let b: f32 = rng.random();
-        self.q + a * self.u + b * self.v
+    fn sample_point(&self, u: f32, v: f32) -> Point3 {
+        self.q + u * self.u + v * self.v
     }
 
     fn area(&self) -> f32 {
@@ -156,7 +152,7 @@ mod sample_tests {
     use crate::material::Lambertian;
     use crate::vec3::{Point3, Vec3};
     use rand::rngs::SmallRng;
-    use rand::SeedableRng;
+    use rand::{Rng, SeedableRng};
     use std::sync::Arc;
 
     #[test]
@@ -172,7 +168,7 @@ mod sample_tests {
         let mut xs: Vec<f32> = Vec::with_capacity(500);
         let mut ys: Vec<f32> = Vec::with_capacity(500);
         for _ in 0..500 {
-            let p = q.sample_point(&mut rng);
+            let p = q.sample_point(rng.random::<f32>(), rng.random::<f32>());
             assert!(p.z.abs() < 1e-5, "off-plane: {:?}", p);
             assert!((0.0..=2.0).contains(&p.x), "x out: {}", p.x);
             assert!((0.0..=3.0).contains(&p.y), "y out: {}", p.y);

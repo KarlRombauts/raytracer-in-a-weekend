@@ -6,8 +6,14 @@ pub type Color = Vec3;
 /// luminance (preserving hue). Applied per sample before accumulation so a single
 /// improbable high-energy path can't dominate the running average. `max` is
 /// `f32::INFINITY` to disable. Introduces a small energy bias only above `max`.
+/// Rec. 709 relative luminance of a linear-light colour. The weights sum to 1,
+/// so a neutral grey `(v, v, v)` has luminance exactly `v`.
+pub fn luminance(c: Color) -> f32 {
+    0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z
+}
+
 pub fn clamp_luminance(c: Color, max: f32) -> Color {
-    let lum = 0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z;
+    let lum = luminance(c);
     if lum > max && lum > 0.0 {
         c * (max / lum)
     } else {

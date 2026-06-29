@@ -36,14 +36,51 @@ fn wang_hash(mut x: u32) -> u32 {
     x
 }
 
+/// Per-dimension irrational multipliers for the Kronecker (additive recurrence)
+/// low-discrepancy sequences. dim 0 keeps the 2D plastic constants (so it equals
+/// `r2` and sub-pixel AA is unchanged); dims 1+ use successive components of the
+/// generalized-golden (6D plastic) sequence. Distinct multipliers per dimension
+/// mean the dimensions are *genuinely* independent, not rigid shifts of one
+/// another — so the joint (sub-pixel, light, bounce) samples fill their space
+/// instead of collapsing onto a degenerate subspace.
+const DIM_MULT: [(f64, f64); 3] = [
+    (0.7548776662, 0.5698402909), // dim 0 — 2D plastic (exactly r2), AA unchanged
+    (0.8986537126, 0.8075784952), // dim 1 — NEE light sample
+    (0.7257349836, 0.6519350658), // dim 2 — first BSDF bounce
+];
+
+/// 2D Kronecker point for `index` along sampling `dim` (each component in
+/// [0, 1)), using that dimension's own multipliers. Products are formed in f64
+/// so the fractional part survives large indices.
+fn kronecker_2d(index: u32, dim: u32) -> (f32, f32) {
+    let (ax, ay) = DIM_MULT[(dim as usize).min(DIM_MULT.len() - 1)];
+    (
+        ((index as f64) * ax).fract() as f32,
+        ((index as f64) * ay).fract() as f32,
+    )
+}
+
+/// A stratified low-discrepancy point in [0, 1)² for sample `sample_index` of
+/// pixel `(i, j)`, along an independent sampling `dim`ension (0 = sub-pixel AA,
+/// 1 = NEE light sample, 2 = first BSDF bounce, ...). Each dimension uses its
+/// own Kronecker sequence (distinct multipliers) plus its own per-pixel
+/// Cranley-Patterson rotation, so the dimensions are decorrelated both within a
+/// pixel and across pixels.
+pub fn stratified_unit(i: u32, j: u32, sample_index: u32, dim: u32) -> (f32, f32) {
+    let (rx, ry) = kronecker_2d(sample_index, dim);
+    let (ox, oy) = hash01(
+        i.wrapping_add(dim.wrapping_mul(0x9E3779B1)),
+        j.wrapping_add(dim.wrapping_mul(0x85EBCA77)),
+    );
+    ((rx + ox).fract(), (ry + oy).fract())
+}
+
 /// Sub-pixel offset for sample `sample_index` of pixel `(i, j)`, each component
-/// in [-0.5, 0.5). This is the camera's per-sample anti-aliasing jitter.
+/// in [-0.5, 0.5). This is the camera's per-sample anti-aliasing jitter (the
+/// `dim = 0` stratified point, recentred on the pixel).
 pub fn stratified_offset(i: u32, j: u32, sample_index: u32) -> (f32, f32) {
-    let (rx, ry) = r2(sample_index);
-    let (ox, oy) = hash01(i, j);
-    let dx = (rx + ox).fract() - 0.5;
-    let dy = (ry + oy).fract() - 0.5;
-    (dx, dy)
+    let (x, y) = stratified_unit(i, j, sample_index, 0);
+    (x - 0.5, y - 0.5)
 }
 
 #[cfg(test)]
@@ -76,6 +113,60 @@ mod tests {
             assert!((-0.5..0.5).contains(&dx), "dx out of range: {dx}");
             assert!((-0.5..0.5).contains(&dy), "dy out of range: {dy}");
         }
+    }
+
+    #[test]
+    fn stratified_unit_stays_in_unit_square() {
+        for index in 0..256 {
+            for dim in 0..4 {
+                let (u, v) = stratified_unit(2, 9, index, dim);
+                assert!((0.0..1.0).contains(&u) && (0.0..1.0).contains(&v), "dim {dim}: ({u},{v})");
+            }
+        }
+    }
+
+    #[test]
+    fn stratified_unit_dimensions_are_decorrelated() {
+        // Same pixel & sample index, different dimensions => different points,
+        // so the light sample and bounce sample don't track each other.
+        let light = stratified_unit(4, 5, 7, 1);
+        let bounce = stratified_unit(4, 5, 7, 2);
+        assert!(light != bounce, "dims 1 and 2 collide: {light:?}");
+    }
+
+    #[test]
+    fn dimensions_are_not_rigid_shifts_of_each_other() {
+        // A per-pixel *rotation* alone leaves dim d a fixed toroidal shift of
+        // dim 0 (dim_d(s) - dim_0(s) constant for all s), collapsing the joint
+        // (sub-pixel, light, bounce) samples onto a degenerate subspace. The
+        // offset between dim 0 and dim 2 must instead VARY across sample index.
+        let off = |s: u32| {
+            let (a, _) = stratified_unit(3, 4, s, 0);
+            let (b, _) = stratified_unit(3, 4, s, 2);
+            (b - a).rem_euclid(1.0)
+        };
+        let (o1, o2, o3) = (off(1), off(2), off(37));
+        assert!(
+            (o1 - o2).abs() > 1e-4 || (o1 - o3).abs() > 1e-4,
+            "dim 2 is a rigid shift of dim 0 (degenerate joint sampling): {o1} {o2} {o3}"
+        );
+    }
+
+    #[test]
+    fn dim_zero_still_equals_r2_so_aa_is_unchanged() {
+        for s in [0u32, 1, 2, 100, 5000, 60000] {
+            let (kx, ky) = kronecker_2d(s, 0);
+            let (rx, ry) = r2(s);
+            assert!((kx - rx).abs() < 1e-6 && (ky - ry).abs() < 1e-6, "dim0 != r2 at {s}");
+        }
+    }
+
+    #[test]
+    fn stratified_offset_matches_dim_zero() {
+        // AA (dim 0) is unchanged by the refactor: offset == unit(dim 0) - 0.5.
+        let (ux, uy) = stratified_unit(3, 7, 11, 0);
+        let (dx, dy) = stratified_offset(3, 7, 11);
+        assert!((dx - (ux - 0.5)).abs() < 1e-6 && (dy - (uy - 0.5)).abs() < 1e-6);
     }
 
     #[test]

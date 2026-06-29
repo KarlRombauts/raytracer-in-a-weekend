@@ -6,8 +6,6 @@ use std::fmt;
 use std::{path::Display, sync::Arc};
 
 use crate::ray::{hit_record, BVHNode, HitRecord, Intersect, Ray, AABB};
-use rand::rngs::SmallRng;
-use rand::Rng;
 
 pub struct BVHFlatNode {
     pub left: u32,
@@ -332,12 +330,17 @@ impl<T: Intersect> Intersect for BVH<T> {
         return self.intersectBVH(ray, ray_t);
     }
 
-    fn sample_point(&self, rng: &mut SmallRng) -> Point3 {
+    fn sample_point(&self, u: f32, v: f32) -> Point3 {
         if self.primitives.is_empty() {
             return self.center();
         }
-        let i = rng.random_range(0..self.primitives.len());
-        self.primitives[i].sample_point(rng)
+        // `u` selects the primitive; its fractional part is reused as a fresh
+        // uniform for the primitive's own surface sample.
+        let n = self.primitives.len();
+        let scaled = u * n as f32;
+        let i = (scaled as usize).min(n - 1);
+        let u2 = scaled - i as f32;
+        self.primitives[i].sample_point(u2, v)
     }
 }
 
@@ -377,7 +380,7 @@ mod sample_tests {
     use crate::material::Lambertian;
     use crate::vec3::Point3;
     use rand::rngs::SmallRng;
-    use rand::SeedableRng;
+    use rand::{Rng, SeedableRng};
     use std::sync::Arc;
 
     #[test]
@@ -398,7 +401,7 @@ mod sample_tests {
         let bvh = BVH::build(vec![t1, t2]);
         let mut rng = SmallRng::seed_from_u64(6);
         for _ in 0..500 {
-            let p = bvh.sample_point(&mut rng);
+            let p = bvh.sample_point(rng.random::<f32>(), rng.random::<f32>());
             assert!(
                 p.x >= -1e-4 && p.y >= -1e-4 && p.x + p.y <= 1.0 + 1e-4,
                 "bad bary: {:?}",

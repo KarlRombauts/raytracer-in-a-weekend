@@ -1,5 +1,4 @@
 use crate::{interval::Interval, ray::*, vec3::{Point3, Vec3}};
-use rand::rngs::SmallRng;
 
 pub trait Intersect: Send + Sync {
     fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>>;
@@ -8,10 +7,11 @@ pub trait Intersect: Send + Sync {
 
     fn center(&self) -> Vec3;
 
-    /// Sample a point on this object's surface, for light sampling. The default
-    /// returns the bounding-box center; shapes that can act as lights override
-    /// it. Takes a concrete `SmallRng` to stay object-safe (`dyn Intersect`).
-    fn sample_point(&self, _rng: &mut SmallRng) -> Point3 {
+    /// Sample a point on this object's surface from two canonical uniforms
+    /// `(u, v)` in [0, 1)², for light sampling. Taking explicit uniforms (rather
+    /// than an rng) lets the caller supply *stratified* numbers. The default
+    /// returns the bounding-box center; shapes that can act as lights override it.
+    fn sample_point(&self, _u: f32, _v: f32) -> Point3 {
         self.center()
     }
 
@@ -43,9 +43,10 @@ pub trait Intersect: Send + Sync {
         }
     }
 
-    /// A random (unnormalized) direction from `origin` toward a point on this
-    /// object. Reuses `sample_point`, so it composes through groups/BVH/transforms.
-    fn random_dir(&self, origin: Point3, rng: &mut SmallRng) -> Vec3 {
-        self.sample_point(rng) - origin
+    /// A (unnormalized) direction from `origin` toward a point on this object,
+    /// sampled from uniforms `(u, v)`. Reuses `sample_point`, so it composes
+    /// through groups/BVH/transforms.
+    fn random_dir(&self, origin: Point3, u: f32, v: f32) -> Vec3 {
+        self.sample_point(u, v) - origin
     }
 }
