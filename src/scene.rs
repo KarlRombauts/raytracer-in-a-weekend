@@ -275,7 +275,7 @@ mod registration_tests {
     use crate::camera::CameraConfig;
 
     #[test]
-    fn only_area_lights_are_registered() {
+    fn quad_and_sphere_emitters_both_register() {
         let quad_light = ObjectSpec {
             name: "quad".to_string(),
             shape: Shape::Quad {
@@ -297,9 +297,10 @@ mod registration_tests {
             objects: vec![quad_light, sphere_light],
         };
         let world = build_world(&scene);
-        // Sphere keeps area()=0 (deferred) => not registered; quad is.
-        assert_eq!(world.lights.len(), 1, "only the quad (area>0) should register");
-        // Both objects still live in the world geometry (the sphere still glows).
+        // Both the quad and the sphere have area()>0, so both register as
+        // importance-sampled lights — the sphere via cone (solid-angle) sampling.
+        assert_eq!(world.lights.len(), 2, "quad and sphere both register");
+        // Both objects still live in the world geometry too.
         assert_eq!(world.objects.len(), 2, "both objects remain in the world");
     }
 }
