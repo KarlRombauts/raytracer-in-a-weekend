@@ -2,3 +2,7 @@
 /dist
 /.claude
 /.superpowers
+
+# Editor scratch / OS / tool junk
+*.zip
+/.serena
