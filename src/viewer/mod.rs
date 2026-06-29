@@ -124,6 +124,10 @@ impl eframe::App for ViewerApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
+        // On wasm this advances the path trace one pass per frame (no render
+        // thread in the browser); on native it is a no-op.
+        self.render.pump();
+
         // Pull the latest frame; rebuild the texture only when a new pass landed.
         // Dims come from the frame so a resolution change resizes the texture.
         let (img_w, img_h, passes, total, done, elapsed, new_image) = {
