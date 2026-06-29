@@ -125,6 +125,8 @@ pub struct ViewerApp {
     /// Transient status line for scene save/load (message + egui-time when set).
     /// Auto-dismissed by the toast a few seconds after it appears.
     scene_status: Option<(String, f64)>,
+    /// Cached library/Home screen state (thumbnails + per-sample metadata).
+    home: panels::HomeState,
 }
 
 impl ViewerApp {
@@ -150,6 +152,7 @@ impl ViewerApp {
             ui_state: state::UiState::default(),
             scene_picker: None,
             scene_status: None,
+            home: panels::HomeState::default(),
         }
     }
 
@@ -228,6 +231,33 @@ impl eframe::App for ViewerApp {
                     self.scene_status = Some((format!("Load failed: {e}"), now));
                 }
             }
+        }
+
+        // Library (Home) screen: full-window, no editor panels and no path
+        // tracing. Selecting a card / New scene enters the editor via
+        // `load_scene`; a completed file load (polled above) does the same.
+        if self.ui_state.screen == state::Screen::Home {
+            self.render.pause();
+            let mut home_action = panels::HomeAction::None;
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(theme::BG_APP))
+                .show_inside(ui, |ui| {
+                    home_action = panels::show_home(ui, &mut self.home);
+                });
+            match home_action {
+                panels::HomeAction::NewScene => {
+                    self.load_scene(samples::new_scene(), "untitled");
+                }
+                panels::HomeAction::OpenSample(i) => {
+                    let s = &samples::SAMPLES[i];
+                    self.load_scene((s.build)(), s.name);
+                }
+                panels::HomeAction::OpenSceneFile => {
+                    self.scene_picker = Some(crate::platform::pick_scene());
+                }
+                panels::HomeAction::None => {}
+            }
+            return;
         }
 
         // Pull the latest frame; rebuild the texture only when a new pass landed.
