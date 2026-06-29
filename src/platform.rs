@@ -19,7 +19,7 @@ pub fn save_png(suggested_name: &str, bytes: &[u8]) {
 
 #[cfg(target_arch = "wasm32")]
 pub fn save_png(suggested_name: &str, bytes: &[u8]) {
-    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen::JsCast;
 
     let array = js_sys::Uint8Array::from(bytes);
     let parts = js_sys::Array::new();
@@ -40,5 +40,4 @@ pub fn save_png(suggested_name: &str, bytes: &[u8]) {
     anchor.set_download(suggested_name);
     anchor.click();
     web_sys::Url::revoke_object_url(&url).ok();
-    let _ = JsValue::NULL;
 }
