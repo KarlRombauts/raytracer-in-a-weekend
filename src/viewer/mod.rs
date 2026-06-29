@@ -121,8 +121,9 @@ pub struct ViewerApp {
     ui_state: state::UiState,
     /// In-flight scene-file load (None when idle).
     scene_picker: Option<crate::platform::ScenePicker>,
-    /// Transient status line for scene save/load (e.g. "Loaded scene").
-    scene_status: Option<String>,
+    /// Transient status line for scene save/load (message + egui-time when set).
+    /// Auto-dismissed by the toast a few seconds after it appears.
+    scene_status: Option<(String, f64)>,
 }
 
 impl ViewerApp {
@@ -183,6 +184,9 @@ impl eframe::App for ViewerApp {
         // thread in the browser); on native it is a no-op.
         self.render.pump();
 
+        // egui time (seconds), used to time-stamp + auto-dismiss the status toast.
+        let now = ui.input(|i| i.time);
+
         // Apply a completed scene load (the picker resolves asynchronously on web).
         if let Some(status) = self.scene_picker.as_ref().map(|p| p.poll()) {
             match status {
@@ -199,15 +203,15 @@ impl eframe::App for ViewerApp {
                             self.gl_renderer.lock().unwrap().mark_dirty();
                             self.ui_state.selected = None;
                             self.render.invalidate();
-                            self.scene_status = Some("Loaded scene".to_string());
+                            self.scene_status = Some(("Loaded scene".to_string(), now));
                         }
-                        Err(e) => self.scene_status = Some(format!("Load failed: {e}")),
+                        Err(e) => self.scene_status = Some((format!("Load failed: {e}"), now)),
                     }
                 }
                 crate::platform::PickStatus::Cancelled => self.scene_picker = None,
                 crate::platform::PickStatus::Failed(e) => {
                     self.scene_picker = None;
-                    self.scene_status = Some(format!("Load failed: {e}"));
+                    self.scene_status = Some((format!("Load failed: {e}"), now));
                 }
             }
         }
@@ -558,7 +562,7 @@ impl eframe::App for ViewerApp {
                         crate::scene_file::encode(&scene, None, &preview)
                     };
                     crate::platform::save_scene("scene.scene", &bytes);
-                    self.scene_status = Some("Saved scene".to_string());
+                    self.scene_status = Some(("Saved scene".to_string(), now));
                 }
                 panels::Action::LoadScene => {
                     self.scene_picker = Some(crate::platform::pick_scene());
@@ -581,14 +585,38 @@ impl eframe::App for ViewerApp {
             }
         }
 
-        if let Some(msg) = self.scene_status.clone() {
-            egui::Area::new(egui::Id::new("scene_status"))
-                .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
-                .show(ui.ctx(), |ui| {
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.label(msg);
+        // Scene save/load status toast: appears for a couple of seconds above the
+        // status dock, then fades out and clears itself.
+        if let Some((msg, set_at)) = self.scene_status.clone() {
+            const TOAST_SECS: f64 = 2.4;
+            const FADE_SECS: f64 = 0.6;
+            let age = now - set_at;
+            if age >= TOAST_SECS {
+                self.scene_status = None;
+            } else {
+                // Hold at full opacity, then fade over the final FADE_SECS.
+                let alpha = (((TOAST_SECS - age) / FADE_SECS).min(1.0)) as f32;
+                egui::Area::new(egui::Id::new("scene_status"))
+                    // Lift clear of the 63px status dock so it doesn't overlap controls.
+                    .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -80.0))
+                    .interactable(false)
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::NONE
+                            .fill(theme::BG_TOPBAR.gamma_multiply(alpha))
+                            .corner_radius(egui::CornerRadius::same(8))
+                            .inner_margin(egui::Margin::symmetric(14, 8))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(msg)
+                                        .color(theme::TEXT_STRONG.gamma_multiply(alpha))
+                                        .size(13.0),
+                                );
+                            });
                     });
-                });
+                // Keep repainting so the timer advances + fade animates without
+                // requiring other input events.
+                ui.ctx().request_repaint();
+            }
         }
     }
 }
