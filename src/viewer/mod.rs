@@ -28,6 +28,20 @@ const PREVIEW_SCALE: u32 = 4;
 /// full-resolution rendering.
 const PREVIEW_DEBOUNCE: f32 = 0.15;
 
+/// Encode an already-gamma-corrected RGBA buffer to PNG bytes (RGB, opaque).
+fn encode_rgba_png(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let mut rgb = image::RgbImage::new(width, height);
+    for (i, px) in rgba.chunks_exact(4).enumerate() {
+        let x = i as u32 % width.max(1);
+        let y = i as u32 / width.max(1);
+        rgb.put_pixel(x, y, image::Rgb([px[0], px[1], px[2]]));
+    }
+    let mut bytes = Vec::new();
+    rgb.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .expect("PNG encode");
+    bytes
+}
+
 /// A rounded, slightly-darker card to group related controls.
 fn card(ui: &egui::Ui) -> egui::Frame {
     egui::Frame::group(ui.style())
@@ -180,10 +194,19 @@ impl eframe::App for ViewerApp {
                     );
                     ui.horizontal(|ui| {
                         if done {
-                            ui.label("done — saved test.png");
+                            ui.label("done");
                         } else {
                             ui.spinner();
                             ui.label("rendering…");
+                        }
+                        if ui.button(format!("{}  Save image", icons::FLOPPY)).clicked() {
+                            let bytes = {
+                                // Re-encode the current shown frame from the
+                                // shared RGBA buffer (already gamma-corrected).
+                                let s = self.render.lock();
+                                encode_rgba_png(&s.rgba, s.width, s.height)
+                            };
+                            crate::platform::save_png("render.png", &bytes);
                         }
                     });
                     ui.separator();

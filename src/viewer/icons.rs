@@ -24,6 +24,7 @@ pub const RESIZE: &str = "\u{ED6E}";
 pub const CROSSHAIR: &str = "\u{E1D6}";
 pub const APERTURE: &str = "\u{E00A}";
 pub const IMAGE: &str = "\u{E2CA}";
+pub const FLOPPY: &str = "\u{E2CC}";
 
 /// Register the Phosphor font as a fallback so the icon codepoints resolve in
 /// any normal label/button. Call once at startup with the egui context.
