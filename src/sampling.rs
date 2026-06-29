@@ -36,14 +36,26 @@ fn wang_hash(mut x: u32) -> u32 {
     x
 }
 
-/// Sub-pixel offset for sample `sample_index` of pixel `(i, j)`, each component
-/// in [-0.5, 0.5). This is the camera's per-sample anti-aliasing jitter.
-pub fn stratified_offset(i: u32, j: u32, sample_index: u32) -> (f32, f32) {
+/// A stratified low-discrepancy point in [0, 1)² for sample `sample_index` of
+/// pixel `(i, j)`, along an independent sampling `dim`ension (0 = sub-pixel AA,
+/// 1 = NEE light sample, 2 = first BSDF bounce, ...). Each dimension shares the
+/// R2 base sequence but gets its own per-pixel Cranley-Patterson rotation, so
+/// the dimensions are decorrelated across pixels ("padded" sampling).
+pub fn stratified_unit(i: u32, j: u32, sample_index: u32, dim: u32) -> (f32, f32) {
     let (rx, ry) = r2(sample_index);
-    let (ox, oy) = hash01(i, j);
-    let dx = (rx + ox).fract() - 0.5;
-    let dy = (ry + oy).fract() - 0.5;
-    (dx, dy)
+    let (ox, oy) = hash01(
+        i.wrapping_add(dim.wrapping_mul(0x9E3779B1)),
+        j.wrapping_add(dim.wrapping_mul(0x85EBCA77)),
+    );
+    ((rx + ox).fract(), (ry + oy).fract())
+}
+
+/// Sub-pixel offset for sample `sample_index` of pixel `(i, j)`, each component
+/// in [-0.5, 0.5). This is the camera's per-sample anti-aliasing jitter (the
+/// `dim = 0` stratified point, recentred on the pixel).
+pub fn stratified_offset(i: u32, j: u32, sample_index: u32) -> (f32, f32) {
+    let (x, y) = stratified_unit(i, j, sample_index, 0);
+    (x - 0.5, y - 0.5)
 }
 
 #[cfg(test)]
@@ -76,6 +88,33 @@ mod tests {
             assert!((-0.5..0.5).contains(&dx), "dx out of range: {dx}");
             assert!((-0.5..0.5).contains(&dy), "dy out of range: {dy}");
         }
+    }
+
+    #[test]
+    fn stratified_unit_stays_in_unit_square() {
+        for index in 0..256 {
+            for dim in 0..4 {
+                let (u, v) = stratified_unit(2, 9, index, dim);
+                assert!((0.0..1.0).contains(&u) && (0.0..1.0).contains(&v), "dim {dim}: ({u},{v})");
+            }
+        }
+    }
+
+    #[test]
+    fn stratified_unit_dimensions_are_decorrelated() {
+        // Same pixel & sample index, different dimensions => different points,
+        // so the light sample and bounce sample don't track each other.
+        let light = stratified_unit(4, 5, 7, 1);
+        let bounce = stratified_unit(4, 5, 7, 2);
+        assert!(light != bounce, "dims 1 and 2 collide: {light:?}");
+    }
+
+    #[test]
+    fn stratified_offset_matches_dim_zero() {
+        // AA (dim 0) is unchanged by the refactor: offset == unit(dim 0) - 0.5.
+        let (ux, uy) = stratified_unit(3, 7, 11, 0);
+        let (dx, dy) = stratified_offset(3, 7, 11);
+        assert!((dx - (ux - 0.5)).abs() < 1e-6 && (dy - (uy - 0.5)).abs() < 1e-6);
     }
 
     #[test]

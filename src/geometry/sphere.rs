@@ -5,8 +5,14 @@ use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::*;
 use crate::vec3::{Point3, Vec3};
-use rand::rngs::SmallRng;
-use rand::Rng;
+
+/// Uniform direction on the unit sphere from two canonical uniforms `(u, v)`.
+fn uniform_sphere_dir(u: f32, v: f32) -> Vec3 {
+    let z = 1.0 - 2.0 * u;
+    let r = (1.0 - z * z).max(0.0).sqrt();
+    let phi = 2.0 * std::f32::consts::PI * v;
+    Vec3::new(r * phi.cos(), r * phi.sin(), z)
+}
 
 /// Orthonormal basis `(u, v, w)` with `w` pointing along `axis`. Used to orient
 /// cone samples around the direction from the shading point to a sphere's centre.
@@ -78,9 +84,9 @@ impl Intersect for Sphere {
         self.bbox.center()
     }
 
-    fn sample_point(&self, rng: &mut SmallRng) -> Point3 {
+    fn sample_point(&self, u: f32, v: f32) -> Point3 {
         let center = self.center.at(0.0);
-        center + self.radius * Vec3::random_unit(rng)
+        center + self.radius * uniform_sphere_dir(u, v)
     }
 
     fn area(&self) -> f32 {
@@ -90,22 +96,20 @@ impl Intersect for Sphere {
     /// A direction from `origin` toward this sphere, sampled uniformly over the
     /// solid angle (cone) the sphere subtends — the importance-sampling match for
     /// a sphere light. Falls back to a uniform direction when `origin` is inside.
-    fn random_dir(&self, origin: Point3, rng: &mut SmallRng) -> Vec3 {
+    fn random_dir(&self, origin: Point3, u: f32, v: f32) -> Vec3 {
         let center = self.center.at(0.0);
         let to_center = center - origin;
         let d2 = to_center.length_squared();
         let r2 = self.radius * self.radius;
         if d2 <= r2 {
-            return Vec3::random_unit(rng);
+            return uniform_sphere_dir(u, v);
         }
         let cos_theta_max = (1.0 - r2 / d2).sqrt();
-        let r1: f32 = rng.random();
-        let r2u: f32 = rng.random();
-        let cos_theta = 1.0 - r1 * (1.0 - cos_theta_max);
+        let cos_theta = 1.0 - u * (1.0 - cos_theta_max);
         let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
-        let phi = 2.0 * std::f32::consts::PI * r2u;
-        let (u, v, w) = onb(to_center);
-        (phi.cos() * sin_theta) * u + (phi.sin() * sin_theta) * v + cos_theta * w
+        let phi = 2.0 * std::f32::consts::PI * v;
+        let (ub, vb, w) = onb(to_center);
+        (phi.cos() * sin_theta) * ub + (phi.sin() * sin_theta) * vb + cos_theta * w
     }
 
     /// Solid-angle PDF of cone sampling toward this sphere (see `random_dir`).
@@ -170,7 +174,7 @@ mod sample_tests {
     use crate::material::Lambertian;
     use crate::vec3::Point3;
     use rand::rngs::SmallRng;
-    use rand::SeedableRng;
+    use rand::{Rng, SeedableRng};
     use std::sync::Arc;
 
     #[test]
@@ -181,7 +185,7 @@ mod sample_tests {
         let s = Sphere::stationary(center, radius, mat);
         let mut rng = SmallRng::seed_from_u64(3);
         for _ in 0..500 {
-            let p = s.sample_point(&mut rng);
+            let p = s.sample_point(rng.random::<f32>(), rng.random::<f32>());
             let r = (p - center).length();
             assert!((r - radius).abs() < 1e-3, "off-surface: r={}", r);
         }
@@ -195,7 +199,7 @@ mod cone_light_tests {
     use crate::material::Lambertian;
     use crate::vec3::{Point3, Vec3};
     use rand::rngs::SmallRng;
-    use rand::SeedableRng;
+    use rand::{Rng, SeedableRng};
     use std::f32::consts::PI;
     use std::sync::Arc;
 
@@ -252,7 +256,8 @@ mod cone_light_tests {
         let mut sum_cos = 0.0f32;
         let mut upper_half = 0usize;
         for _ in 0..n {
-            let dir = s.random_dir(origin, &mut rng).unit();
+            let (u, v): (f32, f32) = (rng.random(), rng.random());
+            let dir = s.random_dir(origin, u, v).unit();
             let cos = dir.dot(&axis);
             // Every sampled direction lies within the subtended cone.
             assert!(cos >= cos_max - 1e-3, "outside cone: cos={} cos_max={}", cos, cos_max);

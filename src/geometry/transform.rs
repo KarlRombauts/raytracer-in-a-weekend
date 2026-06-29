@@ -3,7 +3,6 @@ use std::sync::Arc;
 use crate::interval::Interval;
 use crate::ray::{HitRecord, Intersect, Ray, AABB};
 use crate::vec3::{Point3, Vec3};
-use rand::rngs::SmallRng;
 
 /// Translates a wrapped object by `offset`. Implemented by moving the ray in
 /// the opposite direction, intersecting, then shifting the hit point back.
@@ -41,8 +40,8 @@ impl Intersect for Translate {
         self.bbox.center()
     }
 
-    fn sample_point(&self, rng: &mut SmallRng) -> Point3 {
-        self.object.sample_point(rng) + self.offset
+    fn sample_point(&self, u: f32, v: f32) -> Point3 {
+        self.object.sample_point(u, v) + self.offset
     }
 }
 
@@ -90,8 +89,8 @@ impl Intersect for Scale {
         self.bbox.center()
     }
 
-    fn sample_point(&self, rng: &mut SmallRng) -> Point3 {
-        self.object.sample_point(rng) * self.scale
+    fn sample_point(&self, u: f32, v: f32) -> Point3 {
+        self.object.sample_point(u, v) * self.scale
     }
 }
 
@@ -164,8 +163,8 @@ impl Intersect for Rotate {
         self.bbox.center()
     }
 
-    fn sample_point(&self, rng: &mut SmallRng) -> Point3 {
-        apply(&self.fwd, self.object.sample_point(rng))
+    fn sample_point(&self, u: f32, v: f32) -> Point3 {
+        apply(&self.fwd, self.object.sample_point(u, v))
     }
 }
 
@@ -199,7 +198,7 @@ mod sample_tests {
     use crate::material::Lambertian;
     use crate::vec3::{Point3, Vec3};
     use rand::rngs::SmallRng;
-    use rand::SeedableRng;
+    use rand::{Rng, SeedableRng};
     use std::sync::Arc;
 
     #[test]
@@ -215,7 +214,7 @@ mod sample_tests {
         let t = Translate::new(quad, offset);
         let mut rng = SmallRng::seed_from_u64(5);
         for _ in 0..500 {
-            let p = t.sample_point(&mut rng);
+            let p = t.sample_point(rng.random::<f32>(), rng.random::<f32>());
             assert!((5.0..=7.0).contains(&p.x), "x {}", p.x);
             assert!((1.0..=3.0).contains(&p.y), "y {}", p.y);
             assert!((p.z + 3.0).abs() < 1e-5, "z {}", p.z);

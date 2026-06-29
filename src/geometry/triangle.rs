@@ -6,8 +6,6 @@ use crate::{
     ray::{HitRecord, Intersect, Ray, AABB},
     vec3::{Point3, Vec3},
 };
-use rand::rngs::SmallRng;
-use rand::Rng;
 
 pub struct Triangle {
     centroid: Vec3,
@@ -122,14 +120,12 @@ impl Intersect for Triangle {
         &self.bbox
     }
 
-    fn sample_point(&self, rng: &mut SmallRng) -> Point3 {
-        let r1: f32 = rng.random();
-        let r2: f32 = rng.random();
-        let su = r1.sqrt();
+    fn sample_point(&self, u: f32, v: f32) -> Point3 {
+        let su = u.sqrt();
         let p1 = self.q;
         let p2 = self.q + self.u;
         let p3 = self.q + self.v;
-        (1.0 - su) * p1 + (su * (1.0 - r2)) * p2 + (su * r2) * p3
+        (1.0 - su) * p1 + (su * (1.0 - v)) * p2 + (su * v) * p3
     }
 
     fn area(&self) -> f32 {
@@ -166,7 +162,7 @@ mod sample_tests {
     use crate::material::Lambertian;
     use crate::vec3::{Point3, Vec3};
     use rand::rngs::SmallRng;
-    use rand::SeedableRng;
+    use rand::{Rng, SeedableRng};
     use std::sync::Arc;
 
     #[test]
@@ -184,7 +180,7 @@ mod sample_tests {
         let mut xs: Vec<f32> = Vec::with_capacity(500);
         let mut ys: Vec<f32> = Vec::with_capacity(500);
         for _ in 0..500 {
-            let p = tri.sample_point(&mut rng);
+            let p = tri.sample_point(rng.random::<f32>(), rng.random::<f32>());
             assert!(p.z.abs() < 1e-5, "off-plane: {:?}", p);
             assert!(p.x >= -1e-5 && p.y >= -1e-5, "negative bary: {:?}", p);
             assert!(p.x + p.y <= 1.0 + 1e-5, "outside tri: {:?}", p);

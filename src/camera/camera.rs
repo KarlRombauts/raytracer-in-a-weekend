@@ -12,7 +12,7 @@ use crate::color::{clamp_luminance, Color};
 use crate::group::*;
 use crate::interval::Interval;
 use crate::ray::{Intersect, Ray};
-use crate::sampling::stratified_offset;
+use crate::sampling::{stratified_offset, stratified_unit};
 use crate::vec3::{Point3, Vec3};
 
 pub struct Camera {
@@ -133,14 +133,31 @@ fn russian_roulette(throughput: Color, depth: u32, rng: &mut SmallRng) -> Option
     Some(throughput / p)
 }
 
-/// Cosine-weighted hemisphere direction about `normal` (PDF = cos/PI), using the
-/// `normal + random_unit` trick. Returns a unit vector.
-fn cosine_direction(normal: &Vec3, rng: &mut SmallRng) -> Vec3 {
-    let mut d = *normal + Vec3::random_unit(rng);
-    if d.near_zero() {
-        d = *normal;
-    }
-    d.unit()
+/// Orthonormal basis `(t, b, n)` with `n` along the given axis.
+fn onb(axis: &Vec3) -> (Vec3, Vec3, Vec3) {
+    let n = axis.unit();
+    let a = if n.x.abs() > 0.9 {
+        Vec3::new(0.0, 1.0, 0.0)
+    } else {
+        Vec3::new(1.0, 0.0, 0.0)
+    };
+    let t = n.cross(&a).unit();
+    let b = n.cross(&t);
+    (t, b, n)
+}
+
+/// Cosine-weighted hemisphere direction about `normal` from a 2D uniform sample
+/// `(u, v)` in [0, 1)² (PDF = cos/PI). Malley's polar mapping — the explicit
+/// form lets the first-bounce sample be stratified via the R2 sequence. Returns
+/// a unit vector.
+fn cosine_direction_from_uv(normal: &Vec3, u: f32, v: f32) -> Vec3 {
+    let r = u.sqrt();
+    let phi = 2.0 * std::f32::consts::PI * v;
+    let x = r * phi.cos();
+    let y = r * phi.sin();
+    let z = (1.0 - u).max(0.0).sqrt();
+    let (t, b, n) = onb(normal);
+    x * t + y * b + z * n
 }
 
 impl Camera {
@@ -164,8 +181,12 @@ impl Camera {
                 let mut pixel_color = Color::ZERO;
                 for s in 0..self.samples {
                     let ray = self.get_ray(i, j, s, &mut rng);
-                    pixel_color +=
-                        clamp_luminance(self.ray_color(&ray, world, &mut rng), self.firefly_clamp);
+                    let light_uv = stratified_unit(i, j, s, 1);
+                    let bounce_uv = stratified_unit(i, j, s, 2);
+                    pixel_color += clamp_luminance(
+                        self.ray_color(&ray, world, light_uv, bounce_uv, &mut rng),
+                        self.firefly_clamp,
+                    );
                 }
 
                 pixel_color *= self.pixel_samples_scale;
@@ -210,7 +231,14 @@ impl Camera {
         rng: &mut SmallRng,
     ) -> Color {
         let ray = self.get_ray(i, j, sample_index, rng);
-        clamp_luminance(self.ray_color(&ray, world, rng), self.firefly_clamp)
+        // Stratify the light sample (dim 1) and first bounce (dim 2) alongside
+        // the sub-pixel AA (dim 0), decorrelated per pixel.
+        let light_uv = stratified_unit(i, j, sample_index, 1);
+        let bounce_uv = stratified_unit(i, j, sample_index, 2);
+        clamp_luminance(
+            self.ray_color(&ray, world, light_uv, bounce_uv, rng),
+            self.firefly_clamp,
+        )
     }
 
     fn dof_disk_sample(&self, rng: &mut SmallRng) -> Vec3 {
@@ -240,7 +268,14 @@ impl Camera {
         self.basis_u
     }
 
-    fn ray_color(&self, ray: &Ray, world: &IntersectGroup, rng: &mut SmallRng) -> Color {
+    fn ray_color(
+        &self,
+        ray: &Ray,
+        world: &IntersectGroup,
+        light_uv: (f32, f32),
+        bounce_uv: (f32, f32),
+        rng: &mut SmallRng,
+    ) -> Color {
         let interval = Interval::new(0.001, f32::INFINITY);
         let mut color = Color::ZERO;
         let mut throughput = Color::ones();
@@ -282,8 +317,21 @@ impl Camera {
             // Lambertian.
             let albedo = atten;
 
+            // Stratify the NEE light sample and the BSDF bounce on the camera
+            // ray's first (diffuse) hit; deeper bounces fall back to plain rng.
+            let (lu, lv) = if depth == 0 {
+                light_uv
+            } else {
+                (rng.random(), rng.random())
+            };
+            let (bu, bv) = if depth == 0 {
+                bounce_uv
+            } else {
+                (rng.random(), rng.random())
+            };
+
             // (1) Next-event estimation: sample a light, weight against the BRDF pdf.
-            if let Some(ld) = world.sample_light_dir(hit.p, rng) {
+            if let Some(ld) = world.sample_light_dir(hit.p, lu, lv, rng) {
                 let p_light = world.light_pdf(hit.p, ld);
                 let p_brdf = hit.material.scattering_pdf(&hit, &ld);
                 if p_light > 0.0 && p_brdf > 0.0 {
@@ -305,7 +353,7 @@ impl Camera {
             }
 
             // (2) BRDF bounce (cosine), weighted against the light pdf at the next hit.
-            let dir = cosine_direction(&hit.normal, rng);
+            let dir = cosine_direction_from_uv(&hit.normal, bu, bv);
             let p_brdf = hit.material.scattering_pdf(&hit, &dir);
             if p_brdf <= 0.0 {
                 break;
@@ -381,7 +429,7 @@ mod mixture_tests {
         world.add(ceiling_light());
         let ray = Ray::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
         let mut rng = SmallRng::seed_from_u64(1);
-        let col = c.ray_color(&ray, &world, &mut rng);
+        let col = c.ray_color(&ray, &world, (0.5, 0.5), (0.5, 0.5), &mut rng);
         assert!((col.x - 5.0).abs() < 1e-4, "expected emitter color, got {:?}", col);
     }
 
@@ -400,7 +448,9 @@ mod mixture_tests {
         let n = 8000;
         let mut sum = 0.0;
         for _ in 0..n {
-            sum += c.ray_color(&ray, &world, &mut rng).x;
+            let luv = (rng.random::<f32>(), rng.random::<f32>());
+            let buv = (rng.random::<f32>(), rng.random::<f32>());
+            sum += c.ray_color(&ray, &world, luv, buv, &mut rng).x;
         }
         sum / n as f32
     }
@@ -481,7 +531,9 @@ mod mis_tests {
         let mut sum = 0.0;
         let mut sum2 = 0.0;
         for _ in 0..n {
-            let x = c.ray_color(&ray, &world, &mut rng).x;
+            let luv = (rng.random::<f32>(), rng.random::<f32>());
+            let buv = (rng.random::<f32>(), rng.random::<f32>());
+            let x = c.ray_color(&ray, &world, luv, buv, &mut rng).x;
             sum += x;
             sum2 += x * x;
         }
@@ -604,5 +656,47 @@ mod russian_roulette_tests {
         // Zero throughput can contribute nothing, so it should always terminate.
         let mut rng = SmallRng::seed_from_u64(3);
         assert_eq!(russian_roulette(Color::ZERO, MIN_RR_DEPTH, &mut rng), None);
+    }
+}
+
+#[cfg(test)]
+mod cosine_uv_tests {
+    use super::*;
+    use crate::vec3::Vec3;
+
+    #[test]
+    fn samples_are_unit_and_in_the_hemisphere() {
+        let n = Vec3::new(0.0, 1.0, 0.0);
+        for a in 0..16 {
+            for b in 0..16 {
+                let (u, v) = (a as f32 / 16.0, b as f32 / 16.0);
+                let d = cosine_direction_from_uv(&n, u, v);
+                assert!((d.length() - 1.0).abs() < 1e-4, "not unit: {d:?}");
+                assert!(d.dot(&n) >= -1e-4, "below hemisphere: {d:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn u_zero_points_along_the_normal() {
+        let n = Vec3::new(0.0, 0.0, 1.0);
+        let d = cosine_direction_from_uv(&n, 0.0, 0.37);
+        assert!(d.dot(&n) > 0.999, "expected ~normal, got {d:?}");
+    }
+
+    #[test]
+    fn distribution_is_cosine_weighted() {
+        // E[cos theta] for a cosine-weighted hemisphere is 2/3.
+        let n = Vec3::new(0.0, 1.0, 0.0);
+        let m = 200;
+        let mut sum = 0.0;
+        for a in 0..m {
+            for b in 0..m {
+                let (u, v) = ((a as f32 + 0.5) / m as f32, (b as f32 + 0.5) / m as f32);
+                sum += cosine_direction_from_uv(&n, u, v).dot(&n);
+            }
+        }
+        let mean = sum / (m * m) as f32;
+        assert!((mean - 2.0 / 3.0).abs() < 5e-3, "mean cos={mean}");
     }
 }
