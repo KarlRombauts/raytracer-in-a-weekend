@@ -31,6 +31,8 @@ pub fn sub_label(ui: &mut Ui, text: &str) {
 pub fn section_header(ui: &mut Ui, icon: &str, title: &str) {
     ui.add_space(6.0);
     ui.horizontal(|ui| {
+        // R1: small left indent so titles aren't flush with the panel edge.
+        ui.add_space(6.0);
         ui.label(egui::RichText::new(icon).color(theme::ACCENT));
         ui.label(
             egui::RichText::new(title.to_uppercase())

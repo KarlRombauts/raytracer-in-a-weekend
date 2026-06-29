@@ -67,9 +67,23 @@ pub fn axis_field(
                 ui.visuals_mut().widgets.hovered.bg_stroke = egui::Stroke::NONE;
                 ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::NONE;
                 ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+                // R4: monospace font for the DragValue text at a fixed size so all
+                // value fields (X/Y/Z, scalar, int) render identically.
+                // R5: focused/editing state — accent border, accent-soft selection,
+                // matching rounding so the blue doesn't look jarring.
+                ui.visuals_mut().widgets.active.bg_stroke =
+                    egui::Stroke::new(1.0, theme::ACCENT);
+                ui.visuals_mut().widgets.open.bg_stroke =
+                    egui::Stroke::new(1.0, theme::ACCENT);
+                ui.visuals_mut().selection.bg_fill = theme::accent_soft();
+                ui.visuals_mut().selection.stroke =
+                    egui::Stroke::new(1.0, theme::ACCENT);
+                ui.style_mut().override_font_id =
+                    Some(egui::FontId::new(12.5, egui::FontFamily::Monospace));
                 changed = ui
                     .add_sized([ui.available_width(), theme::FIELD_H], dv)
                     .changed();
+                ui.style_mut().override_font_id = None;
             });
         });
     changed

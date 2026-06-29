@@ -75,6 +75,8 @@ pub fn show_outliner(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> 
         ui.spacing_mut().item_spacing.y = 2.0;
         ui.spacing_mut().button_padding.x = 10.0;
 
+        // R1: small left indent matching section_header.
+        ui.add_space(6.0);
         ui.label(
             egui::RichText::new("PRIMITIVES")
                 .size(10.0)
@@ -103,6 +105,8 @@ pub fn show_outliner(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> 
         }
 
         ui.separator();
+        // R1: small left indent matching section_header.
+        ui.add_space(6.0);
         ui.label(
             egui::RichText::new("SAMPLE MESHES")
                 .size(10.0)

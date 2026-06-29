@@ -33,17 +33,27 @@ pub fn overlays(
         });
 
     // Reset-camera chip (bottom-left).
+    // R3: snug pill — tighter inner margin than the default overlay_frame.
+    let reset_frame = egui::Frame::new()
+        .fill(egui::Color32::from_rgba_unmultiplied(0x12, 0x14, 0x19, 210))
+        .stroke(egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(0x3a, 0x3f, 0x48, 200),
+        ))
+        .corner_radius(egui::CornerRadius::same(8))
+        .inner_margin(egui::Margin::symmetric(8, 4));
     egui::Area::new("vp_reset".into())
-        .fixed_pos(rect.left_bottom() + egui::vec2(16.0, -44.0))
+        .fixed_pos(rect.left_bottom() + egui::vec2(16.0, -40.0))
         .order(egui::Order::Foreground)
         .movable(false)
         .show(ui.ctx(), |ui| {
-            widgets::overlay_frame().show(ui, |ui| {
+            reset_frame.show(ui, |ui| {
                 if ui
                     .add(
                         egui::Button::new(
                             egui::RichText::new(format!("{}  Reset camera", icons::RESET))
-                                .color(theme::TEXT),
+                                .color(theme::TEXT)
+                                .size(12.5),
                         )
                         .fill(egui::Color32::TRANSPARENT)
                         .stroke(egui::Stroke::NONE),
@@ -86,19 +96,28 @@ pub fn overlays(
     reset
 }
 
-/// Gizmo mode toggle pill: accent-filled when active, transparent when not.
+/// Gizmo mode toggle pill: accent-filled + accent border when active, transparent when not.
+/// R8: active state gains a 1px ACCENT border (matches the inspector tab treatment).
 fn tool(ui: &mut Ui, on: &mut bool, icon: &str, label: &str) {
-    let (fill, text_color) = if *on {
-        (theme::accent_soft(), theme::ACCENT)
+    let (fill, stroke, text_color) = if *on {
+        (
+            theme::accent_soft(),
+            egui::Stroke::new(1.0, theme::ACCENT),
+            theme::ACCENT,
+        )
     } else {
-        (egui::Color32::TRANSPARENT, theme::TEXT_MUTED)
+        (
+            egui::Color32::TRANSPARENT,
+            egui::Stroke::NONE,
+            theme::TEXT_MUTED,
+        )
     };
     let btn = egui::Button::new(
         egui::RichText::new(format!("{icon}  {label}")).color(text_color),
     )
     .fill(fill)
     .corner_radius(egui::CornerRadius::same(7))
-    .stroke(egui::Stroke::NONE);
+    .stroke(stroke);
     if ui.add(btn).clicked() {
         *on ^= true;
     }
@@ -188,7 +207,12 @@ pub fn status_dock(
     fill.set_width(line.width() * frac);
     ui.painter().rect_filled(fill, 0.0, theme::ACCENT);
 
-    ui.horizontal(|ui| {
+    // R6: vertically centre the status row in the remaining dock height.
+    let remaining_h = ui.available_height();
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), remaining_h),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
         ui.add_space(6.0);
         let (dot, text) = match (mode, done) {
             (Mode::Edit, _) => (theme::TEXT_DIM, "Editing".to_string()),
