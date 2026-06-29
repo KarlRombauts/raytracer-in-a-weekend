@@ -27,11 +27,11 @@ pub const AXIS_Y: Color32 = Color32::from_rgb(0x5a, 0x9e, 0x5a);
 pub const AXIS_Z: Color32 = Color32::from_rgb(0x4f, 0x7f, 0xc0);
 
 /// accent at alpha (0..=255) over the panel background — for soft fills/strokes.
-pub const fn accent_soft() -> Color32 {
-    Color32::from_rgba_premultiplied(0x4d, 0x84, 0xe6, 36)
+pub fn accent_soft() -> Color32 {
+    Color32::from_rgba_unmultiplied(0x4d, 0x84, 0xe6, 36)
 }
-pub const fn selection_soft() -> Color32 {
-    Color32::from_rgba_premultiplied(0xef, 0x8a, 0x3c, 40)
+pub fn selection_soft() -> Color32 {
+    Color32::from_rgba_unmultiplied(0xef, 0x8a, 0x3c, 40)
 }
 
 /// Field height / single-line interact size used across the inspector (mockup
