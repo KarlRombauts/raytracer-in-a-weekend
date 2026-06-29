@@ -8,7 +8,9 @@ use eframe::egui;
 use super::icons;
 use crate::camera::CameraConfig;
 use crate::color::Color;
-use crate::scene::{self, Asset, CellTexture, Mapping, MaterialSpec, ObjectSpec, Shape, TextureSpec, Transform};
+use crate::scene::{
+    self, Asset, CellTexture, Mapping, MaterialSpec, ObjectSpec, Shape, TextureSpec, Transform,
+};
 use crate::vec3::{Point3, Vec3};
 
 /// `label | value` row (u32), Blender-style, optionally clamped to `range`.
@@ -78,14 +80,46 @@ pub fn camera_controls(ui: &mut egui::Ui, cam: &mut CameraConfig) -> bool {
         ui.add_space(4.0);
         c |= axis_vec(ui, "Target", &mut cam.look_at, 1.0, "", None, None);
         ui.add_space(4.0);
-        c |= axis_row(ui, "Roll", &mut cam.roll, 0.5, "°", Some(1), Some(-180.0..=180.0));
+        c |= axis_row(
+            ui,
+            "Roll",
+            &mut cam.roll,
+            0.5,
+            "°",
+            Some(1),
+            Some(-180.0..=180.0),
+        );
     });
 
     section_header(ui, icons::APERTURE, "Lens");
     ui.indent("cam_lens", |ui| {
-        c |= axis_row(ui, "FOV", &mut cam.fov, 0.2, "°", Some(1), Some(1.0..=179.0));
-        c |= axis_row(ui, "DoF", &mut cam.dof_angle, 0.05, "°", Some(2), Some(0.0..=180.0));
-        c |= axis_row(ui, "Focus", &mut cam.focus_dist, 1.0, "", Some(1), Some(0.001..=1.0e6));
+        c |= axis_row(
+            ui,
+            "FOV",
+            &mut cam.fov,
+            0.2,
+            "°",
+            Some(1),
+            Some(1.0..=179.0),
+        );
+        c |= axis_row(
+            ui,
+            "DoF",
+            &mut cam.dof_angle,
+            0.05,
+            "°",
+            Some(2),
+            Some(0.0..=180.0),
+        );
+        c |= axis_row(
+            ui,
+            "Focus",
+            &mut cam.focus_dist,
+            1.0,
+            "",
+            Some(1),
+            Some(0.001..=1.0e6),
+        );
     });
 
     section_header(ui, icons::IMAGE, "Output");
@@ -311,28 +345,55 @@ fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
             .show_ui(ui, |ui| {
                 // Each builder receives the current shared colour/roughness so
                 // switching type keeps those values instead of resetting them.
-                c |= pick(ui, m, matches!(m, MaterialSpec::Lambertian { .. }), "Diffuse", |col, _| {
-                    MaterialSpec::Lambertian { albedo: TextureSpec::solid(col) }
-                });
-                c |= pick(ui, m, matches!(m, MaterialSpec::Glossy { .. }), "Glossy", |col, r| {
-                    MaterialSpec::Glossy { albedo: TextureSpec::solid(col), roughness: r }
-                });
-                c |= pick(ui, m, matches!(m, MaterialSpec::Metal { .. }), "Metal", |col, r| {
-                    MaterialSpec::Metal {
+                c |= pick(
+                    ui,
+                    m,
+                    matches!(m, MaterialSpec::Lambertian { .. }),
+                    "Diffuse",
+                    |col, _| MaterialSpec::Lambertian {
+                        albedo: TextureSpec::solid(col),
+                    },
+                );
+                c |= pick(
+                    ui,
+                    m,
+                    matches!(m, MaterialSpec::Glossy { .. }),
+                    "Glossy",
+                    |col, r| MaterialSpec::Glossy {
+                        albedo: TextureSpec::solid(col),
+                        roughness: r,
+                    },
+                );
+                c |= pick(
+                    ui,
+                    m,
+                    matches!(m, MaterialSpec::Metal { .. }),
+                    "Metal",
+                    |col, r| MaterialSpec::Metal {
                         albedo: col,
                         fuzz: r,
-                    }
-                });
-                c |= pick(ui, m, matches!(m, MaterialSpec::Dielectric { .. }), "Glass", |col, r| {
-                    MaterialSpec::Dielectric {
+                    },
+                );
+                c |= pick(
+                    ui,
+                    m,
+                    matches!(m, MaterialSpec::Dielectric { .. }),
+                    "Glass",
+                    |col, r| MaterialSpec::Dielectric {
                         ior: 1.5,
                         tint: col,
                         roughness: r,
-                    }
-                });
-                c |= pick(ui, m, matches!(m, MaterialSpec::DiffuseLight { .. }), "Emission", |col, _| {
-                    MaterialSpec::DiffuseLight { emit: TextureSpec::solid(col * 5.0) }
-                });
+                    },
+                );
+                c |= pick(
+                    ui,
+                    m,
+                    matches!(m, MaterialSpec::DiffuseLight { .. }),
+                    "Emission",
+                    |col, _| MaterialSpec::DiffuseLight {
+                        emit: TextureSpec::solid(col * 5.0),
+                    },
+                );
             });
         c
     });
@@ -341,7 +402,15 @@ fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
         MaterialSpec::Lambertian { albedo } => changed |= texture_controls(ui, albedo),
         MaterialSpec::Glossy { albedo, roughness } => {
             changed |= texture_controls(ui, albedo);
-            changed |= axis_row(ui, "Roughness", roughness, 0.01, "", Some(3), Some(0.0..=1.0));
+            changed |= axis_row(
+                ui,
+                "Roughness",
+                roughness,
+                0.01,
+                "",
+                Some(3),
+                Some(0.0..=1.0),
+            );
         }
         MaterialSpec::Metal { albedo, fuzz } => {
             changed |= color_prop(ui, "Color", albedo);
@@ -353,7 +422,15 @@ fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
             roughness,
         } => {
             changed |= color_prop(ui, "Color", tint);
-            changed |= axis_row(ui, "Roughness", roughness, 0.01, "", Some(3), Some(0.0..=1.0));
+            changed |= axis_row(
+                ui,
+                "Roughness",
+                roughness,
+                0.01,
+                "",
+                Some(3),
+                Some(0.0..=1.0),
+            );
             changed |= axis_row(ui, "IOR", ior, 0.01, "", Some(3), Some(1.0..=3.0));
         }
         MaterialSpec::DiffuseLight { emit } => {
@@ -361,9 +438,18 @@ fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
             let intensity = e.x.max(e.y).max(e.z).max(1e-4);
             let mut rgb = [e.x / intensity, e.y / intensity, e.z / intensity];
             let mut strength = intensity;
-            let col = prop_row(ui, "Color", |ui| ui.color_edit_button_rgb(&mut rgb).changed());
-            let str_changed =
-                axis_row(ui, "Strength", &mut strength, 0.1, "", Some(2), Some(0.0..=10_000.0));
+            let col = prop_row(ui, "Color", |ui| {
+                ui.color_edit_button_rgb(&mut rgb).changed()
+            });
+            let str_changed = axis_row(
+                ui,
+                "Strength",
+                &mut strength,
+                0.1,
+                "",
+                Some(2),
+                Some(0.0..=10_000.0),
+            );
             if col || str_changed {
                 *emit = TextureSpec::solid(Color::new(
                     rgb[0] * strength,
@@ -395,24 +481,44 @@ fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
             .width(ui.available_width())
             .show_ui(ui, |ui| {
                 let prev = t.preview_color();
-                if ui.selectable_label(matches!(t, TextureSpec::Solid { .. }), "Color").clicked() {
+                if ui
+                    .selectable_label(matches!(t, TextureSpec::Solid { .. }), "Color")
+                    .clicked()
+                {
                     *t = TextureSpec::Solid { color: prev };
                     c = true;
                 }
-                if ui.selectable_label(matches!(t, TextureSpec::Checker { .. }), "Checker").clicked() {
+                if ui
+                    .selectable_label(matches!(t, TextureSpec::Checker { .. }), "Checker")
+                    .clicked()
+                {
                     *t = TextureSpec::Checker {
                         scale: 1.0,
                         even: CellTexture::Solid { color: prev },
-                        odd: CellTexture::Solid { color: Color::new(1.0, 1.0, 1.0) },
+                        odd: CellTexture::Solid {
+                            color: Color::new(1.0, 1.0, 1.0),
+                        },
                     };
                     c = true;
                 }
-                if ui.selectable_label(matches!(t, TextureSpec::Noise { .. }), "Noise").clicked() {
-                    *t = TextureSpec::Noise { scale: 4.0, depth: 7 };
+                if ui
+                    .selectable_label(matches!(t, TextureSpec::Noise { .. }), "Noise")
+                    .clicked()
+                {
+                    *t = TextureSpec::Noise {
+                        scale: 4.0,
+                        depth: 7,
+                    };
                     c = true;
                 }
-                if ui.selectable_label(matches!(t, TextureSpec::Image { .. }), "Image").clicked() {
-                    *t = TextureSpec::Image { asset: Asset::empty(), mapping: Mapping::default() };
+                if ui
+                    .selectable_label(matches!(t, TextureSpec::Image { .. }), "Image")
+                    .clicked()
+                {
+                    *t = TextureSpec::Image {
+                        asset: Asset::empty(),
+                        mapping: Mapping::default(),
+                    };
                     c = true;
                 }
             });
@@ -454,21 +560,48 @@ fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
                             (Projection::Spherical, "Spherical"),
                             (Projection::Cylindrical, "Cylindrical"),
                         ] {
-                            if ui.selectable_label(mapping.projection == p, label).clicked() {
+                            if ui
+                                .selectable_label(mapping.projection == p, label)
+                                .clicked()
+                            {
                                 mapping.projection = p;
                                 changed = true;
                             }
                         }
                     });
             });
-            changed |= axis_row(ui, "Tile", &mut mapping.scale, 0.01, "", Some(3), Some(0.01..=100.0));
+            changed |= axis_row(
+                ui,
+                "Tile",
+                &mut mapping.scale,
+                0.01,
+                "",
+                Some(3),
+                Some(0.01..=100.0),
+            );
             let mut offset_u = mapping.offset.0;
             let mut offset_v = mapping.offset.1;
-            if axis_row(ui, "Offset U", &mut offset_u, 0.01, "", Some(3), Some(-10.0..=10.0)) {
+            if axis_row(
+                ui,
+                "Offset U",
+                &mut offset_u,
+                0.01,
+                "",
+                Some(3),
+                Some(-10.0..=10.0),
+            ) {
                 mapping.offset.0 = offset_u;
                 changed = true;
             }
-            if axis_row(ui, "Offset V", &mut offset_v, 0.01, "", Some(3), Some(-10.0..=10.0)) {
+            if axis_row(
+                ui,
+                "Offset V",
+                &mut offset_v,
+                0.01,
+                "",
+                Some(3),
+                Some(-10.0..=10.0),
+            ) {
                 mapping.offset.1 = offset_v;
                 changed = true;
             }
@@ -492,16 +625,32 @@ fn cell_texture_controls(ui: &mut egui::Ui, id: &str, t: &mut CellTexture) -> bo
             .selected_text(current)
             .width(ui.available_width())
             .show_ui(ui, |ui| {
-                if ui.selectable_label(matches!(t, CellTexture::Solid { .. }), "Color").clicked() {
-                    *t = CellTexture::Solid { color: Color::new(0.0, 0.0, 0.0) };
+                if ui
+                    .selectable_label(matches!(t, CellTexture::Solid { .. }), "Color")
+                    .clicked()
+                {
+                    *t = CellTexture::Solid {
+                        color: Color::new(0.0, 0.0, 0.0),
+                    };
                     c = true;
                 }
-                if ui.selectable_label(matches!(t, CellTexture::Noise { .. }), "Noise").clicked() {
-                    *t = CellTexture::Noise { scale: 4.0, depth: 7 };
+                if ui
+                    .selectable_label(matches!(t, CellTexture::Noise { .. }), "Noise")
+                    .clicked()
+                {
+                    *t = CellTexture::Noise {
+                        scale: 4.0,
+                        depth: 7,
+                    };
                     c = true;
                 }
-                if ui.selectable_label(matches!(t, CellTexture::Image { .. }), "Image").clicked() {
-                    *t = CellTexture::Image { asset: Asset::empty() };
+                if ui
+                    .selectable_label(matches!(t, CellTexture::Image { .. }), "Image")
+                    .clicked()
+                {
+                    *t = CellTexture::Image {
+                        asset: Asset::empty(),
+                    };
                     c = true;
                 }
             });
@@ -622,7 +771,15 @@ fn axis_vec(
     range: Option<RangeInclusive<f32>>,
 ) -> bool {
     let mut c = false;
-    c |= axis_row(ui, &format!("{name} X"), &mut v.x, speed, suffix, decimals, range.clone());
+    c |= axis_row(
+        ui,
+        &format!("{name} X"),
+        &mut v.x,
+        speed,
+        suffix,
+        decimals,
+        range.clone(),
+    );
     c |= axis_row(ui, "Y", &mut v.y, speed, suffix, decimals, range.clone());
     c |= axis_row(ui, "Z", &mut v.z, speed, suffix, decimals, range);
     c
@@ -653,9 +810,25 @@ fn transform_controls(ui: &mut egui::Ui, t: &mut Transform) -> bool {
     let mut changed = false;
     changed |= axis_vec(ui, "Location", &mut t.translate, 1.0, "", None, None);
     ui.add_space(4.0);
-    changed |= axis_vec(ui, "Rotation", &mut t.rotate, 1.0, "°", None, Some(-360.0..=360.0));
+    changed |= axis_vec(
+        ui,
+        "Rotation",
+        &mut t.rotate,
+        1.0,
+        "°",
+        None,
+        Some(-360.0..=360.0),
+    );
     ui.add_space(4.0);
-    changed |= axis_vec(ui, "Scale", &mut t.scale, 0.01, "", Some(3), Some(0.001..=1.0e4));
+    changed |= axis_vec(
+        ui,
+        "Scale",
+        &mut t.scale,
+        0.01,
+        "",
+        Some(3),
+        Some(0.001..=1.0e4),
+    );
     changed
 }
 
@@ -670,6 +843,7 @@ fn default_sphere(n: usize) -> ObjectSpec {
             albedo: TextureSpec::solid(Color::new(0.8, 0.3, 0.3)),
         },
         transform: Transform::identity(),
+        hidden: false,
     }
 }
 
@@ -684,5 +858,6 @@ fn default_box(n: usize) -> ObjectSpec {
             albedo: TextureSpec::solid(Color::new(0.7, 0.7, 0.7)),
         },
         transform: Transform::identity(),
+        hidden: false,
     }
 }

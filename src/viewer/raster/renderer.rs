@@ -3,8 +3,8 @@
 
 use glow::HasContext;
 
-use crate::scene::{MaterialSpec, Scene};
 use super::camera_gl;
+use crate::scene::{MaterialSpec, Scene};
 
 const AMBIENT: f32 = 0.25;
 
@@ -35,6 +35,10 @@ struct ObjectBuffers {
     vbo: glow::Buffer,
     vertex_count: i32,
     center: glam::Vec3,
+    /// Index into `scene.objects` this buffer was built from. Needed so the
+    /// selection outline (keyed by original scene index) still works correctly
+    /// after hidden objects are excluded from the draw list.
+    original_index: usize,
 }
 
 /// Offscreen render targets for the outline passes, sized to the preview
@@ -68,7 +72,8 @@ pub struct SceneRenderer {
     empty_vao: glow::VertexArray,
     targets: Option<OutlineTargets>,
     objects: Vec<ObjectBuffers>,
-    built_count: usize, // object count the buffers were built for
+    built_count: usize,   // total object count the buffers were built for
+    built_visible: usize, // visible (non-hidden) object count the buffers were built for
     /// World-space AABB of the whole scene, used to pick near/far planes that
     /// don't clip the scene. Recomputed on rebuild.
     bounds: Option<(glam::Vec3, glam::Vec3)>,
@@ -109,6 +114,7 @@ impl SceneRenderer {
             targets: None,
             objects: Vec::new(),
             built_count: usize::MAX,
+            built_visible: usize::MAX,
             bounds: None,
         }
     }
@@ -121,7 +127,10 @@ impl SceneRenderer {
             }
             let mut wmin = glam::Vec3::splat(f32::INFINITY);
             let mut wmax = glam::Vec3::splat(f32::NEG_INFINITY);
-            for obj in &scene.objects {
+            for (orig_idx, obj) in scene.objects.iter().enumerate() {
+                if obj.hidden {
+                    continue;
+                }
                 let mesh = obj.shape.render_mesh();
                 // Local-space AABB of this object's geometry.
                 let mut lmin = glam::Vec3::splat(f32::INFINITY);
@@ -172,9 +181,16 @@ impl SceneRenderer {
                 gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, stride, 0);
                 gl.enable_vertex_attrib_array(1);
                 gl.vertex_attrib_pointer_f32(1, 3, glow::FLOAT, false, stride, 3 * 4);
-                self.objects.push(ObjectBuffers { vao, vbo, vertex_count: mesh.positions.len() as i32, center });
+                self.objects.push(ObjectBuffers {
+                    vao,
+                    vbo,
+                    vertex_count: mesh.positions.len() as i32,
+                    center,
+                    original_index: orig_idx,
+                });
             }
             self.built_count = scene.objects.len();
+            self.built_visible = scene.objects.iter().filter(|o| !o.hidden).count();
             self.bounds = if wmin.x.is_finite() {
                 Some((wmin, wmax))
             } else {
@@ -214,7 +230,8 @@ impl SceneRenderer {
         info: &eframe::egui::PaintCallbackInfo,
         selected: Option<usize>,
     ) {
-        if self.built_count != scene.objects.len() {
+        let visible = scene.objects.iter().filter(|o| !o.hidden).count();
+        if self.built_count != scene.objects.len() || self.built_visible != visible {
             self.rebuild(gl, scene);
         }
         let vp = info.viewport_in_pixels();
@@ -242,13 +259,16 @@ impl SceneRenderer {
                 gl.get_uniform_location(self.program, "u_ambient").as_ref(),
                 AMBIENT,
             );
-            for (obj, buf) in scene.objects.iter().zip(&self.objects) {
+            for buf in &self.objects {
+                let obj = &scene.objects[buf.original_index];
                 let model = camera_gl::model_matrix(&obj.transform, buf.center);
                 uniform_mat4(gl, self.program, "u_model", &model);
                 let (color, emissive) = preview_color(&obj.material);
                 gl.uniform_3_f32(
                     gl.get_uniform_location(self.program, "u_color").as_ref(),
-                    color[0], color[1], color[2],
+                    color[0],
+                    color[1],
+                    color[2],
                 );
                 gl.uniform_1_i32(
                     gl.get_uniform_location(self.program, "u_emissive").as_ref(),
@@ -265,14 +285,20 @@ impl SceneRenderer {
             if !scene.objects.is_empty() && w > 0 && h > 0 && self.ensure_targets(gl, w, h) {
                 self.id_pass(gl, scene, &view, &proj, &vp);
                 self.edge_pass(gl, w, h);
-                if let Some(i) = selected {
-                    if i < self.objects.len() {
+                if let Some(scene_idx) = selected {
+                    // Find the draw-order slot whose original_index matches the
+                    // selected scene index (hidden objects are absent from self.objects).
+                    if let Some(draw_idx) = self
+                        .objects
+                        .iter()
+                        .position(|b| b.original_index == scene_idx)
+                    {
                         let model = camera_gl::model_matrix(
-                            &scene.objects[i].transform,
-                            self.objects[i].center,
+                            &scene.objects[scene_idx].transform,
+                            self.objects[draw_idx].center,
                         );
                         // The whole-scene depth is the ID pass's depth texture.
-                        self.draw_outline(gl, &view, &proj, &model, i, &vp);
+                        self.draw_outline(gl, &view, &proj, &model, draw_idx, &vp);
                     }
                 }
             }
@@ -304,12 +330,24 @@ impl SceneRenderer {
         gl.use_program(Some(self.program));
         uniform_mat4(gl, self.program, "u_view", view);
         uniform_mat4(gl, self.program, "u_proj", proj);
-        gl.uniform_1_i32(gl.get_uniform_location(self.program, "u_emissive").as_ref(), 1);
-        for (idx, (obj, buf)) in scene.objects.iter().zip(&self.objects).enumerate() {
+        gl.uniform_1_i32(
+            gl.get_uniform_location(self.program, "u_emissive").as_ref(),
+            1,
+        );
+        for (draw_idx, buf) in self.objects.iter().enumerate() {
+            let obj = &scene.objects[buf.original_index];
             let model = camera_gl::model_matrix(&obj.transform, buf.center);
             uniform_mat4(gl, self.program, "u_model", &model);
-            let id = (idx + 1) as f32 / 255.0;
-            gl.uniform_3_f32(gl.get_uniform_location(self.program, "u_color").as_ref(), id, id, id);
+            // Use original_index + 1 as the ID so it stays stable even when
+            // other objects before it in the list are hidden or reordered.
+            let id = (buf.original_index + 1) as f32 / 255.0;
+            let _ = draw_idx; // draw order is irrelevant; IDs are scene-stable
+            gl.uniform_3_f32(
+                gl.get_uniform_location(self.program, "u_color").as_ref(),
+                id,
+                id,
+                id,
+            );
             gl.bind_vertex_array(Some(buf.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, buf.vertex_count);
         }
@@ -336,11 +374,19 @@ impl SceneRenderer {
             1.0 / w as f32,
             1.0 / h as f32,
         );
-        gl.uniform_1_f32(gl.get_uniform_location(self.edge, "u_radius").as_ref(), EDGE_RADIUS_PX);
-        gl.uniform_1_f32(gl.get_uniform_location(self.edge, "u_strength").as_ref(), EDGE_STRENGTH);
+        gl.uniform_1_f32(
+            gl.get_uniform_location(self.edge, "u_radius").as_ref(),
+            EDGE_RADIUS_PX,
+        );
+        gl.uniform_1_f32(
+            gl.get_uniform_location(self.edge, "u_strength").as_ref(),
+            EDGE_STRENGTH,
+        );
         gl.uniform_3_f32(
             gl.get_uniform_location(self.edge, "u_color").as_ref(),
-            EDGE_COLOR[0], EDGE_COLOR[1], EDGE_COLOR[2],
+            EDGE_COLOR[0],
+            EDGE_COLOR[1],
+            EDGE_COLOR[2],
         );
         gl.bind_vertex_array(Some(self.empty_vao));
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
@@ -378,7 +424,10 @@ impl SceneRenderer {
 
         // Pass 1: render the selected object's depth into the mask target. The
         // scene program is reused; with no colour attachment only depth is kept.
-        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.targets.as_ref().unwrap().mask_fbo));
+        gl.bind_framebuffer(
+            glow::FRAMEBUFFER,
+            Some(self.targets.as_ref().unwrap().mask_fbo),
+        );
         gl.viewport(0, 0, w, h);
         gl.clear_depth_f32(1.0);
         gl.clear(glow::DEPTH_BUFFER_BIT);
@@ -408,8 +457,16 @@ impl SceneRenderer {
         gl.bind_texture(glow::TEXTURE_2D, Some(t.mask_depth));
         gl.active_texture(glow::TEXTURE1);
         gl.bind_texture(glow::TEXTURE_2D, Some(t.id_depth));
-        gl.uniform_1_i32(gl.get_uniform_location(self.composite, "u_mask_depth").as_ref(), 0);
-        gl.uniform_1_i32(gl.get_uniform_location(self.composite, "u_scene_depth").as_ref(), 1);
+        gl.uniform_1_i32(
+            gl.get_uniform_location(self.composite, "u_mask_depth")
+                .as_ref(),
+            0,
+        );
+        gl.uniform_1_i32(
+            gl.get_uniform_location(self.composite, "u_scene_depth")
+                .as_ref(),
+            1,
+        );
         gl.uniform_2_f32(
             gl.get_uniform_location(self.composite, "u_texel").as_ref(),
             1.0 / w as f32,
@@ -421,14 +478,18 @@ impl SceneRenderer {
         );
         gl.uniform_3_f32(
             gl.get_uniform_location(self.composite, "u_color").as_ref(),
-            OUTLINE_COLOR[0], OUTLINE_COLOR[1], OUTLINE_COLOR[2],
+            OUTLINE_COLOR[0],
+            OUTLINE_COLOR[1],
+            OUTLINE_COLOR[2],
         );
         gl.uniform_1_f32(
-            gl.get_uniform_location(self.composite, "u_alpha_full").as_ref(),
+            gl.get_uniform_location(self.composite, "u_alpha_full")
+                .as_ref(),
             OUTLINE_ALPHA_FULL,
         );
         gl.uniform_1_f32(
-            gl.get_uniform_location(self.composite, "u_alpha_faint").as_ref(),
+            gl.get_uniform_location(self.composite, "u_alpha_faint")
+                .as_ref(),
             OUTLINE_ALPHA_FAINT,
         );
         gl.bind_vertex_array(Some(self.empty_vao));
@@ -472,7 +533,15 @@ impl SceneRenderer {
             return false;
         }
 
-        self.targets = Some(OutlineTargets { w, h, mask_fbo, mask_depth, id_fbo, id_tex, id_depth });
+        self.targets = Some(OutlineTargets {
+            w,
+            h,
+            mask_fbo,
+            mask_depth,
+            id_fbo,
+            id_tex,
+            id_depth,
+        });
         true
     }
 }
@@ -497,10 +566,26 @@ unsafe fn create_id_target(
         glow::UNSIGNED_BYTE,
         glow::PixelUnpackData::Slice(None),
     );
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_MIN_FILTER,
+        glow::NEAREST as i32,
+    );
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_MAG_FILTER,
+        glow::NEAREST as i32,
+    );
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_WRAP_S,
+        glow::CLAMP_TO_EDGE as i32,
+    );
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_WRAP_T,
+        glow::CLAMP_TO_EDGE as i32,
+    );
 
     let depth = gl.create_texture().unwrap();
     gl.bind_texture(glow::TEXTURE_2D, Some(depth));
@@ -515,22 +600,58 @@ unsafe fn create_id_target(
         glow::UNSIGNED_INT,
         glow::PixelUnpackData::Slice(None),
     );
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_COMPARE_MODE, glow::NONE as i32);
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_MIN_FILTER,
+        glow::NEAREST as i32,
+    );
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_MAG_FILTER,
+        glow::NEAREST as i32,
+    );
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_WRAP_S,
+        glow::CLAMP_TO_EDGE as i32,
+    );
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_WRAP_T,
+        glow::CLAMP_TO_EDGE as i32,
+    );
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_COMPARE_MODE,
+        glow::NONE as i32,
+    );
 
     let fbo = gl.create_framebuffer().unwrap();
     gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
-    gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(color), 0);
-    gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT, glow::TEXTURE_2D, Some(depth), 0);
+    gl.framebuffer_texture_2d(
+        glow::FRAMEBUFFER,
+        glow::COLOR_ATTACHMENT0,
+        glow::TEXTURE_2D,
+        Some(color),
+        0,
+    );
+    gl.framebuffer_texture_2d(
+        glow::FRAMEBUFFER,
+        glow::DEPTH_ATTACHMENT,
+        glow::TEXTURE_2D,
+        Some(depth),
+        0,
+    );
     (fbo, color, depth)
 }
 
 /// Create a depth texture + a depth-only framebuffer attaching it, sized `w`×`h`.
 /// Leaves the framebuffer bound so the caller can check completeness.
-unsafe fn create_depth_target(gl: &glow::Context, w: i32, h: i32) -> (glow::Framebuffer, glow::Texture) {
+unsafe fn create_depth_target(
+    gl: &glow::Context,
+    w: i32,
+    h: i32,
+) -> (glow::Framebuffer, glow::Texture) {
     let tex = gl.create_texture().unwrap();
     gl.bind_texture(glow::TEXTURE_2D, Some(tex));
     gl.tex_image_2d(
@@ -544,12 +665,32 @@ unsafe fn create_depth_target(gl: &glow::Context, w: i32, h: i32) -> (glow::Fram
         glow::UNSIGNED_INT,
         glow::PixelUnpackData::Slice(None),
     );
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_MIN_FILTER,
+        glow::NEAREST as i32,
+    );
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_MAG_FILTER,
+        glow::NEAREST as i32,
+    );
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_WRAP_S,
+        glow::CLAMP_TO_EDGE as i32,
+    );
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_WRAP_T,
+        glow::CLAMP_TO_EDGE as i32,
+    );
     // Sample as a plain value, not a shadow comparison.
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_COMPARE_MODE, glow::NONE as i32);
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_COMPARE_MODE,
+        glow::NONE as i32,
+    );
     let fbo = gl.create_framebuffer().unwrap();
     gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
     gl.framebuffer_texture_2d(
@@ -598,12 +739,20 @@ unsafe fn link_program(gl: &glow::Context, vert: &str, frag: &str) -> glow::Prog
         let s = gl.create_shader(ty).unwrap();
         gl.shader_source(s, src);
         gl.compile_shader(s);
-        assert!(gl.get_shader_compile_status(s), "{}", gl.get_shader_info_log(s));
+        assert!(
+            gl.get_shader_compile_status(s),
+            "{}",
+            gl.get_shader_info_log(s)
+        );
         gl.attach_shader(program, s);
         compiled.push(s);
     }
     gl.link_program(program);
-    assert!(gl.get_program_link_status(program), "{}", gl.get_program_info_log(program));
+    assert!(
+        gl.get_program_link_status(program),
+        "{}",
+        gl.get_program_info_log(program)
+    );
     for s in compiled {
         gl.detach_shader(program, s);
         gl.delete_shader(s);

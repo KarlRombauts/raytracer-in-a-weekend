@@ -21,13 +21,17 @@ pub fn new_bvh() -> Scene {
 
     let dragon = ObjectSpec {
         name: "Dragon (mesh)".to_string(),
-        shape: Shape::Mesh { object: Arc::new(bvh), render },
+        shape: Shape::Mesh {
+            object: Arc::new(bvh),
+            render,
+        },
         // Mesh keeps its baked material; this is ignored but required by the spec.
         material: MaterialSpec::Metal {
             albedo: Color::new(1.0, 0.4, 0.2),
             fuzz: 0.2,
         },
         transform: Transform::identity(),
+        hidden: false,
     };
 
     let floor = ObjectSpec {
@@ -37,8 +41,11 @@ pub fn new_bvh() -> Scene {
             u: Vec3::new(3000., 0.1, 0.),
             v: Vec3::new(0., 0.1, -3000.),
         },
-        material: MaterialSpec::Lambertian { albedo: TextureSpec::solid(Color::new(0.8, 0.8, 0.8)) },
+        material: MaterialSpec::Lambertian {
+            albedo: TextureSpec::solid(Color::new(0.8, 0.8, 0.8)),
+        },
         transform: Transform::identity(),
+        hidden: false,
     };
 
     let camera = CameraConfig::builder()

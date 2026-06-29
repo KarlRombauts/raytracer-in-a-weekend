@@ -11,14 +11,23 @@ fn quad(name: &str, q: Point3, u: Vec3, v: Vec3, material: MaterialSpec) -> Obje
         shape: Shape::Quad { q, u, v },
         material,
         transform: Transform::identity(),
+        hidden: false,
     }
 }
 
 pub fn cornell_box() -> Scene {
-    let red = MaterialSpec::Lambertian { albedo: TextureSpec::solid(Color::new(0.65, 0.05, 0.05)) };
-    let white = MaterialSpec::Lambertian { albedo: TextureSpec::solid(Color::new(0.73, 0.73, 0.73)) };
-    let green = MaterialSpec::Lambertian { albedo: TextureSpec::solid(Color::new(0.12, 0.45, 0.15)) };
-    let light = MaterialSpec::DiffuseLight { emit: TextureSpec::solid(Color::new(15.0, 15.0, 15.0)) };
+    let red = MaterialSpec::Lambertian {
+        albedo: TextureSpec::solid(Color::new(0.65, 0.05, 0.05)),
+    };
+    let white = MaterialSpec::Lambertian {
+        albedo: TextureSpec::solid(Color::new(0.73, 0.73, 0.73)),
+    };
+    let green = MaterialSpec::Lambertian {
+        albedo: TextureSpec::solid(Color::new(0.12, 0.45, 0.15)),
+    };
+    let light = MaterialSpec::DiffuseLight {
+        emit: TextureSpec::solid(Color::new(15.0, 15.0, 15.0)),
+    };
 
     let objects = vec![
         quad(
@@ -71,6 +80,7 @@ pub fn cornell_box() -> Scene {
             },
             material: white.clone(),
             transform: Transform::identity(),
+            hidden: false,
         },
         ObjectSpec {
             name: "Short box".to_string(),
@@ -80,6 +90,7 @@ pub fn cornell_box() -> Scene {
             },
             material: white,
             transform: Transform::identity(),
+            hidden: false,
         },
     ];
 

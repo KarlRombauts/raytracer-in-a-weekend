@@ -3,13 +3,13 @@ use std::sync::Arc;
 
 use crate::camera::CameraConfig;
 use crate::color::Color;
-use crate::geometry::{make_box, ObjData, Quad, Rotate, Scale, Sphere, Translate};
+use crate::geometry::{ObjData, Quad, Rotate, Scale, Sphere, Translate, make_box};
 use crate::group::{IntersectGroup, Light};
 use crate::material::{Dielectric, DiffuseLight, Glossy, Lambertian, Material, Metal};
+use crate::ray::{BVH, Intersect};
 use crate::texture::{
     CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, Projection, SolidColor, Texture,
 };
-use crate::ray::{Intersect, BVH};
 use crate::vec3::{Point3, Vec3};
 
 /// An embedded binary asset (image bytes now; meshes in Phase 2). Bytes are the
@@ -25,7 +25,10 @@ impl Asset {
     /// An asset with no bytes yet — builds to the magenta placeholder until a
     /// file is chosen in the editor.
     pub fn empty() -> Self {
-        Asset { bytes: Arc::from([] as [u8; 0]), label: None }
+        Asset {
+            bytes: Arc::from([] as [u8; 0]),
+            label: None,
+        }
     }
 }
 
@@ -49,9 +52,7 @@ impl Default for Mapping {
 
 impl Mapping {
     pub fn is_identity(&self) -> bool {
-        self.projection == Projection::MeshUv
-            && self.scale == 1.0
-            && self.offset == (0.0, 0.0)
+        self.projection == Projection::MeshUv && self.scale == 1.0 && self.offset == (0.0, 0.0)
     }
 }
 
@@ -63,10 +64,22 @@ fn magenta() -> Arc<dyn Texture> {
 /// Plain-data description of a texture, mirroring the core `Texture` types.
 #[derive(Clone)]
 pub enum TextureSpec {
-    Solid { color: Color },
-    Checker { scale: f32, even: CellTexture, odd: CellTexture },
-    Noise { scale: f32, depth: u32 },
-    Image { asset: Asset, mapping: Mapping },
+    Solid {
+        color: Color,
+    },
+    Checker {
+        scale: f32,
+        even: CellTexture,
+        odd: CellTexture,
+    },
+    Noise {
+        scale: f32,
+        depth: u32,
+    },
+    Image {
+        asset: Asset,
+        mapping: Mapping,
+    },
 }
 
 /// A checker cell. Deliberately omits `Checker`, so checker-in-checker
@@ -112,9 +125,11 @@ impl TextureSpec {
     pub fn build(&self) -> Arc<dyn Texture> {
         match self {
             TextureSpec::Solid { color } => Arc::new(SolidColor::from_color(*color)),
-            TextureSpec::Checker { scale, even, odd } => {
-                Arc::new(CheckerTexture::from_textures(*scale, even.build(), odd.build()))
-            }
+            TextureSpec::Checker { scale, even, odd } => Arc::new(CheckerTexture::from_textures(
+                *scale,
+                even.build(),
+                odd.build(),
+            )),
             TextureSpec::Noise { scale, depth } => Arc::new(NoiseTexture::new(*scale, *depth)),
             TextureSpec::Image { asset, mapping } => {
                 let inner = build_image(asset);
@@ -151,11 +166,25 @@ impl TextureSpec {
 /// when the world is (re)assembled, so the editor can mutate it freely.
 #[derive(Clone)]
 pub enum MaterialSpec {
-    Lambertian { albedo: TextureSpec },
-    Glossy { albedo: TextureSpec, roughness: f32 },
-    Metal { albedo: Color, fuzz: f32 },
-    Dielectric { ior: f32, tint: Color, roughness: f32 },
-    DiffuseLight { emit: TextureSpec },
+    Lambertian {
+        albedo: TextureSpec,
+    },
+    Glossy {
+        albedo: TextureSpec,
+        roughness: f32,
+    },
+    Metal {
+        albedo: Color,
+        fuzz: f32,
+    },
+    Dielectric {
+        ior: f32,
+        tint: Color,
+        roughness: f32,
+    },
+    DiffuseLight {
+        emit: TextureSpec,
+    },
 }
 
 impl MaterialSpec {
@@ -168,9 +197,11 @@ impl MaterialSpec {
                 Arc::new(Glossy::from_texture(albedo.build(), *roughness))
             }
             MaterialSpec::Metal { albedo, fuzz } => Arc::new(Metal::new(*albedo, *fuzz)),
-            MaterialSpec::Dielectric { ior, tint, roughness } => {
-                Arc::new(Dielectric::new_glass(*ior, *tint, *roughness))
-            }
+            MaterialSpec::Dielectric {
+                ior,
+                tint,
+                roughness,
+            } => Arc::new(Dielectric::new_glass(*ior, *tint, *roughness)),
             MaterialSpec::DiffuseLight { emit } => {
                 Arc::new(DiffuseLight::from_texture(emit.build()))
             }
@@ -183,9 +214,19 @@ impl MaterialSpec {
 /// a shared handle and ignores the object's material.
 #[derive(Clone)]
 pub enum Shape {
-    Sphere { center: Point3, radius: f32 },
-    Quad { q: Point3, u: Vec3, v: Vec3 },
-    Box { a: Point3, b: Point3 },
+    Sphere {
+        center: Point3,
+        radius: f32,
+    },
+    Quad {
+        q: Point3,
+        u: Vec3,
+        v: Vec3,
+    },
+    Box {
+        a: Point3,
+        b: Point3,
+    },
     Mesh {
         object: Arc<dyn Intersect>,
         render: Arc<crate::geometry::RenderMesh>,
@@ -246,6 +287,9 @@ pub struct ObjectSpec {
     pub shape: Shape,
     pub material: MaterialSpec,
     pub transform: Transform,
+    /// When true the object is omitted from the rendered world and the GL
+    /// preview (toggled by the outliner eye). Default false.
+    pub hidden: bool,
 }
 
 impl ObjectSpec {
@@ -292,9 +336,13 @@ impl ObjectSpec {
 
         Some(ObjectSpec {
             name,
-            shape: Shape::Mesh { object: Arc::new(bvh), render },
+            shape: Shape::Mesh {
+                object: Arc::new(bvh),
+                render,
+            },
             material,
             transform,
+            hidden: false,
         })
     }
 
@@ -302,7 +350,10 @@ impl ObjectSpec {
     /// This is the pivot `build` rotates and scales about, and the point the GL
     /// preview centres on — so it's where the transform gizmo should sit.
     pub(crate) fn pivot(&self) -> Vec3 {
-        self.shape.build(self.material.build()).bounding_box().center()
+        self.shape
+            .build(self.material.build())
+            .bounding_box()
+            .center()
     }
 
     pub(crate) fn build(&self) -> Arc<dyn Intersect> {
@@ -342,6 +393,9 @@ pub struct Scene {
 pub fn build_world(scene: &Scene) -> IntersectGroup {
     let mut world = IntersectGroup::new();
     for obj in &scene.objects {
+        if obj.hidden {
+            continue;
+        }
         let geom = obj.build();
         world.add(geom.clone());
         if let MaterialSpec::DiffuseLight { emit } = &obj.material {
@@ -400,6 +454,43 @@ pub fn placeable_bounds(objects: &[ObjectSpec]) -> Option<(Vec3, Vec3)> {
 }
 
 #[cfg(test)]
+mod visibility_tests {
+    use super::*;
+    use crate::camera::CameraConfig;
+    use crate::color::Color;
+
+    fn emissive(name: &str) -> ObjectSpec {
+        ObjectSpec {
+            name: name.into(),
+            shape: Shape::Quad {
+                q: Point3::new(0.0, 0.0, 0.0),
+                u: Vec3::new(1.0, 0.0, 0.0),
+                v: Vec3::new(0.0, 1.0, 0.0),
+            },
+            material: MaterialSpec::DiffuseLight {
+                emit: TextureSpec::solid(Color::new(5.0, 5.0, 5.0)),
+            },
+            transform: Transform::identity(),
+            hidden: false,
+        }
+    }
+
+    #[test]
+    fn hidden_object_is_excluded_from_world_and_lights() {
+        let mut scene = Scene {
+            camera: CameraConfig::builder().build(),
+            objects: vec![emissive("a"), emissive("b")],
+        };
+        let full = build_world(&scene);
+        scene.objects[1].hidden = true;
+        let partial = build_world(&scene);
+        // One fewer light registered when an emitter is hidden.
+        assert_eq!(full.lights.len(), 2);
+        assert_eq!(partial.lights.len(), 1);
+    }
+}
+
+#[cfg(test)]
 mod light_tests {
     use super::*;
     use crate::scenes::cornell_box;
@@ -427,14 +518,23 @@ mod registration_tests {
                 u: Vec3::new(1.0, 0.0, 0.0),
                 v: Vec3::new(0.0, 0.0, 1.0),
             },
-            material: MaterialSpec::DiffuseLight { emit: TextureSpec::solid(Color::new(5.0, 5.0, 5.0)) },
+            material: MaterialSpec::DiffuseLight {
+                emit: TextureSpec::solid(Color::new(5.0, 5.0, 5.0)),
+            },
             transform: Transform::identity(),
+            hidden: false,
         };
         let sphere_light = ObjectSpec {
             name: "sphere".to_string(),
-            shape: Shape::Sphere { center: Point3::new(0.0, 0.0, 0.0), radius: 1.0 },
-            material: MaterialSpec::DiffuseLight { emit: TextureSpec::solid(Color::new(5.0, 5.0, 5.0)) },
+            shape: Shape::Sphere {
+                center: Point3::new(0.0, 0.0, 0.0),
+                radius: 1.0,
+            },
+            material: MaterialSpec::DiffuseLight {
+                emit: TextureSpec::solid(Color::new(5.0, 5.0, 5.0)),
+            },
             transform: Transform::identity(),
+            hidden: false,
         };
         let scene = Scene {
             camera: CameraConfig::builder().build(),
@@ -456,13 +556,19 @@ mod render_mesh_tests {
 
     #[test]
     fn primitive_shapes_produce_nonempty_meshes() {
-        let sphere = Shape::Sphere { center: Point3::new(0.0, 0.0, 0.0), radius: 1.0 };
+        let sphere = Shape::Sphere {
+            center: Point3::new(0.0, 0.0, 0.0),
+            radius: 1.0,
+        };
         let quad = Shape::Quad {
             q: Point3::new(0.0, 0.0, 0.0),
             u: Vec3::new(1.0, 0.0, 0.0),
             v: Vec3::new(0.0, 1.0, 0.0),
         };
-        let bx = Shape::Box { a: Point3::new(0.0, 0.0, 0.0), b: Point3::new(1.0, 1.0, 1.0) };
+        let bx = Shape::Box {
+            a: Point3::new(0.0, 0.0, 0.0),
+            b: Point3::new(1.0, 1.0, 1.0),
+        };
         assert!(!sphere.render_mesh().positions.is_empty());
         assert_eq!(quad.render_mesh().positions.len(), 6);
         assert_eq!(bx.render_mesh().positions.len(), 36);
@@ -488,8 +594,12 @@ mod texture_spec_tests {
     fn checker_previews_the_average_of_its_cells() {
         let t = TextureSpec::Checker {
             scale: 1.0,
-            even: CellTexture::Solid { color: Color::new(0.0, 0.0, 0.0) },
-            odd: CellTexture::Solid { color: Color::new(1.0, 1.0, 1.0) },
+            even: CellTexture::Solid {
+                color: Color::new(0.0, 0.0, 0.0),
+            },
+            odd: CellTexture::Solid {
+                color: Color::new(1.0, 1.0, 1.0),
+            },
         };
         let _ = t.build(); // builds without panic
         let p = t.preview_color();
@@ -498,14 +608,23 @@ mod texture_spec_tests {
 
     #[test]
     fn noise_previews_mid_gray() {
-        let t = TextureSpec::Noise { scale: 4.0, depth: 7 };
+        let t = TextureSpec::Noise {
+            scale: 4.0,
+            depth: 7,
+        };
         let _ = t.build();
         assert_eq!(t.preview_color(), Color::new(0.5, 0.5, 0.5));
     }
 
     #[test]
     fn bad_image_builds_to_magenta_not_a_panic() {
-        let t = TextureSpec::Image { asset: Asset { bytes: vec![1, 2, 3].into(), label: None }, mapping: Mapping::default() };
+        let t = TextureSpec::Image {
+            asset: Asset {
+                bytes: vec![1, 2, 3].into(),
+                label: None,
+            },
+            mapping: Mapping::default(),
+        };
         let built = t.build(); // must not panic
         let c = built.value(0.5, 0.5, &Point3::new(0.0, 0.0, 0.0));
         assert_eq!(c, Color::new(1.0, 0.0, 1.0));
@@ -529,9 +648,16 @@ mod mapping_tests {
 
     #[test]
     fn non_identity_when_changed() {
-        let m = Mapping { projection: crate::texture::Projection::Planar, scale: 1.0, offset: (0.0, 0.0) };
+        let m = Mapping {
+            projection: crate::texture::Projection::Planar,
+            scale: 1.0,
+            offset: (0.0, 0.0),
+        };
         assert!(!m.is_identity());
-        let m2 = Mapping { scale: 2.0, ..Mapping::default() };
+        let m2 = Mapping {
+            scale: 2.0,
+            ..Mapping::default()
+        };
         assert!(!m2.is_identity());
     }
 }

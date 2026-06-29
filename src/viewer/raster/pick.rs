@@ -49,11 +49,11 @@ fn g2c(v: GVec3) -> Vec3 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::camera_gl;
     use super::*;
     use crate::camera::CameraConfig;
     use crate::color::Color;
     use crate::scene::{MaterialSpec, ObjectSpec, Shape, TextureSpec, Transform};
-    use super::super::camera_gl;
 
     fn looking_down_neg_z() -> CameraConfig {
         CameraConfig::builder()
@@ -72,14 +72,12 @@ mod tests {
     fn sphere(name: &str, center: Vec3, radius: f32) -> ObjectSpec {
         ObjectSpec {
             name: name.to_string(),
-            shape: Shape::Sphere {
-                center,
-                radius,
-            },
+            shape: Shape::Sphere { center, radius },
             material: MaterialSpec::Lambertian {
                 albedo: TextureSpec::solid(Color::new(0.5, 0.5, 0.5)),
             },
             transform: Transform::identity(),
+            hidden: false,
         }
     }
 
@@ -91,7 +89,10 @@ mod tests {
         // Camera sits at +z looking at the origin, so the centre ray points -z.
         let d = ray.direction.unit();
         assert!(d.z < -0.99, "direction not toward look_at: {d:?}");
-        assert!(d.x.abs() < 1e-3 && d.y.abs() < 1e-3, "centre ray off-axis: {d:?}");
+        assert!(
+            d.x.abs() < 1e-3 && d.y.abs() < 1e-3,
+            "centre ray off-axis: {d:?}"
+        );
         // Ray starts in front of the eye (between eye and scene).
         assert!(ray.origin.z < 5.0, "origin behind eye: {:?}", ray.origin);
     }
