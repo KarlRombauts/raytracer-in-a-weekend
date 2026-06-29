@@ -30,8 +30,12 @@ pub fn pill_button(ui: &mut Ui, label: &str, accent: bool, enabled: bool) -> egu
     btn = if accent {
         btn.fill(theme::ACCENT)
     } else {
+        // Dark pill: fill #22252a, border #33373d (mockup values).
         btn.fill(egui::Color32::from_rgb(0x22, 0x25, 0x2a))
-            .stroke(egui::Stroke::new(1.0, theme::BORDER_FIELD))
+            .stroke(egui::Stroke::new(
+                1.0,
+                egui::Color32::from_rgb(0x33, 0x37, 0x3d),
+            ))
     };
     ui.add_enabled(enabled, btn)
 }

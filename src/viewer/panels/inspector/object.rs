@@ -23,7 +23,11 @@ pub fn object_tab(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> boo
     let mut do_del = false;
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(controls::shape_icon(&scene.objects[i].shape)).color(theme::SELECTION));
-        ui.add(egui::TextEdit::singleline(&mut scene.objects[i].name).desired_width(140.0));
+        ui.add(
+            egui::TextEdit::singleline(&mut scene.objects[i].name)
+                .desired_width(140.0)
+                .margin(egui::Margin::symmetric(8, 4)),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if widgets::icon_button(ui, icons::TRASH, "Delete object", true) {
                 do_del = true;

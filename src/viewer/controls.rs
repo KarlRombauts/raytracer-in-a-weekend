@@ -3,7 +3,7 @@
 
 use eframe::egui;
 
-use super::{icons, theme, widgets};
+use super::{icons, widgets};
 use crate::color::Color;
 use crate::scene::{
     self, Asset, CellTexture, Mapping, MaterialSpec, ObjectSpec, Shape, TextureSpec, Transform,
@@ -434,24 +434,24 @@ pub(crate) fn shape_controls(ui: &mut egui::Ui, s: &mut Shape) -> bool {
     let mut changed = false;
     match s {
         Shape::Sphere { center, radius } => {
-            vec_label(ui, "Center");
+            widgets::sub_label(ui, "Center");
             changed |= widgets::axis_vec(ui, center, 1.0, "", None, None);
             changed |= widgets::prop_row(ui, "Radius", |ui| {
                 widgets::axis_field(ui, widgets::Axis::None, radius, 0.5, None, "", Some(0.001..=1.0e6))
             });
         }
         Shape::Quad { q, u, v } => {
-            vec_label(ui, "Q");
+            widgets::sub_label(ui, "Q");
             changed |= widgets::axis_vec(ui, q, 1.0, "", None, None);
-            vec_label(ui, "U");
+            widgets::sub_label(ui, "U");
             changed |= widgets::axis_vec(ui, u, 1.0, "", None, None);
-            vec_label(ui, "V");
+            widgets::sub_label(ui, "V");
             changed |= widgets::axis_vec(ui, v, 1.0, "", None, None);
         }
         Shape::Box { a, b } => {
-            vec_label(ui, "Min");
+            widgets::sub_label(ui, "Min");
             changed |= widgets::axis_vec(ui, a, 1.0, "", None, None);
-            vec_label(ui, "Max");
+            widgets::sub_label(ui, "Max");
             changed |= widgets::axis_vec(ui, b, 1.0, "", None, None);
         }
         Shape::Mesh { .. } => {}
@@ -461,18 +461,13 @@ pub(crate) fn shape_controls(ui: &mut egui::Ui, s: &mut Shape) -> bool {
 
 pub(crate) fn transform_controls(ui: &mut egui::Ui, t: &mut Transform) -> bool {
     let mut changed = false;
-    vec_label(ui, "Location");
+    widgets::sub_label(ui, "Location");
     changed |= widgets::axis_vec(ui, &mut t.translate, 1.0, "", None, None);
-    vec_label(ui, "Rotation");
+    widgets::sub_label(ui, "Rotation");
     changed |= widgets::axis_vec(ui, &mut t.rotate, 1.0, "°", None, Some(-360.0..=360.0));
-    vec_label(ui, "Scale");
+    widgets::sub_label(ui, "Scale");
     changed |= widgets::axis_vec(ui, &mut t.scale, 0.01, "", Some(3), Some(0.001..=1.0e4));
     changed
-}
-
-/// A small muted per-vector caption (e.g. "Location"), matching `camera_tab`.
-fn vec_label(ui: &mut egui::Ui, name: &str) {
-    ui.label(egui::RichText::new(name).color(theme::TEXT_DIM).size(11.0));
 }
 
 pub(crate) fn default_sphere(n: usize) -> ObjectSpec {

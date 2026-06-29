@@ -77,7 +77,7 @@ pub fn overlays(
                         );
                         tool(ui, &mut gizmo_modes.scale, icons::RESIZE, "Scale");
                         ui.separator();
-                        ui.checkbox(gizmo_local, "Local axes");
+                        local_axes_toggle(ui, gizmo_local);
                     });
                 });
             });
@@ -86,20 +86,66 @@ pub fn overlays(
     reset
 }
 
+/// Gizmo mode toggle pill: accent-filled when active, transparent when not.
 fn tool(ui: &mut Ui, on: &mut bool, icon: &str, label: &str) {
-    let col = if *on {
-        theme::ACCENT
+    let (fill, text_color) = if *on {
+        (theme::accent_soft(), theme::ACCENT)
     } else {
-        theme::TEXT_MUTED
+        (egui::Color32::TRANSPARENT, theme::TEXT_MUTED)
     };
-    if ui
-        .add(
-            egui::Button::new(egui::RichText::new(format!("{icon}  {label}")).color(col))
-                .fill(egui::Color32::TRANSPARENT)
-                .stroke(egui::Stroke::NONE),
-        )
-        .clicked()
-    {
+    let btn = egui::Button::new(
+        egui::RichText::new(format!("{icon}  {label}")).color(text_color),
+    )
+    .fill(fill)
+    .corner_radius(egui::CornerRadius::same(7))
+    .stroke(egui::Stroke::NONE);
+    if ui.add(btn).clicked() {
+        *on ^= true;
+    }
+}
+
+/// Custom "Local axes" toggle: a small accent-filled square (with check when
+/// on, outlined when off) followed by the label text.
+fn local_axes_toggle(ui: &mut Ui, on: &mut bool) {
+    let box_size = 15.0;
+    let desired = egui::vec2(box_size, box_size);
+    // Lay out the square + label in a horizontal group.
+    let resp = ui
+        .horizontal(|ui| {
+            let (rect, response) =
+                ui.allocate_exact_size(desired, egui::Sense::click());
+            let painter = ui.painter();
+            if *on {
+                painter.rect_filled(
+                    rect,
+                    egui::CornerRadius::same(4),
+                    theme::ACCENT,
+                );
+                // Draw a checkmark glyph centered in the square.
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    icons::CHECK,
+                    egui::FontId::proportional(11.0),
+                    egui::Color32::WHITE,
+                );
+            } else {
+                painter.rect_stroke(
+                    rect,
+                    egui::CornerRadius::same(4),
+                    egui::Stroke::new(1.0, theme::BORDER_FIELD),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            ui.label(
+                egui::RichText::new("Local axes")
+                    .color(theme::TEXT_MUTED)
+                    .size(12.5),
+            );
+            response
+        })
+        .inner;
+    if resp.clicked() {
         *on ^= true;
     }
 }
@@ -166,18 +212,24 @@ pub fn status_dock(
             if widgets::icon_button(ui, icons::RESET, "Restart render", false) {
                 out.restart = true;
             }
+            // Fixed-width wrappers prevent int_field from stretching to fill
+            // available width, which caused overlap with the status text.
             ui.label(
                 egui::RichText::new("Bounces")
                     .color(theme::TEXT_DIM)
                     .size(11.0),
             );
-            out.dirty |= widgets::int_field(ui, &mut cam.max_depth, Some(1..=1_000));
+            ui.allocate_ui(egui::vec2(56.0, theme::FIELD_H), |ui| {
+                out.dirty |= widgets::int_field(ui, &mut cam.max_depth, Some(1..=1_000));
+            });
             ui.label(
                 egui::RichText::new("Samples")
                     .color(theme::TEXT_DIM)
                     .size(11.0),
             );
-            out.dirty |= widgets::int_field(ui, &mut cam.samples, Some(1..=100_000));
+            ui.allocate_ui(egui::vec2(78.0, theme::FIELD_H), |ui| {
+                out.dirty |= widgets::int_field(ui, &mut cam.samples, Some(1..=100_000));
+            });
         });
     });
 

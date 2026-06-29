@@ -6,9 +6,9 @@ use widgets::Axis;
 pub fn camera_tab(ui: &mut Ui, cam: &mut CameraConfig) -> bool {
     let mut c = false;
     widgets::section_header(ui, icons::CROSSHAIR, "View");
-    ui.label("Position");
+    widgets::sub_label(ui, "Position");
     c |= widgets::axis_vec(ui, &mut cam.look_from, 1.0, "", None, None);
-    ui.label("Target");
+    widgets::sub_label(ui, "Target");
     c |= widgets::axis_vec(ui, &mut cam.look_at, 1.0, "", None, None);
     c |= widgets::prop_row(ui, "Roll", |ui| {
         widgets::axis_field(ui, Axis::None, &mut cam.roll, 0.5, Some(1), "°", Some(-180.0..=180.0))
