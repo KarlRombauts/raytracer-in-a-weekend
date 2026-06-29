@@ -5,6 +5,7 @@ mod raster;
 mod render_task;
 pub mod theme;
 mod view_transform;
+mod widgets;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
