@@ -125,7 +125,9 @@ impl RenderTask {
                         || paused_bg.load(Ordering::Relaxed)
                 };
                 let mut cancelled = stop(last_gen);
-                while !cancelled && renderer.passes() < target {
+                // Stop at the sample target, a newer edit, or once every pixel
+                // has converged (adaptive sampling) — whichever comes first.
+                while !cancelled && renderer.passes() < target && !renderer.all_converged() {
                     renderer.add_pass(&camera, &world);
                     {
                         let mut s = shared_bg.lock().unwrap();
