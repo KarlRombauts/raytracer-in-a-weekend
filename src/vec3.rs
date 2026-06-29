@@ -2,8 +2,9 @@ use std::ops::Index;
 
 use rand::prelude::*;
 use rand_distr::{UnitDisc, UnitSphere};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Vec3 {
     pub x: f32,
     pub y: f32,

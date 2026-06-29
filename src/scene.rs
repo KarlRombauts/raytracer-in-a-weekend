@@ -1,6 +1,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 use crate::camera::CameraConfig;
 use crate::color::Color;
 use crate::geometry::{ObjData, Quad, Rotate, Scale, Sphere, Translate, make_box};
@@ -12,11 +14,27 @@ use crate::texture::{
 };
 use crate::vec3::{Point3, Vec3};
 
+/// (De)serialize `Arc<[u8]>` as a byte sequence without enabling serde's global
+/// `rc` feature. Round-trips through a `Vec<u8>` (a postcard length-prefixed seq).
+mod arc_bytes {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::sync::Arc;
+
+    pub fn serialize<S: Serializer>(bytes: &Arc<[u8]>, s: S) -> Result<S::Ok, S::Error> {
+        bytes.as_ref().to_vec().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Arc<[u8]>, D::Error> {
+        Ok(Arc::from(Vec::<u8>::deserialize(d)?))
+    }
+}
+
 /// An embedded binary asset (image bytes now; meshes in Phase 2). Bytes are the
 /// single source of truth, so a scene is self-contained and portable. `label`
 /// is for display only (e.g. "earth.png").
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Asset {
+    #[serde(with = "arc_bytes")]
     pub bytes: Arc<[u8]>,
     pub label: Option<String>,
 }
@@ -33,7 +51,7 @@ impl Asset {
 }
 
 /// How an image texture's UV coordinates are projected and scaled.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Mapping {
     pub projection: Projection,
     pub scale: f32,
@@ -62,7 +80,7 @@ fn magenta() -> Arc<dyn Texture> {
 }
 
 /// Plain-data description of a texture, mirroring the core `Texture` types.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum TextureSpec {
     Solid {
         color: Color,
@@ -84,7 +102,7 @@ pub enum TextureSpec {
 
 /// A checker cell. Deliberately omits `Checker`, so checker-in-checker
 /// recursion is unrepresentable (one level of nesting only).
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum CellTexture {
     Solid { color: Color },
     Noise { scale: f32, depth: u32 },
@@ -164,7 +182,7 @@ impl TextureSpec {
 
 /// Plain-data description of a material. Built into an `Arc<dyn Material>` only
 /// when the world is (re)assembled, so the editor can mutate it freely.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum MaterialSpec {
     Lambertian {
         albedo: TextureSpec,
@@ -264,7 +282,7 @@ impl Shape {
 
 /// Scale and Euler rotation (degrees) about the object's own centre, followed
 /// by a world translation.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Transform {
     pub rotate: Vec3,
     pub scale: Vec3,
@@ -680,5 +698,39 @@ mod mapping_tests {
             ..Mapping::default()
         };
         assert!(!m2.is_identity());
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn material_spec_with_image_asset_round_trips_via_postcard() {
+        let m = MaterialSpec::Glossy {
+            albedo: TextureSpec::Image {
+                asset: Asset {
+                    bytes: Arc::from([1u8, 2, 3, 4, 5].as_slice()),
+                    label: Some("tex.png".to_string()),
+                },
+                mapping: Mapping::default(),
+            },
+            roughness: 0.3,
+        };
+        let bytes = postcard::to_allocvec(&m).expect("encode");
+        let back: MaterialSpec = postcard::from_bytes(&bytes).expect("decode");
+        assert_eq!(m, back);
+    }
+
+    #[test]
+    fn checker_texture_round_trips() {
+        let t = TextureSpec::Checker {
+            scale: 2.5,
+            even: CellTexture::Solid { color: Color::new(0.1, 0.2, 0.3) },
+            odd: CellTexture::Noise { scale: 4.0, depth: 7 },
+        };
+        let bytes = postcard::to_allocvec(&t).expect("encode");
+        let back: TextureSpec = postcard::from_bytes(&bytes).expect("decode");
+        assert_eq!(t, back);
     }
 }
