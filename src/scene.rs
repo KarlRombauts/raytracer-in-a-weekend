@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::camera::CameraConfig;
 use crate::color::Color;
-use crate::geometry::{ObjData, Quad, Rotate, Scale, Sphere, Translate, make_box};
+use crate::geometry::{ObjData, Quad, RenderMesh, Rotate, Scale, Sphere, Translate, Triangle, make_box};
 use crate::group::{IntersectGroup, Light};
 use crate::material::{Dielectric, DiffuseLight, Glossy, Lambertian, Material, Metal};
 use crate::ray::{BVH, Intersect};
@@ -227,6 +227,40 @@ impl MaterialSpec {
     }
 }
 
+/// The portable description of a triangle mesh: positions + triangle indices.
+/// Everything else (per-triangle geometry, BVH, preview mesh) is rebuilt from
+/// these on load.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct MeshData {
+    pub verts: Vec<Vec3>,
+    pub faces: Vec<[u32; 3]>,
+}
+
+impl MeshData {
+    /// Rebuild the runtime intersect handle (BVH) and the preview mesh from the
+    /// stored arrays. Bakes the default grey Lambertian, matching OBJ import.
+    pub fn build(&self) -> (Arc<dyn Intersect>, Arc<RenderMesh>) {
+        let material = MaterialSpec::Lambertian {
+            albedo: TextureSpec::solid(Color::new(0.73, 0.73, 0.73)),
+        }
+        .build();
+        let faces_usize: Vec<[usize; 3]> = self
+            .faces
+            .iter()
+            .map(|[i, j, k]| [*i as usize, *j as usize, *k as usize])
+            .collect();
+        let triangles: Vec<Triangle> = faces_usize
+            .iter()
+            .map(|[i, j, k]| {
+                Triangle::from_points(&self.verts[*i], &self.verts[*j], &self.verts[*k], material.clone())
+            })
+            .collect();
+        let bvh = BVH::build(triangles);
+        let render = Arc::new(RenderMesh::from_triangles_smooth(&self.verts, &faces_usize));
+        (Arc::new(bvh), render)
+    }
+}
+
 /// Plain-data description of a shape. `Mesh` is an escape hatch for prebuilt,
 /// non-editable geometry (e.g. a loaded OBJ wrapped in a BVH) — it's stored as
 /// a shared handle and ignores the object's material.
@@ -246,6 +280,7 @@ pub enum Shape {
         b: Point3,
     },
     Mesh {
+        data: Arc<MeshData>,
         object: Arc<dyn Intersect>,
         render: Arc<crate::geometry::RenderMesh>,
     },
@@ -267,7 +302,6 @@ impl Shape {
     /// definition space (the object's transform is applied separately as a
     /// model matrix).
     pub fn render_mesh(&self) -> crate::geometry::RenderMesh {
-        use crate::geometry::RenderMesh;
         match self {
             Shape::Sphere { center, radius } => RenderMesh::sphere(*center, *radius, 16, 24),
             Shape::Quad { q, u, v } => RenderMesh::quad(*q, *u, *v),
@@ -277,6 +311,41 @@ impl Shape {
                 normals: render.normals.clone(),
             },
         }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+enum ShapeData {
+    Sphere { center: Point3, radius: f32 },
+    Quad { q: Point3, u: Vec3, v: Vec3 },
+    Box { a: Point3, b: Point3 },
+    Mesh { data: MeshData },
+}
+
+impl Serialize for Shape {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let repr = match self {
+            Shape::Sphere { center, radius } => ShapeData::Sphere { center: *center, radius: *radius },
+            Shape::Quad { q, u, v } => ShapeData::Quad { q: *q, u: *u, v: *v },
+            Shape::Box { a, b } => ShapeData::Box { a: *a, b: *b },
+            Shape::Mesh { data, .. } => ShapeData::Mesh { data: (**data).clone() },
+        };
+        repr.serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Shape {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match ShapeData::deserialize(d)? {
+            ShapeData::Sphere { center, radius } => Shape::Sphere { center, radius },
+            ShapeData::Quad { q, u, v } => Shape::Quad { q, u, v },
+            ShapeData::Box { a, b } => Shape::Box { a, b },
+            ShapeData::Mesh { data } => {
+                let data = Arc::new(data);
+                let (object, render) = data.build();
+                Shape::Mesh { data, object, render }
+            }
+        })
     }
 }
 
@@ -299,7 +368,7 @@ impl Transform {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ObjectSpec {
     pub name: String,
     pub shape: Shape,
@@ -333,14 +402,12 @@ impl ObjectSpec {
             albedo: TextureSpec::solid(Color::new(0.73, 0.73, 0.73)),
         };
         let obj = ObjData::load(path_str);
-        let render = Arc::new(obj.render_mesh());
-        let triangles = obj.into_triangles(material.build());
-        let bvh = BVH::build(triangles);
+        let (verts, faces) = obj.mesh_data();
+        let data = Arc::new(MeshData { verts, faces });
+        let (object, render) = data.build();
 
-        // Auto-fit: scale the mesh to the target size and recentre it. The
-        // transform wraps the BVH (no rebuild) — scale pivots about the mesh's
-        // own centre, then translate moves that centre to the target.
-        let bbox = bvh.bounding_box();
+        // Auto-fit: scale the mesh to the target size and recentre it.
+        let bbox = object.bounding_box();
         let c = bbox.center();
         let e = bbox.extent();
         let e_max = e.x.max(e.y).max(e.z).max(1e-6);
@@ -354,10 +421,7 @@ impl ObjectSpec {
 
         Some(ObjectSpec {
             name,
-            shape: Shape::Mesh {
-                object: Arc::new(bvh),
-                render,
-            },
+            shape: Shape::Mesh { data, object, render },
             material,
             transform,
             hidden: false,
@@ -399,7 +463,7 @@ impl ObjectSpec {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Scene {
     pub camera: CameraConfig,
     pub objects: Vec<ObjectSpec>,
@@ -698,6 +762,71 @@ mod mapping_tests {
             ..Mapping::default()
         };
         assert!(!m2.is_identity());
+    }
+}
+
+#[cfg(test)]
+mod mesh_serde_tests {
+    use super::*;
+
+    fn tiny_mesh_scene() -> Scene {
+        // A single triangle mesh + a sphere, so we cover both Mesh and a primitive.
+        let data = MeshData {
+            verts: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            ],
+            faces: vec![[0, 1, 2]],
+        };
+        let (object, render) = data.build();
+        let mesh = ObjectSpec {
+            name: "tri".to_string(),
+            shape: Shape::Mesh { data: Arc::new(data), object, render },
+            material: MaterialSpec::Lambertian {
+                albedo: TextureSpec::solid(Color::new(0.7, 0.7, 0.7)),
+            },
+            transform: Transform::identity(),
+            hidden: false,
+        };
+        let sphere = ObjectSpec {
+            name: "ball".to_string(),
+            shape: Shape::Sphere { center: Vec3::new(2.0, 0.0, 0.0), radius: 1.5 },
+            material: MaterialSpec::Metal { albedo: Color::new(0.8, 0.8, 0.8), fuzz: 0.1 },
+            transform: Transform::identity(),
+            hidden: false,
+        };
+        Scene {
+            camera: CameraConfig::builder().image_width(64).build(),
+            objects: vec![mesh, sphere],
+        }
+    }
+
+    #[test]
+    fn scene_with_mesh_round_trips_via_postcard() {
+        let scene = tiny_mesh_scene();
+        let bytes = postcard::to_allocvec(&scene).expect("encode");
+        let back: Scene = postcard::from_bytes(&bytes).expect("decode");
+
+        assert_eq!(back.objects.len(), 2);
+        assert_eq!(back.camera, scene.camera);
+        assert_eq!(back.objects[0].name, "tri");
+        assert_eq!(back.objects[1].name, "ball");
+        assert_eq!(back.objects[0].material, scene.objects[0].material);
+
+        // Mesh geometry survived as verts + faces.
+        match &back.objects[0].shape {
+            Shape::Mesh { data, .. } => {
+                assert_eq!(data.verts.len(), 3);
+                assert_eq!(data.faces, vec![[0u32, 1, 2]]);
+            }
+            _other => panic!("expected mesh"),
+        }
+
+        // The decoded mesh rebuilt a usable BVH: the world assembles and the
+        // mesh's bounding box is finite.
+        let world = build_world(&back);
+        assert!(world.bounding_box().center().x.is_finite());
     }
 }
 

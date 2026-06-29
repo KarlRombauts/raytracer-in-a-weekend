@@ -4,27 +4,19 @@ use crate::{
     camera::CameraConfig,
     color::Color,
     geometry::ObjData,
-    material::Metal,
-    ray::BVH,
-    scene::{MaterialSpec, ObjectSpec, Scene, Shape, TextureSpec, Transform},
+    scene::{MaterialSpec, MeshData, ObjectSpec, Scene, Shape, TextureSpec, Transform},
     vec3::{Point3, Vec3},
 };
 
 pub fn new_bvh() -> Scene {
-    let gray = Arc::new(Metal::new(Color::new(1.0, 0.4, 0.2), 0.2));
     let obj = ObjData::load("./objs/dragon.obj");
-    let render = Arc::new(obj.render_mesh());
-    let triangles = obj.into_triangles(gray);
-    let bvh = BVH::build(triangles);
-
-    println!("{}", bvh.get_stats());
+    let (verts, faces) = obj.mesh_data();
+    let data = Arc::new(MeshData { verts, faces });
+    let (object, render) = data.build();
 
     let dragon = ObjectSpec {
         name: "Dragon (mesh)".to_string(),
-        shape: Shape::Mesh {
-            object: Arc::new(bvh),
-            render,
-        },
+        shape: Shape::Mesh { data, object, render },
         // Mesh keeps its baked material; this is ignored but required by the spec.
         material: MaterialSpec::Metal {
             albedo: Color::new(1.0, 0.4, 0.2),

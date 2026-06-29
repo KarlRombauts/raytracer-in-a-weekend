@@ -2,7 +2,7 @@ use crate::{color::Color, vec3::Vec3};
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
-#[derive(TypedBuilder, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(TypedBuilder, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CameraConfig {
     #[builder(default = 16.0 / 9.0)]
     pub aspect_ratio: f64,
