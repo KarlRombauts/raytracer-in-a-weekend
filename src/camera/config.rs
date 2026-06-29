@@ -44,3 +44,31 @@ pub struct CameraConfig {
     #[builder(default = f32::INFINITY)]
     pub firefly_clamp: f32,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn camera_config_postcard_round_trip() {
+        let original = CameraConfig::builder()
+            .aspect_ratio(4.0 / 3.0)
+            .image_width(800)
+            .samples(50)
+            .max_depth(20)
+            .fov(45.0)
+            .roll(0.1)
+            .dof_angle(0.5)
+            .focus_dist(5.0)
+            .look_from(Vec3::new(1.0, 2.0, 3.0))
+            .look_at(Vec3::new(0.0, 0.5, -1.0))
+            .v_up(Vec3::new(0.0, 1.0, 0.0))
+            .background(Color::new(0.1, 0.2, 0.3))
+            .firefly_clamp(10.0)
+            .build();
+
+        let bytes = postcard::to_allocvec(&original).expect("postcard serialise");
+        let decoded: CameraConfig = postcard::from_bytes(&bytes).expect("postcard deserialise");
+        assert_eq!(original, decoded);
+    }
+}

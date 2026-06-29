@@ -193,7 +193,10 @@ impl eframe::App for ViewerApp {
                     self.scene_picker = None;
                     match crate::scene_file::decode(&bytes) {
                         Ok(loaded) => {
+                            let loaded_camera = loaded.scene.camera.clone();
                             *self.scene.lock().unwrap() = loaded.scene;
+                            self.initial_camera = loaded_camera;
+                            self.gl_renderer.lock().unwrap().mark_dirty();
                             self.ui_state.selected = None;
                             self.render.invalidate();
                             self.scene_status = Some("Loaded scene".to_string());

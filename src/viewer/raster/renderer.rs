@@ -544,6 +544,13 @@ impl SceneRenderer {
         });
         true
     }
+
+    /// Force the cached GL geometry to rebuild on the next `paint` (call when
+    /// the whole scene is replaced, e.g. on scene load).
+    pub fn mark_dirty(&mut self) {
+        self.built_count = usize::MAX;
+        self.built_visible = usize::MAX;
+    }
 }
 
 /// Create an FBO with an RGBA8 colour texture (object IDs) and a depth texture
