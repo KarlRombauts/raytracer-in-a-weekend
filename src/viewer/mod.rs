@@ -3,6 +3,7 @@ mod icons;
 mod orbit;
 mod raster;
 mod render_task;
+pub mod theme;
 mod view_transform;
 
 use std::sync::{Arc, Mutex};
@@ -37,8 +38,11 @@ fn encode_rgba_png(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
         rgb.put_pixel(x, y, image::Rgb([px[0], px[1], px[2]]));
     }
     let mut bytes = Vec::new();
-    rgb.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
-        .expect("PNG encode");
+    rgb.write_to(
+        &mut std::io::Cursor::new(&mut bytes),
+        image::ImageFormat::Png,
+    )
+    .expect("PNG encode");
     bytes
 }
 
@@ -114,7 +118,7 @@ pub struct ViewerApp {
 
 impl ViewerApp {
     fn new(cc: &eframe::CreationContext<'_>, scene: Scene, width: u32, height: u32) -> Self {
-        icons::install(&cc.egui_ctx);
+        theme::install(&cc.egui_ctx);
         let total = scene.camera.samples;
         let initial_camera = scene.camera.clone();
         let scene = Arc::new(Mutex::new(scene));
@@ -166,7 +170,9 @@ impl eframe::App for ViewerApp {
             } else {
                 None
             };
-            (s.width, s.height, s.passes, s.total, s.done, s.elapsed, new_image)
+            (
+                s.width, s.height, s.passes, s.total, s.done, s.elapsed, new_image,
+            )
         };
         let aspect = img_w as f32 / img_h as f32;
         if let Some(image) = new_image {
@@ -211,7 +217,10 @@ impl eframe::App for ViewerApp {
                             ui.spinner();
                             ui.label("rendering…");
                         }
-                        if ui.button(format!("{}  Save image", icons::FLOPPY)).clicked() {
+                        if ui
+                            .button(format!("{}  Save image", icons::FLOPPY))
+                            .clicked()
+                        {
                             let bytes = {
                                 // Re-encode the current shown frame from the
                                 // shared RGBA buffer (already gamma-corrected).
@@ -313,8 +322,18 @@ impl eframe::App for ViewerApp {
                             *on ^= true;
                         }
                     };
-                    tool(ui, &mut self.gizmo_modes.translate, icons::ARROWS_OUT_CARDINAL, "Move");
-                    tool(ui, &mut self.gizmo_modes.rotate, icons::ARROWS_CLOCKWISE, "Rotate");
+                    tool(
+                        ui,
+                        &mut self.gizmo_modes.translate,
+                        icons::ARROWS_OUT_CARDINAL,
+                        "Move",
+                    );
+                    tool(
+                        ui,
+                        &mut self.gizmo_modes.rotate,
+                        icons::ARROWS_CLOCKWISE,
+                        "Rotate",
+                    );
                     tool(ui, &mut self.gizmo_modes.scale, icons::RESIZE, "Scale");
                     ui.separator();
                     ui.checkbox(&mut self.gizmo_local, "Local axes");
