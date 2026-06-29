@@ -516,11 +516,13 @@ impl eframe::App for ViewerApp {
 
             // Floating overlays (resolution badge, Reset-camera chip, Edit
             // toolbar) on top of whatever was just painted.
+            // R2+R7: overlays anchor to the full viewport rect (`vp`), not
+            // the letterboxed image rect. `image_rect` stays on gizmo/GL.
             let mut gm = self.ui_state.gizmo_modes;
             let mut gl = self.ui_state.gizmo_local;
             if panels::overlays(
                 ui,
-                image_rect,
+                vp,
                 self.ui_state.mode,
                 &mut gm,
                 &mut gl,

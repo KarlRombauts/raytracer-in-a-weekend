@@ -607,12 +607,11 @@ fn image_texture_card(
 
                     let response = if let Some(ref tex) = handle {
                         ui.add(
-                            egui::ImageButton::new(egui::load::SizedTexture::new(
+                            egui::Button::image(egui::load::SizedTexture::new(
                                 tex.id(),
                                 swatch_size,
                             ))
-                            .corner_radius(egui::CornerRadius::same(5))
-                            .frame(false),
+                            .corner_radius(egui::CornerRadius::same(5)),
                         )
                     } else {
                         ui.add_sized(swatch_size, egui::Button::new(""))
