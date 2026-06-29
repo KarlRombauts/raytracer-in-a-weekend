@@ -13,7 +13,18 @@ pub enum Tab {
     Output,
 }
 
+/// Which top-level screen the app shows: the library (Home) or the editor.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Screen {
+    Home,
+    Editor,
+}
+
 pub struct UiState {
+    /// Library vs editor.
+    pub screen: Screen,
+    /// Display name of the current scene (shown in the top-bar chip).
+    pub scene_name: String,
     pub mode: Mode,
     pub selected: Option<usize>,
     pub tab: Tab,
@@ -26,6 +37,8 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         Self {
+            screen: Screen::Home,
+            scene_name: "untitled".to_string(),
             mode: Mode::Render,
             selected: None,
             tab: Tab::Object,
