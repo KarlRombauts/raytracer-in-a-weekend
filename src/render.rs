@@ -81,10 +81,17 @@ pub struct ProgressiveRenderer {
 }
 
 /// Convergence defaults: stop a pixel when its 95% confidence half-width is
-/// within 5% of its mean luminance (plus a small absolute floor for near-black
-/// pixels), after at least 16 samples.
+/// within 5% of its mean luminance, after at least 16 samples.
+///
+/// The threshold is purely *relative* (floor = 0). An absolute floor is
+/// tempting for near-black pixels, but any floor > 0 lets a pixel whose samples
+/// happen to be identical (variance ≈ 0) converge immediately — and dark pixels
+/// lit by rare indirect spikes routinely miss every spike in their warmup
+/// window, measure ~0 variance, and freeze to black (salt-and-pepper speckle).
+/// With floor = 0 such a pixel keeps sampling until it actually sees structure
+/// (or the caller's global sample target caps it), so it can't falsely converge.
 const DEFAULT_REL: f32 = 0.05;
-const DEFAULT_FLOOR: f32 = 0.001;
+const DEFAULT_FLOOR: f32 = 0.0;
 const DEFAULT_WARMUP: u32 = 16;
 
 impl ProgressiveRenderer {
@@ -210,6 +217,43 @@ mod adaptive_tests {
             p.add(gray(if k % 2 == 0 { 0.1 } else { 0.9 })); // mean 0.5, high variance
         }
         assert!(!p.converged(0.05, 0.001, 8), "var={}", p.variance());
+    }
+
+    #[test]
+    fn repro_does_not_freeze_dark_spiky_pixels_to_black() {
+        use rand::rngs::SmallRng;
+        use rand::{Rng, SeedableRng};
+        // Model a dark, indirectly-lit pixel: each sample is a bright spike with
+        // probability q, else black. True mean ≈ q*v. A robust convergence test
+        // must not let many such pixels converge to ~black after missing the
+        // spikes in their warmup window.
+        let q = 0.05_f32;
+        let v = 1.8_f32;
+        let true_mean = q * v;
+        let trials = 1000;
+        let mut frozen_black = 0;
+        for t in 0..trials {
+            let mut rng = SmallRng::seed_from_u64(t);
+            let mut p = Pixel::new();
+            loop {
+                let s = if rng.random::<f32>() < q { gray(v) } else { gray(0.0) };
+                p.add(s);
+                if p.converged(DEFAULT_REL, DEFAULT_FLOOR, DEFAULT_WARMUP) {
+                    break;
+                }
+                if p.count >= 1024 {
+                    break;
+                }
+            }
+            if luminance(p.mean()) < 0.5 * true_mean {
+                frozen_black += 1;
+            }
+        }
+        eprintln!("frozen_black = {frozen_black}/{trials}");
+        assert!(
+            frozen_black < trials / 20,
+            "too many dark pixels froze to black: {frozen_black}/{trials}"
+        );
     }
 
     #[test]
