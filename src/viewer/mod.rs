@@ -48,6 +48,9 @@ pub fn run(scene: Scene) {
         // The Edit-mode GL preview needs a depth buffer; egui's surface has
         // none by default, so DEPTH_TEST would otherwise be a silent no-op.
         depth_buffer: 24,
+        // Multisample the window framebuffer so the rasterized preview's
+        // geometry edges are antialiased (the paint callback draws into it).
+        multisampling: 4,
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([width as f32 + 290.0, height as f32 + 48.0]),
         ..Default::default()
@@ -75,6 +78,12 @@ struct ViewerApp {
     last_interact: f64,
     /// GL rasterizer for the Edit-mode preview.
     gl_renderer: Arc<Mutex<raster::renderer::SceneRenderer>>,
+    /// Persistent transform-gizmo state (holds drag state between frames).
+    gizmo: transform_gizmo_egui::Gizmo,
+    /// Whether the gizmo manipulates in world (global) or object-local axes.
+    gizmo_local: bool,
+    /// Which handle groups (translate / rotate / scale) the gizmo shows.
+    gizmo_modes: raster::gizmo::GizmoModes,
 }
 
 impl ViewerApp {
@@ -99,6 +108,13 @@ impl ViewerApp {
             initial_camera,
             last_interact: -1.0,
             gl_renderer,
+            gizmo: transform_gizmo_egui::Gizmo::default(),
+            gizmo_local: false,
+            gizmo_modes: raster::gizmo::GizmoModes {
+                translate: true,
+                rotate: true,
+                scale: true,
+            },
         }
     }
 }
@@ -232,10 +248,39 @@ impl eframe::App for ViewerApp {
         if dirty {
             self.render.invalidate();
         }
-        // Switching back from Edit to Render: the path trace was not running
-        // during Edit, so invalidate now to restart it at the current camera.
-        if mode_before == Mode::Edit && self.mode == Mode::Render {
-            self.render.invalidate();
+        // The path trace is wasted work in Edit mode (the GL preview is shown
+        // instead), so pause it there and resume — restarting at the edited
+        // scene — when returning to Render.
+        if mode_before != self.mode {
+            match self.mode {
+                Mode::Edit => self.render.pause(),
+                Mode::Render => self.render.resume(),
+            }
+        }
+
+        // --- Top toolbar: gizmo handle-group toggles (Edit mode only) ---
+        if self.mode == Mode::Edit {
+            egui::Panel::top("gizmo_toolbar").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_space(2.0);
+                    ui.strong("Gizmo");
+                    ui.separator();
+                    let mut tool = |ui: &mut egui::Ui, on: &mut bool, icon: &str, tip: &str| {
+                        if ui
+                            .selectable_label(*on, format!("{icon}  {tip}"))
+                            .on_hover_text(format!("Toggle {tip} handles"))
+                            .clicked()
+                        {
+                            *on ^= true;
+                        }
+                    };
+                    tool(ui, &mut self.gizmo_modes.translate, icons::ARROWS_OUT_CARDINAL, "Move");
+                    tool(ui, &mut self.gizmo_modes.rotate, icons::ARROWS_CLOCKWISE, "Rotate");
+                    tool(ui, &mut self.gizmo_modes.scale, icons::RESIZE, "Scale");
+                    ui.separator();
+                    ui.checkbox(&mut self.gizmo_local, "Local axes");
+                });
+            });
         }
 
         // --- Central panel: path-traced image or GL preview ---
@@ -287,36 +332,133 @@ impl eframe::App for ViewerApp {
                 }
                 Mode::Edit => {
                     let now = ui.input(|i| i.time);
+
+                    // Letterbox to the output aspect (centred, unit zoom) so the
+                    // preview lines up with the path-traced image in Render mode.
+                    let mut fit = egui::vec2(vp.width(), vp.width() / aspect);
+                    if fit.y > vp.height() {
+                        fit = egui::vec2(vp.height() * aspect, vp.height());
+                    }
+                    let rect = egui::Rect::from_center_size(vp.center(), fit);
+                    let cam_proj = |s: &Scene| {
+                        raster::camera_gl::projection_matrix(
+                            &s.camera,
+                            rect.width() / rect.height(),
+                            0.05,
+                            1000.0,
+                        )
+                    };
+
+                    // 1) Paint the GL rasterised preview (drawn first, so the
+                    //    gizmo overlays it). The outline tracks `selected`.
+                    let scene_arc = self.scene.clone();
+                    let renderer = self.gl_renderer.clone();
+                    let selected = self.selected;
+                    let cb = eframe::egui_glow::CallbackFn::new(move |info, painter| {
+                        let scene = scene_arc.lock().unwrap();
+                        renderer
+                            .lock()
+                            .unwrap()
+                            .paint(painter.gl(), &scene, &info, selected);
+                    });
+                    ui.painter().add(egui::PaintCallback {
+                        rect,
+                        callback: std::sync::Arc::new(cb),
+                    });
+
+                    // 2) Transform gizmo on the selected object. It takes pointer
+                    //    precedence, so dragging a handle won't also orbit the
+                    //    camera or reselect.
+                    let mut gizmo_active = false;
                     let mut moved = false;
-                    // `dragged()` stays true while the button is held even when
-                    // the mouse is still, so only treat actual motion as a camera
-                    // change. A stationary hold then lets the render keep
-                    // accumulating passes from the current view.
-                    if response.dragged() {
-                        let delta = response.drag_delta();
-                        if delta != egui::Vec2::ZERO {
+                    if let Some(i) = self.selected {
+                        let mut scene = self.scene.lock().unwrap();
+                        if i < scene.objects.len() {
+                            let view = raster::camera_gl::view_matrix(&scene.camera);
+                            let proj = cam_proj(&scene);
+                            let pivot = scene.objects[i].pivot();
+                            let changed = raster::gizmo::interact(
+                                ui,
+                                &mut self.gizmo,
+                                view,
+                                proj,
+                                rect,
+                                self.gizmo_local,
+                                self.gizmo_modes,
+                                &mut scene.objects[i].transform,
+                                pivot,
+                            );
+                            gizmo_active = changed || self.gizmo.is_focused();
+                            drop(scene);
+                            if changed {
+                                // Show the new pose immediately; the path trace
+                                // is paused in Edit and picks it up on resume.
+                                moved = true;
+                            }
+                        }
+                    }
+
+                    // 3) Camera orbit/pan/dolly + click-to-select, suppressed
+                    //    while the gizmo has the pointer. Driven from raw pointer
+                    //    state rather than the panel `response`: the gizmo's own
+                    //    interaction widget sits on top of the viewport and would
+                    //    otherwise swallow every drag/click while it's shown.
+                    let (down, clicked, scroll, ptr, origin, delta, shift) = ui.input(|i| {
+                        (
+                            i.pointer.primary_down(),
+                            i.pointer.primary_clicked(),
+                            i.smooth_scroll_delta.y,
+                            i.pointer.interact_pos(),
+                            i.pointer.press_origin(),
+                            i.pointer.delta(),
+                            i.modifiers.shift,
+                        )
+                    });
+                    if !gizmo_active {
+                        // Orbit/pan only for drags that began inside the preview.
+                        let drag_in_view = down && origin.is_some_and(|o| rect.contains(o));
+                        if drag_in_view && delta != egui::Vec2::ZERO {
                             let mut scene = self.scene.lock().unwrap();
-                            if ui.input(|i| i.modifiers.shift) {
+                            if shift {
                                 orbit::pan(&mut scene.camera, delta);
                             } else {
                                 orbit::orbit(&mut scene.camera, delta);
                             }
                             moved = true;
                         }
-                    }
-                    let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-                    if response.hovered() && scroll != 0.0 {
-                        orbit::dolly(&mut self.scene.lock().unwrap().camera, scroll);
-                        moved = true;
+                        if scroll != 0.0 && ptr.is_some_and(|p| rect.contains(p)) {
+                            orbit::dolly(&mut self.scene.lock().unwrap().camera, scroll);
+                            moved = true;
+                        }
+                        // A click in the preview selects the object under it; a
+                        // click on empty space clears the selection. Same
+                        // view/projection as the preview, so the pick matches
+                        // what's drawn (near/far don't affect the ray).
+                        if clicked && ptr.is_some_and(|p| vp.contains(p)) {
+                            let pos = ptr.unwrap();
+                            if rect.contains(pos) {
+                                let s = self.scene.lock().unwrap();
+                                let view = raster::camera_gl::view_matrix(&s.camera);
+                                let proj = cam_proj(&s);
+                                let ndc = glam::Vec2::new(
+                                    2.0 * (pos.x - rect.left()) / rect.width() - 1.0,
+                                    1.0 - 2.0 * (pos.y - rect.top()) / rect.height(),
+                                );
+                                let ray = raster::pick::screen_ray(view, proj, ndc);
+                                self.selected = raster::pick::pick(&s, &ray);
+                            } else {
+                                self.selected = None;
+                            }
+                            ui.ctx().request_repaint();
+                        }
                     }
                     if moved {
                         self.last_interact = now;
                     }
 
                     // Reduced-resolution preview while actively interacting;
-                    // snap back to full quality once motion has stopped.
-                    // These code paths are intentionally left in place (they
-                    // become inert in Edit since we no longer call invalidate).
+                    // snap back to full quality once motion has stopped. Inert in
+                    // Edit (no invalidate), but kept for the Render handoff.
                     let interacting = (now - self.last_interact) < PREVIEW_DEBOUNCE as f64;
                     let want_scale = if interacting { PREVIEW_SCALE } else { 1 };
                     let scale_changed = self.render.preview_scale() != want_scale;
@@ -324,38 +466,14 @@ impl eframe::App for ViewerApp {
                         self.render.set_preview_scale(want_scale);
                     }
                     if moved || scale_changed {
-                        // In Edit mode the GL view is instant; just request a
-                        // repaint rather than restarting the path trace.
+                        // The GL view is instant; just request a repaint rather
+                        // than restarting the path trace.
                         ui.ctx().request_repaint();
                     }
                     if interacting {
-                        // Wake after the debounce window so the full-res switch
-                        // fires even if the pointer then goes idle.
                         ui.ctx()
                             .request_repaint_after(Duration::from_secs_f32(PREVIEW_DEBOUNCE));
                     }
-
-                    // Paint the GL rasterised preview via an egui paint callback.
-                    // Letterbox to the output aspect (centred, unit zoom) so the
-                    // preview lines up with the path-traced image in Render mode.
-                    let scene = self.scene.clone();
-                    let renderer = self.gl_renderer.clone();
-                    let mut fit = egui::vec2(vp.width(), vp.width() / aspect);
-                    if fit.y > vp.height() {
-                        fit = egui::vec2(vp.height() * aspect, vp.height());
-                    }
-                    let rect = egui::Rect::from_center_size(vp.center(), fit);
-                    let cb = eframe::egui_glow::CallbackFn::new(move |_info, painter| {
-                        let scene = scene.lock().unwrap();
-                        renderer
-                            .lock()
-                            .unwrap()
-                            .paint(painter.gl(), &scene, (rect.width(), rect.height()));
-                    });
-                    ui.painter().add(egui::PaintCallback {
-                        rect,
-                        callback: std::sync::Arc::new(cb),
-                    });
                 }
             }
         });

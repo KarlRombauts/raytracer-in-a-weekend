@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -30,6 +30,10 @@ pub struct RenderTask {
     /// Resolution divisor: 1 = full quality, >1 = reduced preview while the
     /// user is interacting so passes complete fast enough to track the mouse.
     preview_scale: Arc<AtomicU32>,
+    /// While true the render thread idles instead of tracing — used in Edit
+    /// mode, where the GL preview is shown and a background path trace is just
+    /// wasted work.
+    paused: Arc<AtomicBool>,
 }
 
 impl RenderTask {
@@ -55,13 +59,20 @@ impl RenderTask {
         }));
         let generation = Arc::new(AtomicU64::new(0));
         let preview_scale = Arc::new(AtomicU32::new(1));
+        let paused = Arc::new(AtomicBool::new(false));
 
         let shared_bg = shared.clone();
         let generation_bg = generation.clone();
         let preview_scale_bg = preview_scale.clone();
+        let paused_bg = paused.clone();
         std::thread::spawn(move || {
             let mut last_gen = u64::MAX;
             loop {
+                // Idle while paused (Edit mode) — don't trace, don't busy-spin.
+                if paused_bg.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
                 // Wait until the scene changes (or render the very first time).
                 let current_gen = generation_bg.load(Ordering::Relaxed);
                 if current_gen == last_gen {
@@ -109,7 +120,11 @@ impl RenderTask {
                 // Keep adding passes until the target is reached or a newer edit
                 // lands. The check is AFTER publishing, so even a fast drag
                 // (which restarts every mouse move) still shows ≥1 sample.
-                let mut cancelled = generation_bg.load(Ordering::Relaxed) != last_gen;
+                let stop = |last: u64| {
+                    generation_bg.load(Ordering::Relaxed) != last
+                        || paused_bg.load(Ordering::Relaxed)
+                };
+                let mut cancelled = stop(last_gen);
                 while !cancelled && renderer.passes() < target {
                     renderer.add_pass(&camera, &world);
                     {
@@ -119,7 +134,7 @@ impl RenderTask {
                         s.elapsed = start.elapsed().as_secs_f64();
                     }
                     ctx.request_repaint();
-                    cancelled = generation_bg.load(Ordering::Relaxed) != last_gen;
+                    cancelled = stop(last_gen);
                 }
 
                 // Only the full-resolution image is worth saving to disk;
@@ -136,12 +151,24 @@ impl RenderTask {
             shared,
             generation,
             preview_scale,
+            paused,
         }
     }
 
     /// Signal that the scene changed: cancels the in-flight render and restarts.
     pub fn invalidate(&self) {
         self.generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Stop tracing (Edit mode). Any in-flight render bails on the next pass.
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::Relaxed);
+    }
+
+    /// Resume tracing and restart from the current scene (Render mode).
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::Relaxed);
+        self.invalidate();
     }
 
     /// Set the resolution divisor for subsequent renders (1 = full quality).
