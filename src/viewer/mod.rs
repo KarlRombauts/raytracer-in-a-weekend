@@ -46,6 +46,24 @@ fn encode_rgba_png(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     bytes
 }
 
+/// A small PNG preview (≤256px on the long edge, aspect preserved) of the given
+/// RGBA frame, for embedding in a `.scene` file. Empty if the buffer is empty.
+fn scene_thumbnail(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
+    if width == 0 || height == 0 || rgba.len() != (width * height * 4) as usize {
+        return Vec::new();
+    }
+    let img = image::RgbaImage::from_raw(width, height, rgba.to_vec())
+        .expect("rgba buffer matches dimensions");
+    // `thumbnail` preserves aspect within the 256x256 box.
+    let thumb = image::DynamicImage::ImageRgba8(img).thumbnail(256, 256);
+    let mut bytes = Vec::new();
+    thumb
+        .to_rgb8()
+        .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .expect("PNG encode");
+    bytes
+}
+
 /// Open a window and progressively render `scene`, refining one sample-per-pixel
 /// pass at a time. The side panel edits the scene live; each edit cancels the
 /// in-flight render and restarts. A Save image button lets the user explicitly
@@ -101,6 +119,10 @@ pub struct ViewerApp {
     /// All editor UI state (mode, selection, inspector tab, gizmo options,
     /// preview debounce clock) lives here.
     ui_state: state::UiState,
+    /// In-flight scene-file load (None when idle).
+    scene_picker: Option<crate::platform::ScenePicker>,
+    /// Transient status line for scene save/load (e.g. "Loaded scene").
+    scene_status: Option<String>,
 }
 
 impl ViewerApp {
@@ -124,7 +146,31 @@ impl ViewerApp {
             gl_renderer,
             gizmo: transform_gizmo_egui::Gizmo::default(),
             ui_state: state::UiState::default(),
+            scene_picker: None,
+            scene_status: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod thumb_tests {
+    use super::*;
+
+    #[test]
+    fn thumbnail_shrinks_to_max_edge_and_keeps_aspect() {
+        // 800x400 opaque buffer → thumbnail capped at 256 on the long edge.
+        let (w, h) = (800u32, 400u32);
+        let rgba = vec![128u8; (w * h * 4) as usize];
+        let png = scene_thumbnail(&rgba, w, h);
+        let img = image::load_from_memory(&png).expect("valid PNG");
+        assert!(img.width() <= 256 && img.height() <= 256, "{}x{}", img.width(), img.height());
+        assert_eq!(img.width(), 256); // long edge maps to 256
+        assert_eq!(img.height(), 128); // aspect preserved
+    }
+
+    #[test]
+    fn thumbnail_is_empty_for_empty_buffer() {
+        assert!(scene_thumbnail(&[], 0, 0).is_empty());
     }
 }
 
@@ -136,6 +182,32 @@ impl eframe::App for ViewerApp {
         // On wasm this advances the path trace one pass per frame (no render
         // thread in the browser); on native it is a no-op.
         self.render.pump();
+
+        // Apply a completed scene load (the picker resolves asynchronously on web).
+        if let Some(status) = self.scene_picker.as_ref().map(|p| p.poll()) {
+            match status {
+                crate::platform::PickStatus::Pending => {
+                    ui.ctx().request_repaint(); // keep polling until it resolves
+                }
+                crate::platform::PickStatus::Done(bytes) => {
+                    self.scene_picker = None;
+                    match crate::scene_file::decode(&bytes) {
+                        Ok(loaded) => {
+                            *self.scene.lock().unwrap() = loaded.scene;
+                            self.ui_state.selected = None;
+                            self.render.invalidate();
+                            self.scene_status = Some("Loaded scene".to_string());
+                        }
+                        Err(e) => self.scene_status = Some(format!("Load failed: {e}")),
+                    }
+                }
+                crate::platform::PickStatus::Cancelled => self.scene_picker = None,
+                crate::platform::PickStatus::Failed(e) => {
+                    self.scene_picker = None;
+                    self.scene_status = Some(format!("Load failed: {e}"));
+                }
+            }
+        }
 
         // Pull the latest frame; rebuild the texture only when a new pass landed.
         // Dims come from the frame so a resolution change resizes the texture.
@@ -471,7 +543,25 @@ impl eframe::App for ViewerApp {
                     self.render.invalidate();
                 }
                 panels::Action::Restart => self.render.invalidate(),
-                panels::Action::None | panels::Action::SaveScene => {}
+                panels::Action::SaveScene => {
+                    // Thumbnail from the currently displayed frame (gamma-corrected RGBA).
+                    let (rgba, w, h) = {
+                        let s = self.render.lock();
+                        (s.rgba.clone(), s.width, s.height)
+                    };
+                    let preview = scene_thumbnail(&rgba, w, h);
+                    let bytes = {
+                        let scene = self.scene.lock().unwrap();
+                        crate::scene_file::encode(&scene, None, &preview)
+                    };
+                    crate::platform::save_scene("scene.scene", &bytes);
+                    self.scene_status = Some("Saved scene".to_string());
+                }
+                panels::Action::LoadScene => {
+                    self.scene_picker = Some(crate::platform::pick_scene());
+                    self.scene_status = None;
+                }
+                panels::Action::None => {}
             }
         }
         if dirty {
@@ -486,6 +576,16 @@ impl eframe::App for ViewerApp {
                 Mode::Edit => self.render.pause(),
                 Mode::Render => self.render.resume(),
             }
+        }
+
+        if let Some(msg) = self.scene_status.clone() {
+            egui::Area::new(egui::Id::new("scene_status"))
+                .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.label(msg);
+                    });
+                });
         }
     }
 }

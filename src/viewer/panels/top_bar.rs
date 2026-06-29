@@ -57,14 +57,18 @@ pub fn show_top_bar(ui: &mut Ui, ui_state: &mut UiState, _scene: &Scene) -> Acti
             {
                 action = Action::SaveImage;
             }
-            // "Save scene" — dark pill, disabled.
-            let _ = widgets::pill_button(
-                ui,
-                &format!("{}  Save scene", icons::FLOPPY),
-                false,
-                false,
-            )
-            .on_hover_text("Scene save/load is coming soon");
+            // "Save scene" — dark pill.
+            if widgets::pill_button(ui, &format!("{}  Save scene", icons::FLOPPY), false, true)
+                .clicked()
+            {
+                action = Action::SaveScene;
+            }
+            // "Load scene" — dark pill.
+            if widgets::pill_button(ui, &format!("{}  Load scene", icons::FOLDER), false, true)
+                .clicked()
+            {
+                action = Action::LoadScene;
+            }
         });
     });
 
