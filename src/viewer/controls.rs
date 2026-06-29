@@ -718,9 +718,10 @@ pub(crate) fn transform_controls(ui: &mut egui::Ui, t: &mut Transform) -> bool {
 pub(crate) fn default_sphere(n: usize) -> ObjectSpec {
     ObjectSpec {
         name: format!("Sphere {}", n),
+        // Unit sphere (radius 1) centred at the origin.
         shape: Shape::Sphere {
-            center: Point3::new(278.0, 120.0, 278.0),
-            radius: 80.0,
+            center: Point3::new(0.0, 0.0, 0.0),
+            radius: 1.0,
         },
         material: MaterialSpec::Lambertian {
             albedo: TextureSpec::solid(Color::new(0.8, 0.3, 0.3)),
@@ -733,9 +734,10 @@ pub(crate) fn default_sphere(n: usize) -> ObjectSpec {
 pub(crate) fn default_box(n: usize) -> ObjectSpec {
     ObjectSpec {
         name: format!("Box {}", n),
+        // Unit cube (1×1×1) centred at the origin.
         shape: Shape::Box {
-            a: Point3::new(200.0, 0.0, 200.0),
-            b: Point3::new(360.0, 160.0, 360.0),
+            a: Point3::new(-0.5, -0.5, -0.5),
+            b: Point3::new(0.5, 0.5, 0.5),
         },
         material: MaterialSpec::Lambertian {
             albedo: TextureSpec::solid(Color::new(0.7, 0.7, 0.7)),
@@ -745,14 +747,14 @@ pub(crate) fn default_box(n: usize) -> ObjectSpec {
     }
 }
 
-/// A flat quad (floor-aligned, 200×200 units centered at scene origin).
+/// A flat unit quad (1×1, floor-aligned in XZ) centred at the origin.
 pub(crate) fn default_plane(n: usize) -> ObjectSpec {
     ObjectSpec {
         name: format!("Plane {}", n),
         shape: Shape::Quad {
-            q: Point3::new(178.0, 0.0, 178.0),
-            u: Vec3::new(200.0, 0.0, 0.0),
-            v: Vec3::new(0.0, 0.0, 200.0),
+            q: Point3::new(-0.5, 0.0, -0.5),
+            u: Vec3::new(1.0, 0.0, 0.0),
+            v: Vec3::new(0.0, 0.0, 1.0),
         },
         material: MaterialSpec::Lambertian {
             albedo: TextureSpec::solid(Color::new(0.7, 0.7, 0.7)),
