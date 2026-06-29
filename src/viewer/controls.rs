@@ -5,7 +5,7 @@ use std::ops::RangeInclusive;
 
 use eframe::egui;
 
-use super::icons;
+use super::{icons, widgets};
 use crate::camera::CameraConfig;
 use crate::color::Color;
 use crate::scene::{
@@ -290,7 +290,7 @@ fn shared_roughness(m: &MaterialSpec) -> f32 {
     }
 }
 
-fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
+pub(crate) fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
     let mut changed = false;
 
     // Natural, Blender-ish names for the shader types.
@@ -302,7 +302,7 @@ fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
         MaterialSpec::DiffuseLight { .. } => "Emission",
     };
 
-    changed |= prop_row(ui, "Surface", |ui| {
+    changed |= widgets::prop_row(ui, "Surface", |ui| {
         let mut c = false;
         egui::ComboBox::from_id_salt("surface")
             .selected_text(current)
@@ -367,19 +367,15 @@ fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
         MaterialSpec::Lambertian { albedo } => changed |= texture_controls(ui, albedo),
         MaterialSpec::Glossy { albedo, roughness } => {
             changed |= texture_controls(ui, albedo);
-            changed |= axis_row(
-                ui,
-                "Roughness",
-                roughness,
-                0.01,
-                "",
-                Some(3),
-                Some(0.0..=1.0),
-            );
+            changed |= widgets::prop_row(ui, "Roughness", |ui| {
+                widgets::axis_field(ui, widgets::Axis::None, roughness, 0.01, Some(3), "", Some(0.0..=1.0))
+            });
         }
         MaterialSpec::Metal { albedo, fuzz } => {
             changed |= color_prop(ui, "Color", albedo);
-            changed |= axis_row(ui, "Roughness", fuzz, 0.01, "", Some(3), Some(0.0..=1.0));
+            changed |= widgets::prop_row(ui, "Roughness", |ui| {
+                widgets::axis_field(ui, widgets::Axis::None, fuzz, 0.01, Some(3), "", Some(0.0..=1.0))
+            });
         }
         MaterialSpec::Dielectric {
             ior,
@@ -387,34 +383,24 @@ fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
             roughness,
         } => {
             changed |= color_prop(ui, "Color", tint);
-            changed |= axis_row(
-                ui,
-                "Roughness",
-                roughness,
-                0.01,
-                "",
-                Some(3),
-                Some(0.0..=1.0),
-            );
-            changed |= axis_row(ui, "IOR", ior, 0.01, "", Some(3), Some(1.0..=3.0));
+            changed |= widgets::prop_row(ui, "Roughness", |ui| {
+                widgets::axis_field(ui, widgets::Axis::None, roughness, 0.01, Some(3), "", Some(0.0..=1.0))
+            });
+            changed |= widgets::prop_row(ui, "IOR", |ui| {
+                widgets::axis_field(ui, widgets::Axis::None, ior, 0.01, Some(3), "", Some(1.0..=3.0))
+            });
         }
         MaterialSpec::DiffuseLight { emit } => {
             let e = emit.preview_color();
             let intensity = e.x.max(e.y).max(e.z).max(1e-4);
             let mut rgb = [e.x / intensity, e.y / intensity, e.z / intensity];
             let mut strength = intensity;
-            let col = prop_row(ui, "Color", |ui| {
+            let col = widgets::prop_row(ui, "Color", |ui| {
                 ui.color_edit_button_rgb(&mut rgb).changed()
             });
-            let str_changed = axis_row(
-                ui,
-                "Strength",
-                &mut strength,
-                0.1,
-                "",
-                Some(2),
-                Some(0.0..=10_000.0),
-            );
+            let str_changed = widgets::prop_row(ui, "Strength", |ui| {
+                widgets::axis_field(ui, widgets::Axis::None, &mut strength, 0.1, Some(2), "", Some(0.0..=10_000.0))
+            });
             if col || str_changed {
                 *emit = TextureSpec::solid(Color::new(
                     rgb[0] * strength,
@@ -430,7 +416,7 @@ fn material_controls(ui: &mut egui::Ui, m: &mut MaterialSpec) -> bool {
 
 /// Full texture editor: a type dropdown + per-type parameters. Used for the
 /// albedo of Diffuse/Glossy materials.
-fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
+pub(crate) fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
     let mut changed = false;
     let current = match t {
         TextureSpec::Solid { .. } => "Color",
@@ -439,7 +425,7 @@ fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
         TextureSpec::Image { .. } => "Image",
     };
 
-    changed |= prop_row(ui, "Texture", |ui| {
+    changed |= widgets::prop_row(ui, "Texture", |ui| {
         let mut c = false;
         egui::ComboBox::from_id_salt("texture_type")
             .selected_text(current)
@@ -493,14 +479,20 @@ fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
     match t {
         TextureSpec::Solid { color } => changed |= color_prop(ui, "Color", color),
         TextureSpec::Checker { scale, even, odd } => {
-            changed |= axis_row(ui, "Scale", scale, 0.01, "", Some(3), Some(0.01..=100.0));
+            changed |= widgets::prop_row(ui, "Scale", |ui| {
+                widgets::axis_field(ui, widgets::Axis::None, scale, 0.01, Some(3), "", Some(0.01..=100.0))
+            });
             changed |= cell_texture_controls(ui, "checker_even", even);
             changed |= cell_texture_controls(ui, "checker_odd", odd);
         }
         TextureSpec::Noise { scale, depth } => {
-            changed |= axis_row(ui, "Scale", scale, 0.01, "", Some(3), Some(0.01..=100.0));
+            changed |= widgets::prop_row(ui, "Scale", |ui| {
+                widgets::axis_field(ui, widgets::Axis::None, scale, 0.01, Some(3), "", Some(0.01..=100.0))
+            });
             let mut d = *depth as f32;
-            if axis_row(ui, "Detail", &mut d, 1.0, "", Some(0), Some(1.0..=10.0)) {
+            if widgets::prop_row(ui, "Detail", |ui| {
+                widgets::axis_field(ui, widgets::Axis::None, &mut d, 1.0, Some(0), "", Some(1.0..=10.0))
+            }) {
                 *depth = d.round().clamp(1.0, 10.0) as u32;
                 changed = true;
             }
@@ -514,7 +506,7 @@ fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
                 Projection::Spherical => "Spherical",
                 Projection::Cylindrical => "Cylindrical",
             };
-            prop_row(ui, "Projection", |ui| {
+            widgets::prop_row(ui, "Projection", |ui| {
                 egui::ComboBox::from_id_salt("texture_projection")
                     .selected_text(proj_label)
                     .width(ui.available_width())
@@ -535,38 +527,20 @@ fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
                         }
                     });
             });
-            changed |= axis_row(
-                ui,
-                "Tile",
-                &mut mapping.scale,
-                0.01,
-                "",
-                Some(3),
-                Some(0.01..=100.0),
-            );
+            changed |= widgets::prop_row(ui, "Tile", |ui| {
+                widgets::axis_field(ui, widgets::Axis::None, &mut mapping.scale, 0.01, Some(3), "", Some(0.01..=100.0))
+            });
             let mut offset_u = mapping.offset.0;
             let mut offset_v = mapping.offset.1;
-            if axis_row(
-                ui,
-                "Offset U",
-                &mut offset_u,
-                0.01,
-                "",
-                Some(3),
-                Some(-10.0..=10.0),
-            ) {
+            if widgets::prop_row(ui, "Offset U", |ui| {
+                widgets::axis_field(ui, widgets::Axis::None, &mut offset_u, 0.01, Some(3), "", Some(-10.0..=10.0))
+            }) {
                 mapping.offset.0 = offset_u;
                 changed = true;
             }
-            if axis_row(
-                ui,
-                "Offset V",
-                &mut offset_v,
-                0.01,
-                "",
-                Some(3),
-                Some(-10.0..=10.0),
-            ) {
+            if widgets::prop_row(ui, "Offset V", |ui| {
+                widgets::axis_field(ui, widgets::Axis::None, &mut offset_v, 0.01, Some(3), "", Some(-10.0..=10.0))
+            }) {
                 mapping.offset.1 = offset_v;
                 changed = true;
             }
@@ -750,50 +724,43 @@ fn axis_vec(
     c
 }
 
-fn shape_controls(ui: &mut egui::Ui, s: &mut Shape) -> bool {
+pub(crate) fn shape_controls(ui: &mut egui::Ui, s: &mut Shape) -> bool {
     let mut changed = false;
     match s {
         Shape::Sphere { center, radius } => {
-            changed |= axis_vec(ui, "Center", center, 1.0, "", None, None);
-            changed |= axis_row(ui, "Radius", radius, 0.5, "", None, Some(0.001..=1.0e6));
+            widgets::section_header(ui, "", "Center");
+            changed |= widgets::axis_vec(ui, center, 1.0, "", None, None);
+            changed |= widgets::prop_row(ui, "Radius", |ui| {
+                widgets::axis_field(ui, widgets::Axis::None, radius, 0.5, None, "", Some(0.001..=1.0e6))
+            });
         }
         Shape::Quad { q, u, v } => {
-            changed |= axis_vec(ui, "Q", q, 1.0, "", None, None);
-            changed |= axis_vec(ui, "U", u, 1.0, "", None, None);
-            changed |= axis_vec(ui, "V", v, 1.0, "", None, None);
+            widgets::section_header(ui, "", "Q");
+            changed |= widgets::axis_vec(ui, q, 1.0, "", None, None);
+            widgets::section_header(ui, "", "U");
+            changed |= widgets::axis_vec(ui, u, 1.0, "", None, None);
+            widgets::section_header(ui, "", "V");
+            changed |= widgets::axis_vec(ui, v, 1.0, "", None, None);
         }
         Shape::Box { a, b } => {
-            changed |= axis_vec(ui, "Min", a, 1.0, "", None, None);
-            changed |= axis_vec(ui, "Max", b, 1.0, "", None, None);
+            widgets::section_header(ui, "", "Min");
+            changed |= widgets::axis_vec(ui, a, 1.0, "", None, None);
+            widgets::section_header(ui, "", "Max");
+            changed |= widgets::axis_vec(ui, b, 1.0, "", None, None);
         }
         Shape::Mesh { .. } => {}
     }
     changed
 }
 
-fn transform_controls(ui: &mut egui::Ui, t: &mut Transform) -> bool {
+pub(crate) fn transform_controls(ui: &mut egui::Ui, t: &mut Transform) -> bool {
     let mut changed = false;
-    changed |= axis_vec(ui, "Location", &mut t.translate, 1.0, "", None, None);
-    ui.add_space(4.0);
-    changed |= axis_vec(
-        ui,
-        "Rotation",
-        &mut t.rotate,
-        1.0,
-        "°",
-        None,
-        Some(-360.0..=360.0),
-    );
-    ui.add_space(4.0);
-    changed |= axis_vec(
-        ui,
-        "Scale",
-        &mut t.scale,
-        0.01,
-        "",
-        Some(3),
-        Some(0.001..=1.0e4),
-    );
+    widgets::section_header(ui, "", "Location");
+    changed |= widgets::axis_vec(ui, &mut t.translate, 1.0, "", None, None);
+    widgets::section_header(ui, "", "Rotation");
+    changed |= widgets::axis_vec(ui, &mut t.rotate, 1.0, "°", None, Some(-360.0..=360.0));
+    widgets::section_header(ui, "", "Scale");
+    changed |= widgets::axis_vec(ui, &mut t.scale, 0.01, "", Some(3), Some(0.001..=1.0e4));
     changed
 }
 
