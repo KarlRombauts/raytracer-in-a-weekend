@@ -429,6 +429,7 @@ fn image_texture_card(
                         thumb_rect,
                         egui::CornerRadius::same(6),
                         egui::Stroke::new(1.0, theme::BORDER_FIELD),
+                        egui::StrokeKind::Inside,
                     );
                 } else {
                     // Placeholder: subtle checker + IMAGE icon
@@ -464,6 +465,7 @@ fn image_texture_card(
                         thumb_rect,
                         egui::CornerRadius::same(6),
                         egui::Stroke::new(1.0, theme::BORDER_FIELD),
+                        egui::StrokeKind::Inside,
                     );
                     painter.text(
                         thumb_rect.center(),
@@ -622,6 +624,7 @@ fn image_texture_card(
                         response.rect,
                         egui::CornerRadius::same(5),
                         egui::Stroke::new(stroke_w, border_color),
+                        egui::StrokeKind::Inside,
                     );
 
                     if response.clicked() {
