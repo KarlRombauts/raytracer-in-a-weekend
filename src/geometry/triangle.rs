@@ -15,12 +15,43 @@ pub struct Triangle {
     d: f32,
     w: Vec3,
     normal: Vec3,
+    /// Optional per-vertex (shading) normals for `(p1, p2, p3)`. When present,
+    /// the hit's shading normal is their barycentric interpolation, so a faceted
+    /// mesh shades as a smooth surface — essential for specular meshes (glass,
+    /// metal), where flat per-facet normals shatter the reflection/refraction.
+    vnormals: Option<[Vec3; 3]>,
     material: Arc<dyn Material>,
     bbox: AABB,
 }
 
 impl Triangle {
     pub fn from_points(p1: &Vec3, p2: &Vec3, p3: &Vec3, material: Arc<dyn Material>) -> Self {
+        Self::build(p1, p2, p3, None, material)
+    }
+
+    /// Like [`from_points`](Self::from_points) but with per-vertex shading normals
+    /// `(n1, n2, n3)` for smooth shading. The geometric (flat) normal still drives
+    /// the front-face test and ray geometry; the interpolated normal is used only
+    /// for shading, oriented to the geometric side to avoid light leaks.
+    pub fn from_points_smooth(
+        p1: &Vec3,
+        p2: &Vec3,
+        p3: &Vec3,
+        n1: &Vec3,
+        n2: &Vec3,
+        n3: &Vec3,
+        material: Arc<dyn Material>,
+    ) -> Self {
+        Self::build(p1, p2, p3, Some([*n1, *n2, *n3]), material)
+    }
+
+    fn build(
+        p1: &Vec3,
+        p2: &Vec3,
+        p3: &Vec3,
+        vnormals: Option<[Vec3; 3]>,
+        material: Arc<dyn Material>,
+    ) -> Self {
         let u = *p2 - *p1;
         let v = *p3 - *p1;
         let n = u.cross(&v);
@@ -36,6 +67,7 @@ impl Triangle {
             d,
             w: n / n.dot(&n),
             normal,
+            vnormals,
             material,
             bbox: AABB::EMPTY,
         };
@@ -58,6 +90,7 @@ impl Triangle {
             d,
             w: n / n.dot(&n),
             normal,
+            vnormals: None,
             material,
             bbox: AABB::EMPTY,
         };
@@ -110,7 +143,23 @@ impl Intersect for Triangle {
         }
 
         let mut hit_record = HitRecord::new(t, p, Vec3::ZERO, self.material.as_ref());
+        // Front-face and orientation come from the geometric (flat) normal.
         hit_record.set_face_normal(ray, &self.normal);
+        // Smooth shading: replace the shading normal with the barycentric blend of
+        // the vertex normals (weights 1-α-β, α, β for p1, p2, p3), oriented to the
+        // geometric side. Degenerate blends (opposing normals cancel) fall back to
+        // the flat normal already set above.
+        if let Some([n1, n2, n3]) = self.vnormals {
+            let interp = (1.0 - alpha - beta) * n1 + alpha * n2 + beta * n3;
+            if interp.length_squared() > 1e-12 {
+                let shading = interp.unit();
+                hit_record.normal = if shading.dot(&hit_record.normal) < 0.0 {
+                    -shading
+                } else {
+                    shading
+                };
+            }
+        }
         hit_record.u = alpha;
         hit_record.v = beta;
         Some(hit_record)
@@ -130,6 +179,61 @@ impl Intersect for Triangle {
 
     fn area(&self) -> f32 {
         0.5 * self.u.cross(&self.v).length()
+    }
+}
+
+#[cfg(test)]
+mod smooth_normal_tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::interval::Interval;
+    use crate::material::Lambertian;
+    use crate::ray::Ray;
+    use crate::vec3::Point3;
+    use std::sync::Arc;
+
+    // Triangle in the z=0 plane (flat normal +z), but with per-vertex normals that
+    // tilt outward — so the shading normal must vary across the face.
+    fn tri() -> Triangle {
+        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
+        Triangle::from_points_smooth(
+            &Point3::new(0.0, 0.0, 0.0),
+            &Point3::new(1.0, 0.0, 0.0),
+            &Point3::new(0.0, 1.0, 0.0),
+            &Vec3::new(-1.0, -1.0, 1.0).unit(), // n at p1
+            &Vec3::new(1.0, 0.0, 1.0).unit(),   // n at p2
+            &Vec3::new(0.0, 1.0, 1.0).unit(),   // n at p3
+            mat,
+        )
+    }
+
+    fn shade_at(x: f32, y: f32) -> Vec3 {
+        let t = tri();
+        // Fire straight down -z at (x, y); barycentric (α,β) = (x, y).
+        let ray = Ray::new(Point3::new(x, y, 1.0), Vec3::new(0.0, 0.0, -1.0));
+        t.intersect(&ray, &Interval::new(0.001, f32::INFINITY)).unwrap().normal
+    }
+
+    #[test]
+    fn shading_normal_interpolates_the_vertex_normals() {
+        // Near p2 (α≈1): shading normal ≈ n2.
+        let near_p2 = shade_at(0.96, 0.02);
+        let n2 = Vec3::new(1.0, 0.0, 1.0).unit();
+        assert!(near_p2.dot(&n2) > 0.99, "near p2 got {near_p2:?}");
+        // It is NOT the flat normal (+z) — smoothing actually happened.
+        assert!(near_p2.dot(&Vec3::new(0.0, 0.0, 1.0)) < 0.95, "still flat: {near_p2:?}");
+        // The result is unit length.
+        assert!((near_p2.length() - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn shading_normal_faces_the_ray() {
+        // From below (+z ray going up), front_face flips; the shading normal must
+        // still point toward the incoming ray (negative z component here).
+        let t = tri();
+        let ray = Ray::new(Point3::new(0.3, 0.3, -1.0), Vec3::new(0.0, 0.0, 1.0));
+        let hit = t.intersect(&ray, &Interval::new(0.001, f32::INFINITY)).unwrap();
+        assert!(hit.normal.dot(&ray.direction) < 0.0, "normal not facing ray: {:?}", hit.normal);
     }
 }
 

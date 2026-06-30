@@ -90,11 +90,15 @@ impl ObjData {
         let mut group = IntersectGroup::new();
 
         println!("Loaded {} faces", self.faces.len());
+        let vn = crate::geometry::vertex_normals(&self.verts, &self.faces);
         self.faces.into_iter().for_each(|[i, j, k]| {
-            let tri = Arc::new(Triangle::from_points(
+            let tri = Arc::new(Triangle::from_points_smooth(
                 &self.verts[i],
                 &self.verts[j],
                 &self.verts[k],
+                &vn[i],
+                &vn[j],
+                &vn[k],
                 material.clone(),
             )) as Arc<dyn Intersect>;
             group.add(tri);
@@ -107,11 +111,15 @@ impl ObjData {
         let mut triangles = Vec::new();
 
         println!("Loaded {} faces", self.faces.len());
+        let vn = crate::geometry::vertex_normals(&self.verts, &self.faces);
         self.faces.into_iter().for_each(|[i, j, k]| {
-            let tri = Triangle::from_points(
+            let tri = Triangle::from_points_smooth(
                 &self.verts[i],
                 &self.verts[j],
                 &self.verts[k],
+                &vn[i],
+                &vn[j],
+                &vn[k],
                 material.clone(),
             );
             triangles.push(tri);

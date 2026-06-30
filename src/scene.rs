@@ -253,10 +253,19 @@ impl MeshData {
             .iter()
             .map(|[i, j, k]| [*i as usize, *j as usize, *k as usize])
             .collect();
+        let vn = crate::geometry::vertex_normals(&self.verts, &faces_usize);
         let triangles: Vec<Triangle> = faces_usize
             .iter()
             .map(|[i, j, k]| {
-                Triangle::from_points(&self.verts[*i], &self.verts[*j], &self.verts[*k], material.clone())
+                Triangle::from_points_smooth(
+                    &self.verts[*i],
+                    &self.verts[*j],
+                    &self.verts[*k],
+                    &vn[*i],
+                    &vn[*j],
+                    &vn[*k],
+                    material.clone(),
+                )
             })
             .collect();
         let bvh = BVH::build(triangles);

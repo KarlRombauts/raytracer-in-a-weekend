@@ -6,6 +6,31 @@
 
 use crate::vec3::{Point3, Vec3};
 
+/// Per-vertex smooth normals: the area-weighted average of the face normals of
+/// every triangle touching each vertex (the un-normalized cross product is
+/// already proportional to triangle area, so summing them is the area weighting).
+/// Used both for the rasterized preview and for smooth shading in the path
+/// tracer, so a faceted mesh reads as a smooth surface. A vertex with no usable
+/// neighbours falls back to +Y.
+pub fn vertex_normals(verts: &[Vec3], faces: &[[usize; 3]]) -> Vec<Vec3> {
+    let mut acc = vec![Vec3::ZERO; verts.len()];
+    for &[i, j, k] in faces {
+        let fnv = (verts[j] - verts[i]).cross(&(verts[k] - verts[i]));
+        acc[i] = acc[i] + fnv;
+        acc[j] = acc[j] + fnv;
+        acc[k] = acc[k] + fnv;
+    }
+    acc.iter()
+        .map(|n| {
+            if n.length_squared() < 1e-12 {
+                Vec3::new(0.0, 1.0, 0.0)
+            } else {
+                n.unit()
+            }
+        })
+        .collect()
+}
+
 pub struct RenderMesh {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
@@ -46,25 +71,7 @@ impl RenderMesh {
     /// Like `from_triangles`, but with smooth (area-weighted, vertex-averaged)
     /// normals so curved organic meshes shade smoothly instead of faceted.
     pub fn from_triangles_smooth(verts: &[Vec3], faces: &[[usize; 3]]) -> RenderMesh {
-        // Accumulate area-weighted face normals (un-normalized cross products)
-        // into each shared vertex, then normalize.
-        let mut acc = vec![Vec3::ZERO; verts.len()];
-        for &[i, j, k] in faces {
-            let fnv = (verts[j] - verts[i]).cross(&(verts[k] - verts[i]));
-            acc[i] = acc[i] + fnv;
-            acc[j] = acc[j] + fnv;
-            acc[k] = acc[k] + fnv;
-        }
-        let vn: Vec<Vec3> = acc
-            .iter()
-            .map(|n| {
-                if n.length_squared() < 1e-12 {
-                    Vec3::new(0.0, 1.0, 0.0)
-                } else {
-                    n.unit()
-                }
-            })
-            .collect();
+        let vn = vertex_normals(verts, faces);
 
         let mut m = RenderMesh { positions: Vec::new(), normals: Vec::new() };
         for &[i, j, k] in faces {
