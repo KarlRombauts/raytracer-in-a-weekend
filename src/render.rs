@@ -32,6 +32,14 @@ impl Pixel {
     /// Fold one more sample in (Welford update for colour mean and luminance
     /// mean/variance).
     fn add(&mut self, sample: Color) {
+        // Defence in depth: a non-finite sample is sticky — it would turn `mean`
+        // (and the variance) into NaN forever, freezing the pixel black and
+        // blocking convergence. Drop it so the pixel keeps its good samples.
+        // Samples are normally sanitized upstream (`clamp_luminance`); this guards
+        // any path that isn't.
+        if !sample.x.is_finite() || !sample.y.is_finite() || !sample.z.is_finite() {
+            return;
+        }
         self.count += 1;
         let n = self.count as f32;
         self.mean += (sample - self.mean) / n;
@@ -57,7 +65,20 @@ impl Pixel {
     /// Converged once the 95% confidence half-width of the mean luminance drops
     /// below `rel * mean_luminance + floor`. Needs at least `warmup` samples so
     /// the variance estimate is trustworthy.
+    ///
+    /// Dark pixels get a much longer warmup ([`DARK_WARMUP`]). Premature
+    /// convergence to the wrong value is only *visible* when the wrong value is
+    /// near-black (a black speck on lit geometry): a heavy-tailed pixel whose rare
+    /// bright contributions all miss the warmup window measures a tiny variance at
+    /// a tiny mean and freezes at the background level. Bright pixels can't hide a
+    /// black speck, so they keep the short warmup and stay cheap — the extra
+    /// samples are spent only where the failure actually shows.
     fn converged(&self, rel: f32, floor: f32, warmup: u32) -> bool {
+        let warmup = if self.lum_mean < DARK_LEVEL {
+            warmup.max(DARK_WARMUP)
+        } else {
+            warmup
+        };
         if self.count < warmup {
             return false;
         }
@@ -81,7 +102,7 @@ pub struct ProgressiveRenderer {
 }
 
 /// Convergence defaults: stop a pixel when its 95% confidence half-width is
-/// within 5% of its mean luminance, after at least 16 samples.
+/// within 5% of its mean luminance, after at least 64 samples.
 ///
 /// The threshold is purely *relative* (floor = 0). An absolute floor is
 /// tempting for near-black pixels, but any floor > 0 lets a pixel whose samples
@@ -90,9 +111,28 @@ pub struct ProgressiveRenderer {
 /// window, measure ~0 variance, and freeze to black (salt-and-pepper speckle).
 /// With floor = 0 such a pixel keeps sampling until it actually sees structure
 /// (or the caller's global sample target caps it), so it can't falsely converge.
+///
+/// floor = 0 only protects *near-black* pixels (where rel·mean → 0 too). A
+/// *mid-tone* pixel that misses every spike in its warmup window still measures
+/// ~0 variance and freezes at the wrong (dim) value — speckle on diffuse
+/// surfaces like the checker floor. The only defence is a warmup long enough to
+/// usually catch the tail: a spike of probability q is missed in n samples with
+/// probability (1-q)ⁿ, so n = 64 cuts a q≈0.1 miss from ~18% (at n = 16) to
+/// ~0.1%, at the cost of sampling genuinely-flat regions 64× before they retire
+/// (cheap in absolute terms; truly-noisy pixels run into the thousands anyway).
 const DEFAULT_REL: f32 = 0.05;
 const DEFAULT_FLOOR: f32 = 0.0;
-const DEFAULT_WARMUP: u32 = 16;
+const DEFAULT_WARMUP: u32 = 64;
+
+/// A pixel dimmer than this (linear luminance) is treated as "dark": near enough
+/// to black that a premature freeze would read as a black speck. Such pixels must
+/// reach [`DARK_WARMUP`] samples before they may converge, so a rare bright
+/// contribution has time to appear. Above it, the normal [`DEFAULT_WARMUP`]
+/// applies — a bright pixel has already integrated real light and can't hide a
+/// speck. The threshold is a small absolute value: the failure lives in the
+/// near-black regime (dark scenes / shadowed points against a dim background).
+const DARK_LEVEL: f32 = 0.02;
+const DARK_WARMUP: u32 = 256;
 
 impl ProgressiveRenderer {
     pub fn new(width: u32, height: u32) -> Self {
@@ -175,6 +215,26 @@ mod adaptive_tests {
     // grey(v) has luminance exactly v (Rec.709 weights sum to 1).
     fn gray(v: f32) -> Color {
         Color::new(v, v, v)
+    }
+
+    #[test]
+    fn a_non_finite_sample_cannot_poison_the_pixel() {
+        // Defence in depth: even if a NaN/Inf path slips past per-sample
+        // sanitization, it must not corrupt the running mean. A poisoned mean
+        // renders black and the pixel can never converge or recover.
+        let mut p = Pixel::new();
+        for _ in 0..8 {
+            p.add(gray(0.5));
+        }
+        p.add(Color::new(f32::NAN, 1.0, 1.0));
+        p.add(Color::new(f32::INFINITY, 0.0, 0.0));
+        for _ in 0..8 {
+            p.add(gray(0.5));
+        }
+        let m = p.mean();
+        assert!(m.x.is_finite() && m.y.is_finite() && m.z.is_finite(), "mean poisoned: {m:?}");
+        assert!((luminance(m) - 0.5).abs() < 1e-4, "mean drifted: {m:?}");
+        assert!(p.converged(0.05, 0.0, 8), "poison should not have blocked convergence");
     }
 
     #[test]
@@ -263,6 +323,87 @@ mod adaptive_tests {
     }
 
     #[test]
+    fn does_not_freeze_dark_heavytail_pixels_at_the_background_level() {
+        use rand::rngs::SmallRng;
+        use rand::{Rng, SeedableRng};
+        // A genuinely-bright pixel whose light arrives as a rare spike (e.g. a
+        // shadowed diffuse point in a dark scene that only brightens when an
+        // indirect bounce reaches a light). Its true mean is well above black, but
+        // an unlucky warmup window sees only the dim background and — with too few
+        // samples — measures a tiny variance and freezes at the background level.
+        // That is the salt-and-pepper *black* speck. A dark pixel must take many
+        // more samples before it's allowed to converge.
+        let q = 0.02_f32;
+        let v = 5.0_f32;
+        let b = 0.002_f32; // dim background level
+        let true_mean = q * v + (1.0 - q) * b; // ≈ 0.1
+        let trials = 2000;
+        let mut frozen_dark = 0;
+        for t in 0..trials {
+            let mut rng = SmallRng::seed_from_u64(t ^ 0x5151);
+            let mut p = Pixel::new();
+            loop {
+                // The dim samples vary only slightly (a near-constant background
+                // contribution), so an all-miss window measures a tiny variance —
+                // exactly the condition that lets a heavy-tailed pixel converge
+                // early to the wrong (dark) value.
+                let base = b * (0.97 + 0.06 * rng.random::<f32>());
+                let s = if rng.random::<f32>() < q { gray(v) } else { gray(base) };
+                p.add(s);
+                if p.converged(DEFAULT_REL, DEFAULT_FLOOR, DEFAULT_WARMUP) || p.count >= 8192 {
+                    break;
+                }
+            }
+            if luminance(p.mean()) < 0.5 * true_mean {
+                frozen_dark += 1;
+            }
+        }
+        eprintln!("frozen at background: {frozen_dark}/{trials}");
+        assert!(
+            frozen_dark < trials / 100,
+            "too many dark heavy-tailed pixels froze at the background level (black specks): {frozen_dark}/{trials}"
+        );
+    }
+
+    #[test]
+    fn does_not_freeze_midtone_spiky_pixels_to_the_wrong_value() {
+        use rand::rngs::SmallRng;
+        use rand::{Rng, SeedableRng};
+        // Model a mid-tone diffuse pixel (e.g. the checker floor): each sample is
+        // a bright spike v with probability q, else a dim base b. The mean is
+        // mid-tone, but the per-sample distribution is heavy-tailed. A pixel that
+        // happens to miss every spike in its warmup window measures ~0 variance
+        // and — unlike a near-black pixel, which floor=0 protects — would freeze
+        // at the dim base, producing salt-and-pepper speckle. The warmup must be
+        // long enough that this is rare.
+        let q = 0.1_f32;
+        let v = 2.0_f32;
+        let b = 0.2_f32;
+        let true_mean = q * v + (1.0 - q) * b; // 0.38
+        let trials = 2000;
+        let mut bad = 0;
+        for t in 0..trials {
+            let mut rng = SmallRng::seed_from_u64(t);
+            let mut p = Pixel::new();
+            loop {
+                let s = if rng.random::<f32>() < q { gray(v) } else { gray(b) };
+                p.add(s);
+                if p.converged(DEFAULT_REL, DEFAULT_FLOOR, DEFAULT_WARMUP) || p.count >= 4096 {
+                    break;
+                }
+            }
+            if (luminance(p.mean()) - true_mean).abs() / true_mean > 0.15 {
+                bad += 1;
+            }
+        }
+        eprintln!("midtone froze badly: {bad}/{trials}");
+        assert!(
+            bad < trials / 100,
+            "too many mid-tone spiky pixels froze far from their true value (speckle): {bad}/{trials}"
+        );
+    }
+
+    #[test]
     fn flat_background_converges_early_to_its_colour() {
         use crate::camera::CameraConfig;
         // An empty world: every ray misses and returns the (constant) background,
@@ -279,13 +420,18 @@ mod adaptive_tests {
         let mut r = ProgressiveRenderer::new(8, 8);
 
         let mut passes = 0;
-        while passes < 64 && !r.all_converged() {
+        while passes < 256 && !r.all_converged() {
             r.add_pass(&camera, &world);
             passes += 1;
         }
 
         assert!(r.all_converged(), "flat background should converge");
-        assert!(r.passes() < 32, "should stop early, ran {} passes", r.passes());
+        // A zero-variance signal retires as soon as it clears the warmup window.
+        assert!(
+            r.passes() <= DEFAULT_WARMUP + 4,
+            "should stop right after warmup, ran {} passes",
+            r.passes()
+        );
 
         // Each converged pixel's estimate equals the background (after gamma).
         let rgba = r.to_rgba();
