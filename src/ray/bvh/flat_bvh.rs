@@ -384,6 +384,46 @@ mod sample_tests {
     use std::sync::Arc;
 
     #[test]
+    fn bvh_hits_interior_of_a_flat_axis_aligned_face() {
+        use crate::interval::Interval;
+        use crate::ray::Ray;
+        use crate::vec3::Vec3;
+        // A tessellated, axis-aligned, perfectly flat face (the z = 0 plane),
+        // exactly like one side of an imported cube. Every triangle here is
+        // coplanar, so interior BVH nodes get a zero-thickness bounding box.
+        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
+        let n = 16; // grid resolution
+        let mut tris = Vec::new();
+        for gy in 0..n {
+            for gx in 0..n {
+                let (x0, y0) = (gx as f32, gy as f32);
+                let (x1, y1) = (x0 + 1.0, y0 + 1.0);
+                let p = |x: f32, y: f32| Point3::new(x, y, 0.0);
+                tris.push(Triangle::from_points(&p(x0, y0), &p(x1, y0), &p(x1, y1), mat.clone()));
+                tris.push(Triangle::from_points(&p(x0, y0), &p(x1, y1), &p(x0, y1), mat.clone()));
+            }
+        }
+        let bvh = BVH::build(tris);
+
+        // Fire a ray straight down (-z) into every cell. Sample off the cell
+        // diagonal (0.3, 0.6) so each ray lands in the strict interior of one
+        // triangle — this isolates the flat-AABB cull (the real holes bug) from
+        // the measure-zero "ray exactly on a shared edge" case.
+        let ray_t = Interval::new(0.001, f32::INFINITY);
+        let mut misses = 0;
+        for gy in 0..n {
+            for gx in 0..n {
+                let origin = Point3::new(gx as f32 + 0.3, gy as f32 + 0.6, 1.0);
+                let ray = Ray::new(origin, Vec3::new(0.0, 0.0, -1.0));
+                if bvh.intersect(&ray, &ray_t).is_none() {
+                    misses += 1;
+                }
+            }
+        }
+        assert_eq!(misses, 0, "{misses} interior rays missed a flat face (holes)");
+    }
+
+    #[test]
     fn bvh_samples_point_on_a_primitive() {
         let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
         let t1 = Triangle::from_points(

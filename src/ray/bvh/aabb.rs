@@ -48,11 +48,19 @@ impl AABB {
     }
 
     pub fn from_points(a: Point3, b: Point3) -> Self {
-        AABB {
+        let mut aabb = AABB {
             x: Interval::new(a.x.min(b.x), a.x.max(b.x)),
             z: Interval::new(a.z.min(b.z), a.z.max(b.z)),
             y: Interval::new(a.y.min(b.y), a.y.max(b.y)),
-        }
+        };
+        // Pad so an axis-aligned, perfectly flat primitive (e.g. a cube-face
+        // triangle, or an axis-aligned quad) gets a non-zero thickness on every
+        // axis. Without this, the slab test in `intersect` collapses to
+        // `tmin == tmax` on the flat axis and rejects every ray through the box,
+        // so a BVH whose interior nodes are all coplanar drops those primitives —
+        // the missing-face-centre holes on imported cubes/cylinders.
+        aabb.pad_to_minimums();
+        aabb
     }
 
     pub fn from_boxes(a: &AABB, b: &AABB) -> Self {
@@ -60,7 +68,11 @@ impl AABB {
         let y = Interval::enclosing(a.y, b.y);
         let z = Interval::enclosing(a.z, b.z);
 
-        AABB { x, y, z }
+        // Pad here too: a BVH node enclosing only coplanar children is itself
+        // flat, and is the node that actually gets culled during traversal.
+        let mut aabb = AABB { x, y, z };
+        aabb.pad_to_minimums();
+        aabb
     }
 
     pub fn center(&self) -> Vec3 {
