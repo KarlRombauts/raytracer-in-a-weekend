@@ -1,4 +1,4 @@
-use eframe::egui::Ui;
+use eframe::egui::{self, Ui};
 use crate::camera::CameraConfig;
 use super::super::super::{icons, widgets};
 use widgets::Axis;
@@ -26,9 +26,36 @@ pub fn camera_tab(ui: &mut Ui, cam: &mut CameraConfig) -> bool {
     });
 
     widgets::section_header(ui, icons::PALETTE, "World");
-    c |= widgets::prop_row(ui, "Sky", |ui| {
-        // `background` is the flat colour returned when a ray misses every
-        // object (the sky). egui edits it as linear RGB in 0..1.
+
+    // HDR environment map. `Some(name)` looks up `assets/hdrs/<name>.hdr` and
+    // uses it for the sky (background + reflections + image-based lighting);
+    // `None` falls back to the flat colour below.
+    c |= widgets::prop_row(ui, "Sky Map", |ui| {
+        let skies = crate::texture::env_map::available_skies();
+        let mut changed = false;
+        egui::ComboBox::from_id_salt("sky_map")
+            .selected_text(cam.sky.clone().unwrap_or_else(|| "Solid colour".to_string()))
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(cam.sky.is_none(), "Solid colour").clicked()
+                    && cam.sky.is_some()
+                {
+                    cam.sky = None;
+                    changed = true;
+                }
+                for s in &skies {
+                    let selected = cam.sky.as_deref() == Some(s.as_str());
+                    if ui.selectable_label(selected, s).clicked() && !selected {
+                        cam.sky = Some(s.clone());
+                        changed = true;
+                    }
+                }
+            });
+        changed
+    });
+
+    // Flat sky colour — used when no HDR map is selected. Edited as linear RGB.
+    c |= widgets::prop_row(ui, "Sky Colour", |ui| {
         let mut rgb = [cam.background.x, cam.background.y, cam.background.z];
         if ui.color_edit_button_rgb(&mut rgb).changed() {
             cam.background = crate::color::Color::new(rgb[0], rgb[1], rgb[2]);

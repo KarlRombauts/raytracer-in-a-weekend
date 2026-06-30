@@ -105,6 +105,30 @@ pub fn load_cached(_name: &str) -> Option<Arc<EnvMap>> {
     None
 }
 
+/// Names (file stems) of the bundled HDR skies in `assets/hdrs/`, sorted — for
+/// populating the sky picker. Empty on wasm (no filesystem).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn available_skies() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir("assets/hdrs")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            (p.extension().and_then(|s| s.to_str()) == Some("hdr"))
+                .then(|| p.file_stem().and_then(|s| s.to_str()).map(str::to_string))
+                .flatten()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn available_skies() -> Vec<String> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
