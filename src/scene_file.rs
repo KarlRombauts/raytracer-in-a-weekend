@@ -42,6 +42,17 @@ impl std::fmt::Display for SceneFileError {
     }
 }
 
+/// Trailing extension appended after the core `SceneFile`. Carries fields that
+/// can't live in the core without breaking postcard's positional layout — namely
+/// `CameraConfig.sky`, which is `serde(skip)` so the core blob stays byte-for-byte
+/// identical to v1. Readers that predate the extension stop after the core and
+/// ignore these bytes (forward-compatible); readers that predate a future field
+/// here see `Option::None` for it (so append, never reorder).
+#[derive(Serialize, Deserialize, Default)]
+struct SceneExt {
+    sky: Option<String>,
+}
+
 /// Encode a scene (with optional name + preview PNG bytes) into `.scene` bytes.
 pub fn encode(scene: &Scene, name: Option<&str>, preview: &[u8]) -> Vec<u8> {
     let file = SceneFile {
@@ -50,7 +61,12 @@ pub fn encode(scene: &Scene, name: Option<&str>, preview: &[u8]) -> Vec<u8> {
         scene: scene.clone(),
         preview: preview.to_vec(),
     };
-    let raw = postcard::to_allocvec(&file).expect("postcard encode");
+    // Core blob (unchanged layout) followed by the extension. Both are plain
+    // postcard; decode splits them with `take_from_bytes`.
+    let mut raw = postcard::to_allocvec(&file).expect("postcard encode");
+    let ext = SceneExt { sky: scene.camera.sky.clone() };
+    raw.extend_from_slice(&postcard::to_allocvec(&ext).expect("postcard encode ext"));
+
     let compressed = lz4_flex::compress_prepend_size(&raw);
     let mut out = Vec::with_capacity(MAGIC.len() + compressed.len());
     out.extend_from_slice(MAGIC);
@@ -65,9 +81,17 @@ pub fn decode(bytes: &[u8]) -> Result<LoadedScene, SceneFileError> {
     }
     let raw = lz4_flex::decompress_size_prepended(&bytes[MAGIC.len()..])
         .map_err(|_| SceneFileError::Decompress)?;
-    let file: SceneFile = postcard::from_bytes(&raw).map_err(|_| SceneFileError::Decode)?;
+    // Read the core, then the trailing extension if this file has one (older
+    // files end right after the core, so `rest` is empty and the sky stays None).
+    let (mut file, rest): (SceneFile, &[u8]) =
+        postcard::take_from_bytes(&raw).map_err(|_| SceneFileError::Decode)?;
     if file.version != VERSION {
         return Err(SceneFileError::UnsupportedVersion(file.version));
+    }
+    if !rest.is_empty() {
+        if let Ok(ext) = postcard::from_bytes::<SceneExt>(rest) {
+            file.scene.camera.sky = ext.sky;
+        }
     }
     Ok(LoadedScene { scene: file.scene, name: file.name, preview: file.preview })
 }
@@ -98,6 +122,39 @@ mod tests {
         let mut bytes = encode(&empty_scene(), None, &[]);
         bytes[0] = b'X';
         assert!(matches!(decode(&bytes), Err(SceneFileError::BadMagic)));
+    }
+
+    #[test]
+    fn sky_selection_round_trips() {
+        let mut scene = empty_scene();
+        scene.camera.sky = Some("docklands_02_2k".to_string());
+        let bytes = encode(&scene, None, &[]);
+        let loaded = decode(&bytes).expect("decode");
+        assert_eq!(loaded.scene.camera.sky.as_deref(), Some("docklands_02_2k"));
+        // None also round-trips.
+        let mut s2 = empty_scene();
+        s2.camera.sky = None;
+        assert_eq!(decode(&encode(&s2, None, &[])).unwrap().scene.camera.sky, None);
+    }
+
+    #[test]
+    fn old_files_without_the_extension_still_load() {
+        // Simulate a pre-sky file: just the core blob, no trailing extension.
+        let file = SceneFile {
+            version: VERSION,
+            name: Some("legacy".into()),
+            scene: empty_scene(),
+            preview: vec![9, 9, 9],
+        };
+        let raw = postcard::to_allocvec(&file).unwrap(); // core only — no SceneExt
+        let compressed = lz4_flex::compress_prepend_size(&raw);
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend_from_slice(&compressed);
+
+        let loaded = decode(&bytes).expect("legacy file must still decode");
+        assert_eq!(loaded.name.as_deref(), Some("legacy"));
+        assert_eq!(loaded.preview, vec![9, 9, 9]);
+        assert_eq!(loaded.scene.camera.sky, None, "no extension -> no sky");
     }
 
     #[test]
