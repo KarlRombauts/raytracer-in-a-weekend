@@ -5,6 +5,7 @@ pub mod glossy;
 pub mod lambertian;
 pub mod material;
 pub mod metal;
+pub mod microfacet;
 
 pub use blank::Blank;
 pub use dielectric::Dielectric;
