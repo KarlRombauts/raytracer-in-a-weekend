@@ -40,6 +40,14 @@ pub struct CameraConfig {
     #[builder(default = Color::new(0.7, 0.8, 1.))]
     pub background: Color,
 
+    /// Name of a bundled HDR sky (`assets/hdrs/<name>.hdr`) used in place of the
+    /// flat `background`; `None` keeps the solid colour. `serde(skip)` for now so
+    /// adding it doesn't change the `.scene` wire format (old scenes still load) —
+    /// it's a runtime selection until a versioned scene format persists it.
+    #[builder(default)]
+    #[serde(skip)]
+    pub sky: Option<String>,
+
     /// Firefly suppression: per-sample luminance cap. `f32::INFINITY` disables it.
     #[builder(default = f32::INFINITY)]
     pub firefly_clamp: f32,

@@ -1,4 +1,5 @@
 pub mod checker_texture;
+pub mod env_map;
 pub mod image_loader;
 pub mod image_texture;
 pub mod mapped_texture;
@@ -8,6 +9,7 @@ pub mod solid_color;
 pub mod texture;
 
 pub use checker_texture::*;
+pub use env_map::*;
 pub use image_loader::*;
 pub use image_texture::*;
 pub use mapped_texture::*;

@@ -23,6 +23,8 @@ pub struct Camera {
     max_depth: u32,
     dof_angle: f32,
     background: Color,
+    /// HDR environment map sampled on ray miss; falls back to `background`.
+    env: Option<std::sync::Arc<crate::texture::env_map::EnvMap>>,
     firefly_clamp: f32,
 
     // derived:
@@ -80,6 +82,10 @@ impl From<CameraConfig> for Camera {
             max_depth: config.max_depth,
             dof_angle: config.dof_angle,
             background: config.background,
+            env: config
+                .sky
+                .as_deref()
+                .and_then(crate::texture::env_map::load_cached),
             firefly_clamp: config.firefly_clamp,
 
             pixel_samples_scale,
@@ -283,6 +289,15 @@ impl Camera {
         self.basis_u
     }
 
+    /// Radiance of the sky along `dir` (a ray that hit nothing): the HDR
+    /// environment map if one is set, otherwise the flat background colour.
+    fn sky_radiance(&self, dir: &Vec3) -> Color {
+        match &self.env {
+            Some(env) => env.sample(dir),
+            None => self.background,
+        }
+    }
+
     fn ray_color(
         &self,
         ray: &Ray,
@@ -303,7 +318,7 @@ impl Camera {
 
         for depth in 0..self.max_depth {
             let Some(hit) = world.intersect(&current, &interval) else {
-                color += throughput * self.background;
+                color += throughput * self.sky_radiance(&current.direction);
                 break;
             };
 
