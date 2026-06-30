@@ -102,14 +102,27 @@ impl From<CameraConfig> for Camera {
 /// against a technique with PDF `b`: `a² / (a² + b²)`. Returns 0 (not NaN) when
 /// both PDFs are zero.
 fn power_heuristic(a: f32, b: f32) -> f32 {
-    let a2 = a * a;
-    let b2 = b * b;
-    let denom = a2 + b2;
-    if denom > 0.0 {
-        a2 / denom
-    } else {
-        0.0
+    // Normalize by the larger input before squaring. Squaring raw pdfs overflows
+    // f32 above ~1.8e19 (and Inf² = Inf), so `a²/(a²+b²)` collapses to Inf/Inf =
+    // NaN for the large/infinite pdfs that light sampling legitimately produces
+    // (grazing angles, a tiny distant sphere light). A NaN weight propagates into
+    // the pixel's running mean and freezes it black. Dividing through by the max
+    // keeps both terms in [0, 1] so the ratio is always finite, while giving the
+    // identical result for ordinary magnitudes.
+    let m = a.abs().max(b.abs());
+    if m == 0.0 || !m.is_finite() {
+        // Both zero -> no info (0). Exactly one infinite -> it dominates fully.
+        return if a.is_infinite() && !b.is_infinite() {
+            1.0
+        } else if b.is_infinite() && !a.is_infinite() {
+            0.0
+        } else {
+            0.0 // both zero, or both infinite (indeterminate) -> no weight
+        };
     }
+    let a2 = (a / m) * (a / m);
+    let b2 = (b / m) * (b / m);
+    a2 / (a2 + b2)
 }
 
 /// Path depth at which Russian roulette begins. Early bounces carry most of the
@@ -305,11 +318,15 @@ impl Camera {
                 }
             }
 
-            let Some((scattered, atten)) = hit.material.scatter(&current, &hit, rng) else {
+            let Some((scattered, atten, specular)) = hit.material.scatter_lobe(&current, &hit, rng)
+            else {
                 break; // pure light / absorber
             };
 
-            if hit.material.is_specular() {
+            // `specular` is the *sampled lobe*, not the material: a Glossy hit is
+            // specular when it took its coat reflection and diffuse when it took
+            // its base, so the base gets next-event estimation like a Lambertian.
+            if specular {
                 throughput = throughput * atten;
                 current = scattered;
                 specular_bounce = true;
@@ -580,6 +597,24 @@ mod power_heuristic_tests {
         let w = power_heuristic(0.0, 0.0);
         assert_eq!(w, 0.0);
         assert!(!w.is_nan());
+    }
+
+    #[test]
+    fn huge_or_infinite_pdf_does_not_produce_nan() {
+        // Squaring overflows f32 above ~1.8e19, and a light's solid-angle pdf can
+        // legitimately blow up (grazing angles, a tiny distant sphere light ->
+        // literal Inf). A NaN weight here poisons the pixel's running mean and
+        // freezes it black (salt-and-pepper black specks). The dominant pdf must
+        // still win cleanly.
+        for &(a, b) in &[(1e30_f32, 1.0), (f32::INFINITY, 1.0), (1e25, 1e24)] {
+            let w = power_heuristic(a, b);
+            assert!(!w.is_nan(), "power_heuristic({a}, {b}) = NaN");
+            assert!((0.0..=1.0).contains(&w), "out of range: {w}");
+        }
+        // a hugely dominant over b -> weight ~1.
+        assert!(power_heuristic(f32::INFINITY, 1.0) > 0.99);
+        // b hugely dominant over a -> weight ~0.
+        assert!(power_heuristic(1.0, f32::INFINITY) < 0.01);
     }
 }
 
