@@ -14,6 +14,19 @@ pub enum IntegratorKind {
     Naive,
 }
 
+impl IntegratorKind {
+    /// Every variant, for populating the editor's integrator picker.
+    pub const ALL: [IntegratorKind; 2] = [IntegratorKind::Mis, IntegratorKind::Naive];
+
+    /// Human-readable label for the picker.
+    pub fn label(self) -> &'static str {
+        match self {
+            IntegratorKind::Mis => "MIS (low noise)",
+            IntegratorKind::Naive => "Naive",
+        }
+    }
+}
+
 #[derive(TypedBuilder, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CameraConfig {
     #[builder(default = 16.0 / 9.0)]

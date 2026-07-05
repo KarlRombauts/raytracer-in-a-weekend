@@ -33,6 +33,19 @@ pub fn output_tab(ui: &mut Ui, cam: &mut CameraConfig) -> bool {
     c |= widgets::prop_row(ui, "Max bounces", |ui| {
         widgets::int_field(ui, &mut cam.max_depth, Some(1..=1_000))
     });
+    c |= widgets::prop_row(ui, "Integrator", |ui| {
+        let mut changed = false;
+        egui::ComboBox::from_id_salt("integrator")
+            .selected_text(cam.integrator.label())
+            .show_ui(ui, |ui| {
+                for kind in crate::camera::config::IntegratorKind::ALL {
+                    changed |= ui
+                        .selectable_value(&mut cam.integrator, kind, kind.label())
+                        .changed();
+                }
+            });
+        changed
+    });
 
     widgets::prop_row(ui, "Format", |ui| {
         ui.label(egui::RichText::new("PNG · 16-bit").color(theme::TEXT));
