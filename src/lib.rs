@@ -30,6 +30,78 @@ pub fn gen_thumbnails() -> std::io::Result<()> {
     viewer::samples::gen_thumbnails()
 }
 
+/// Headless render: load a `.scene`, apply CLI overrides (samples / bounces /
+/// width), render to a PNG file with the chosen integrator. No window. `width`
+/// sets the image width and lets the height follow from the scene's aspect ratio.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_render_cli(
+    scene_path: &std::path::Path,
+    out_path: &std::path::Path,
+    samples: Option<u32>,
+    bounces: Option<u32>,
+    width: Option<u32>,
+    integrator: crate::camera::config::IntegratorKind,
+) -> std::io::Result<()> {
+    let bytes = std::fs::read(scene_path)?;
+    let mut scene = scene_file::decode(&bytes)
+        .unwrap_or_else(|e| panic!("could not load {}: {e}", scene_path.display()))
+        .scene;
+
+    if let Some(s) = samples {
+        scene.camera.samples = s;
+    }
+    if let Some(b) = bounces {
+        scene.camera.max_depth = b;
+    }
+    if let Some(w) = width {
+        scene.camera.image_width = w.max(1);
+    }
+    scene.camera.integrator = integrator;
+
+    let world = scene::build_world(&scene);
+    let camera = camera::Camera::from(scene.camera.clone());
+    let integ = integrator::build_integrator(&scene.camera);
+    let png = render::ProgressiveRenderer::render_to_png(
+        &camera,
+        integ.as_ref(),
+        &world,
+        scene.camera.firefly_clamp,
+        scene.camera.samples,
+    );
+    std::fs::write(out_path, png)?;
+    eprintln!("wrote {}", out_path.display());
+    Ok(())
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod cli_tests {
+    use super::*;
+    use crate::camera::config::IntegratorKind;
+
+    #[test]
+    fn run_render_cli_writes_a_valid_png_with_overrides() {
+        // A real round-trip: encode a scene, decode it back through the CLI path,
+        // apply overrides, render headless, and check the PNG on disk.
+        let scene = scenes::cornell_box();
+        let bytes = scene_file::encode(&scene, None, &[]);
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let scene_path = dir.join(format!("integ_cli_{pid}.scene"));
+        let out_path = dir.join(format!("integ_cli_{pid}.png"));
+        std::fs::write(&scene_path, &bytes).unwrap();
+
+        run_render_cli(&scene_path, &out_path, Some(4), Some(2), Some(16), IntegratorKind::Naive).unwrap();
+
+        let png = std::fs::read(&out_path).unwrap();
+        assert_eq!(&png[..8], &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+        let img = image::load_from_memory(&png).expect("valid PNG");
+        assert_eq!(img.width(), 16, "width override applied");
+
+        let _ = std::fs::remove_file(&scene_path);
+        let _ = std::fs::remove_file(&out_path);
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 mod web {
     use wasm_bindgen::prelude::*;
