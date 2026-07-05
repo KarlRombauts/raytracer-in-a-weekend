@@ -1,35 +1,19 @@
-use core::f32;
 use rand::prelude::*;
-use rayon::prelude::*;
-use web_time::Instant;
-
-#[cfg(not(target_arch = "wasm32"))]
-use indicatif::{ProgressBar, ProgressStyle};
-
-use image;
 
 use crate::camera::config::CameraConfig;
-use crate::color::{clamp_luminance, Color};
-use crate::group::*;
-use crate::integrator::common::{cosine_direction_from_uv, power_heuristic, russian_roulette};
-use crate::interval::Interval;
-use crate::ray::{Intersect, Ray};
-use crate::sampling::{stratified_offset, stratified_unit};
+use crate::ray::Ray;
+use crate::sampling::{stratified_offset, SampleId};
 use crate::vec3::{Point3, Vec3};
 
+/// The lens: turns a [`SampleId`] into a world-space [`Ray`]. Ray generation only
+/// — depth-of-field, the viewport basis, and sub-pixel AA (stratification dim 0).
+/// Radiance estimation lives in the [`Integrator`](crate::integrator::Integrator).
 pub struct Camera {
     // specified by config
     image_width: u32,
-    samples: u32,
-    max_depth: u32,
     dof_angle: f32,
-    background: Color,
-    /// HDR environment map sampled on ray miss; falls back to `background`.
-    env: Option<std::sync::Arc<crate::texture::env_map::EnvMap>>,
-    firefly_clamp: f32,
 
     // derived:
-    pixel_samples_scale: f32,
     image_height: u32,
     center: Point3,
     pixel00_loc: Point3,
@@ -48,7 +32,6 @@ pub struct Camera {
 impl From<CameraConfig> for Camera {
     fn from(config: CameraConfig) -> Self {
         // derived
-        let pixel_samples_scale = 1. / config.samples as f32;
         let image_height = ((config.image_width as f64 / config.aspect_ratio) as u32).max(1);
         let center = config.look_from;
 
@@ -79,17 +62,8 @@ impl From<CameraConfig> for Camera {
 
         Camera {
             image_width: config.image_width,
-            samples: config.samples,
-            max_depth: config.max_depth,
             dof_angle: config.dof_angle,
-            background: config.background,
-            env: config
-                .sky
-                .as_deref()
-                .and_then(crate::texture::env_map::load_cached),
-            firefly_clamp: config.firefly_clamp,
 
-            pixel_samples_scale,
             image_height,
             center,
             pixel00_loc,
@@ -106,54 +80,6 @@ impl From<CameraConfig> for Camera {
 }
 
 impl Camera {
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn render(&self, world: &IntersectGroup) {
-        let start = Instant::now();
-        let bar = ProgressBar::new(self.image_height as u64 * self.image_width as u64);
-        bar.set_style(
-            ProgressStyle::with_template(
-                "[{elapsed_precise}] [{bar:40.cyan/blue}] {percent}% ({eta_precise})",
-            )
-            .unwrap()
-            .progress_chars("#>-"),
-        );
-        let mut img_buf = image::ImageBuffer::new(self.image_width, self.image_height);
-        img_buf
-            .par_enumerate_pixels_mut()
-            .for_each(|(i, j, pixel)| {
-                // Per-pixel PRNG, seeded deterministically from the pixel coords so
-                // renders are reproducible and threads never share RNG state.
-                let mut rng = SmallRng::seed_from_u64(((j as u64) << 32) | i as u64);
-                let mut pixel_color = Color::ZERO;
-                for s in 0..self.samples {
-                    let ray = self.get_ray(i, j, s, &mut rng);
-                    let light_uv = stratified_unit(i, j, s, 1);
-                    let bounce_uv = stratified_unit(i, j, s, 2);
-                    pixel_color += clamp_luminance(
-                        self.ray_color(&ray, world, light_uv, bounce_uv, &mut rng),
-                        self.firefly_clamp,
-                    );
-                }
-
-                pixel_color *= self.pixel_samples_scale;
-
-                *pixel = image::Rgb(pixel_color.to_rgb_vec());
-                bar.inc(1);
-            });
-
-        bar.finish();
-        let duration = start.elapsed();
-
-        eprintln!(
-            "Render complete: {:.3} secs ({}×{} pixels, {} samples)",
-            duration.as_secs_f64(),
-            self.image_width,
-            self.image_height,
-            self.samples
-        );
-        img_buf.save("test.png").unwrap();
-    }
-
     pub fn image_width(&self) -> u32 {
         self.image_width
     }
@@ -162,41 +88,19 @@ impl Camera {
         self.image_height
     }
 
-    pub fn samples(&self) -> u32 {
-        self.samples
-    }
-
-    /// Trace a single sample for pixel (i, j). The progressive renderer calls
-    /// this once per pass and averages the results itself.
-    pub fn sample_pixel(
-        &self,
-        i: u32,
-        j: u32,
-        sample_index: u32,
-        world: &IntersectGroup,
-        rng: &mut SmallRng,
-    ) -> Color {
-        let ray = self.get_ray(i, j, sample_index, rng);
-        // Stratify the light sample (dim 1) and first bounce (dim 2) alongside
-        // the sub-pixel AA (dim 0), decorrelated per pixel.
-        let light_uv = stratified_unit(i, j, sample_index, 1);
-        let bounce_uv = stratified_unit(i, j, sample_index, 2);
-        clamp_luminance(
-            self.ray_color(&ray, world, light_uv, bounce_uv, rng),
-            self.firefly_clamp,
-        )
-    }
-
     fn dof_disk_sample(&self, rng: &mut SmallRng) -> Vec3 {
         let p = Vec3::random_in_unit_disk(rng);
         return self.center + (p.x * self.dof_disk_u) + (p.y * self.dof_disk_v);
     }
 
-    fn get_ray(&self, i: u32, j: u32, sample_index: u32, rng: &mut SmallRng) -> Ray {
-        let (dx, dy) = stratified_offset(i, j, sample_index);
+    /// The camera ray for one sample: a jittered ray through the pixel, with the
+    /// sub-pixel offset drawn from stratification dim 0 and (when enabled) a
+    /// depth-of-field origin on the lens disk.
+    pub fn get_ray(&self, sample: SampleId, rng: &mut SmallRng) -> Ray {
+        let (dx, dy) = stratified_offset(sample.i, sample.j, sample.index);
         let pixel_sample = self.pixel00_loc
-            + ((i as f32 + dx) * self.pixel_delta_u)
-            + ((j as f32 + dy) * self.pixel_delta_v);
+            + ((sample.i as f32 + dx) * self.pixel_delta_u)
+            + ((sample.j as f32 + dy) * self.pixel_delta_v);
 
         let ray_origin = if self.dof_angle <= 0. {
             self.center
@@ -212,124 +116,6 @@ impl Camera {
     #[cfg(test)]
     pub(crate) fn basis_u(&self) -> crate::vec3::Vec3 {
         self.basis_u
-    }
-
-    /// Radiance of the sky along `dir` (a ray that hit nothing): the HDR
-    /// environment map if one is set, otherwise the flat background colour.
-    fn sky_radiance(&self, dir: &Vec3) -> Color {
-        match &self.env {
-            Some(env) => env.sample(dir),
-            None => self.background,
-        }
-    }
-
-    fn ray_color(
-        &self,
-        ray: &Ray,
-        world: &IntersectGroup,
-        light_uv: (f32, f32),
-        bounce_uv: (f32, f32),
-        rng: &mut SmallRng,
-    ) -> Color {
-        let interval = Interval::new(0.001, f32::INFINITY);
-        let mut color = Color::ZERO;
-        let mut throughput = Color::ones();
-        let mut current = ray.clone();
-        // Whether emission at the next hit gets full weight: true for the camera ray
-        // and after specular bounces (NEE can't sample those), false after a diffuse
-        // bounce (NEE already accounted for direct light, so MIS-weight the emission).
-        let mut specular_bounce = true;
-        let mut prev_brdf_pdf = 0.0_f32;
-
-        for depth in 0..self.max_depth {
-            let Some(hit) = world.intersect(&current, &interval) else {
-                color += throughput * self.sky_radiance(&current.direction);
-                break;
-            };
-
-            let emitted = hit.material.emitted(hit.u, hit.v, hit.p);
-            if emitted != Color::ZERO {
-                if specular_bounce {
-                    color += throughput * emitted;
-                } else {
-                    let p_light = world.light_pdf(current.origin, current.direction);
-                    let w = power_heuristic(prev_brdf_pdf, p_light);
-                    color += throughput * emitted * w;
-                }
-            }
-
-            let Some((scattered, atten, specular)) = hit.material.scatter_lobe(&current, &hit, rng)
-            else {
-                break; // pure light / absorber
-            };
-
-            // `specular` is the *sampled lobe*, not the material: a Glossy hit is
-            // specular when it took its coat reflection and diffuse when it took
-            // its base, so the base gets next-event estimation like a Lambertian.
-            if specular {
-                throughput = throughput * atten;
-                current = scattered;
-                specular_bounce = true;
-                continue;
-            }
-
-            // Lambertian.
-            let albedo = atten;
-
-            // Stratify the NEE light sample and the BSDF bounce on the camera
-            // ray's first (diffuse) hit; deeper bounces fall back to plain rng.
-            let (lu, lv) = if depth == 0 {
-                light_uv
-            } else {
-                (rng.random(), rng.random())
-            };
-            let (bu, bv) = if depth == 0 {
-                bounce_uv
-            } else {
-                (rng.random(), rng.random())
-            };
-
-            // (1) Next-event estimation: sample a light, weight against the BRDF pdf.
-            if let Some(ld) = world.sample_light_dir(hit.p, lu, lv, rng) {
-                let p_light = world.light_pdf(hit.p, ld);
-                let p_brdf = hit.material.scattering_pdf(&hit, &ld);
-                if p_light > 0.0 && p_brdf > 0.0 {
-                    let shadow = Ray::new_t(hit.p, ld, current.time);
-                    if let Some(lh) = world.intersect(&shadow, &interval) {
-                        // Radiance from whatever the shadow ray actually reaches:
-                        // an occluder (or non-emitter) gives 0 = shadowed; a light
-                        // gives its emission. `p_light` is the marginal over ALL
-                        // lights, so even if the ray reaches a different light than
-                        // the one sampled, the estimator stays unbiased — don't
-                        // "fix" this to use the sampled light's own pdf.
-                        let le = lh.material.emitted(lh.u, lh.v, lh.p);
-                        if le != Color::ZERO {
-                            let w = power_heuristic(p_light, p_brdf);
-                            color += throughput * w * albedo * (p_brdf / p_light) * le;
-                        }
-                    }
-                }
-            }
-
-            // (2) BRDF bounce (cosine), weighted against the light pdf at the next hit.
-            let dir = cosine_direction_from_uv(&hit.normal, bu, bv);
-            let p_brdf = hit.material.scattering_pdf(&hit, &dir);
-            if p_brdf <= 0.0 {
-                break;
-            }
-            throughput = throughput * albedo;
-            // Russian roulette: terminate the dim tail early (unbiased) instead
-            // of always running to `max_depth`.
-            match russian_roulette(throughput, depth, rng) {
-                Some(t) => throughput = t,
-                None => break,
-            }
-            prev_brdf_pdf = p_brdf;
-            specular_bounce = false;
-            current = Ray::new_t(hit.p, dir, current.time);
-        }
-
-        color
     }
 }
 
@@ -363,4 +149,3 @@ mod roll_tests {
         assert!(cam.basis_u().y.abs() > 0.99, "u={:?}", cam.basis_u());
     }
 }
-

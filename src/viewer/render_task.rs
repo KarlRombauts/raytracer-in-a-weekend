@@ -7,6 +7,7 @@ use eframe::egui;
 
 use crate::camera::Camera;
 use crate::group::IntersectGroup;
+use crate::integrator::{build_integrator, Integrator};
 use crate::render::ProgressiveRenderer;
 use crate::scene::{build_world, Scene};
 
@@ -28,6 +29,7 @@ pub struct SharedFrame {
 struct ActiveRender {
     renderer: ProgressiveRenderer,
     camera: Camera,
+    integrator: Box<dyn Integrator>,
     world: IntersectGroup,
     target: u32,
     scale: u32,
@@ -86,16 +88,18 @@ impl RenderEngine {
         if scale > 1 {
             cam_cfg.image_width = (cam_cfg.image_width / scale).max(1);
         }
+        let integrator = build_integrator(&cam_cfg);
+        let firefly = cam_cfg.firefly_clamp;
         let camera = Camera::from(cam_cfg);
         let (w, h) = (camera.image_width(), camera.image_height());
 
-        let mut renderer = ProgressiveRenderer::new(w, h);
+        let mut renderer = ProgressiveRenderer::new(w, h, firefly);
         let start = Instant::now();
 
         // Render the first pass BEFORE publishing the new dimensions so a
         // resolution change never flashes black: the UI keeps showing the
         // previous frame until this one is ready to replace it.
-        renderer.add_pass(&camera, &world);
+        renderer.add_pass(&camera, integrator.as_ref(), &world);
         {
             let mut s = self.shared.lock().unwrap();
             s.width = w;
@@ -111,6 +115,7 @@ impl RenderEngine {
         self.active = Some(ActiveRender {
             renderer,
             camera,
+            integrator,
             world,
             target,
             scale,
@@ -157,7 +162,7 @@ impl RenderEngine {
         }
 
         // Add one more pass and publish it.
-        a.renderer.add_pass(&a.camera, &a.world);
+        a.renderer.add_pass(&a.camera, a.integrator.as_ref(), &a.world);
         {
             let mut s = self.shared.lock().unwrap();
             s.rgba = a.renderer.to_rgba();

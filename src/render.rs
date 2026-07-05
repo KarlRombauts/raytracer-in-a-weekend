@@ -3,8 +3,10 @@ use rand::SeedableRng;
 use rayon::prelude::*;
 
 use crate::camera::Camera;
-use crate::color::{luminance, Color};
+use crate::color::{clamp_luminance, luminance, Color};
 use crate::group::IntersectGroup;
+use crate::integrator::Integrator;
+use crate::sampling::SampleId;
 
 /// Per-pixel running statistics for adaptive sampling: a numerically stable
 /// (Welford) running mean of the colour and of its luminance, plus the
@@ -99,6 +101,10 @@ pub struct ProgressiveRenderer {
     rel: f32,
     floor: f32,
     warmup: u32,
+    /// Per-sample luminance cap applied before a sample is folded into a pixel
+    /// (firefly suppression). `f32::INFINITY` disables it. The accumulator owns
+    /// this — the integrator returns raw radiance.
+    firefly_clamp: f32,
 }
 
 /// Convergence defaults: stop a pixel when its 95% confidence half-width is
@@ -135,7 +141,7 @@ const DARK_LEVEL: f32 = 0.02;
 const DARK_WARMUP: u32 = 256;
 
 impl ProgressiveRenderer {
-    pub fn new(width: u32, height: u32) -> Self {
+    pub fn new(width: u32, height: u32, firefly_clamp: f32) -> Self {
         ProgressiveRenderer {
             width,
             height,
@@ -144,6 +150,7 @@ impl ProgressiveRenderer {
             rel: DEFAULT_REL,
             floor: DEFAULT_FLOOR,
             warmup: DEFAULT_WARMUP,
+            firefly_clamp,
         }
     }
 
@@ -159,9 +166,10 @@ impl ProgressiveRenderer {
 
     /// Draw one more sample for every pixel that hasn't yet converged, in
     /// parallel. Converged pixels are skipped, so passes get cheaper over time.
-    pub fn add_pass(&mut self, camera: &Camera, world: &IntersectGroup) {
+    pub fn add_pass(&mut self, camera: &Camera, integrator: &dyn Integrator, world: &IntersectGroup) {
         let width = self.width;
         let (rel, floor, warmup) = (self.rel, self.floor, self.warmup);
+        let firefly = self.firefly_clamp;
         self.pixels.par_iter_mut().enumerate().for_each(|(idx, p)| {
             if p.done {
                 return;
@@ -171,13 +179,37 @@ impl ProgressiveRenderer {
             // Seed per pixel AND per local sample index, so each sample is fresh
             // and reproducible regardless of which pass it happens to land in.
             let mut rng = SmallRng::seed_from_u64(((p.count as u64) << 40) ^ idx as u64);
-            let s = camera.sample_pixel(i, j, p.count, world, &mut rng);
+            // One sample identity shared by ray generation (dim 0) and the
+            // integrator (dims 1+). Raw radiance is firefly-clamped before folding.
+            let sample = SampleId { i, j, index: p.count };
+            let ray = camera.get_ray(sample, &mut rng);
+            let s = clamp_luminance(integrator.radiance(&ray, world, sample, &mut rng), firefly);
             p.add(s);
             if p.converged(rel, floor, warmup) {
                 p.done = true;
             }
         });
         self.passes += 1;
+    }
+
+    /// Render headless to PNG bytes: run up to `samples` passes (stopping early
+    /// once every pixel has converged), then encode. No window, no display — the
+    /// offline counterpart to the interactive pump in `render_task`.
+    pub fn render_to_png(
+        camera: &Camera,
+        integrator: &dyn Integrator,
+        world: &IntersectGroup,
+        firefly_clamp: f32,
+        samples: u32,
+    ) -> Vec<u8> {
+        let mut r = ProgressiveRenderer::new(camera.image_width(), camera.image_height(), firefly_clamp);
+        for _ in 0..samples {
+            if r.all_converged() {
+                break;
+            }
+            r.add_pass(camera, integrator, world);
+        }
+        r.to_png_bytes()
     }
 
     /// Current image as gamma-corrected, opaque RGBA bytes (row-major).
@@ -409,19 +441,19 @@ mod adaptive_tests {
         // An empty world: every ray misses and returns the (constant) background,
         // so every pixel is a zero-variance flat signal and converges at warmup.
         let bg = Color::new(0.2, 0.4, 0.6);
-        let camera = Camera::from(
-            CameraConfig::builder()
-                .image_width(8)
-                .aspect_ratio(1.0)
-                .background(bg)
-                .build(),
-        );
+        let config = CameraConfig::builder()
+            .image_width(8)
+            .aspect_ratio(1.0)
+            .background(bg)
+            .build();
+        let integrator = crate::integrator::build_integrator(&config);
+        let camera = Camera::from(config);
         let world = IntersectGroup::new();
-        let mut r = ProgressiveRenderer::new(8, 8);
+        let mut r = ProgressiveRenderer::new(8, 8, f32::INFINITY);
 
         let mut passes = 0;
         while passes < 256 && !r.all_converged() {
-            r.add_pass(&camera, &world);
+            r.add_pass(&camera, integrator.as_ref(), &world);
             passes += 1;
         }
 
@@ -448,7 +480,7 @@ mod tests {
 
     #[test]
     fn to_png_bytes_round_trips_dimensions() {
-        let mut r = ProgressiveRenderer::new(8, 4);
+        let mut r = ProgressiveRenderer::new(8, 4, f32::INFINITY);
         // No passes needed; encoding the (black) buffer must still be valid PNG.
         let bytes = r.to_png_bytes();
         // PNG magic number.
