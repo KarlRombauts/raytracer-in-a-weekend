@@ -83,6 +83,25 @@ pub fn stratified_offset(i: u32, j: u32, sample_index: u32) -> (f32, f32) {
     (x - 0.5, y - 0.5)
 }
 
+/// The identity of one Monte-Carlo sample: its pixel `(i, j)` and its per-pixel
+/// sample `index`. Carried across the render seam so the camera (dim 0, AA) and
+/// the integrator (dims 1+, light/bounce) draw from one consistent coordinate.
+/// It is an identity, not a screen position — nothing spatial is derived from it.
+#[derive(Clone, Copy, Debug)]
+pub struct SampleId {
+    pub i: u32,
+    pub j: u32,
+    pub index: u32,
+}
+
+impl SampleId {
+    /// Stratified low-discrepancy point in [0, 1)² for sampling dimension `dim`
+    /// (0 = sub-pixel AA, 1 = NEE light sample, 2 = first BSDF bounce).
+    pub fn stratified(&self, dim: u32) -> (f32, f32) {
+        stratified_unit(self.i, self.j, self.index, dim)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,5 +196,15 @@ mod tests {
         let c = stratified_offset(0, 1, 5);
         assert!(a != b, "pixels (0,0) and (1,0) collide: {a:?}");
         assert!(a != c, "pixels (0,0) and (0,1) collide: {a:?}");
+    }
+
+    #[test]
+    fn sample_id_stratified_maps_its_fields_to_the_sampler() {
+        // The bundle must forward (i, j, index) in the right order for each dim,
+        // so a field-order slip (e.g. i/j swapped) is caught.
+        let id = SampleId { i: 4, j: 5, index: 7 };
+        assert_eq!(id.stratified(0), stratified_unit(4, 5, 7, 0));
+        assert_eq!(id.stratified(1), stratified_unit(4, 5, 7, 1));
+        assert_eq!(id.stratified(2), stratified_unit(4, 5, 7, 2));
     }
 }
