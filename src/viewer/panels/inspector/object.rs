@@ -1,10 +1,15 @@
 use eframe::egui::{self, Ui};
-use crate::scene::{self, Scene, Shape};
-use super::super::super::{controls, icons, state::UiState, theme, widgets};
+use crate::scene::{Scene, Shape};
+use super::super::super::{command::SceneCommand, controls, icons, state::UiState, theme, widgets};
 
-pub fn object_tab(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> bool {
+pub fn object_tab(
+    ui: &mut Ui,
+    ui_state: &mut UiState,
+    scene: &mut Scene,
+    cmds: &mut Vec<SceneCommand>,
+) -> bool {
     let mut dirty = false;
-    let Some(i) = ui_state.selected.filter(|&i| i < scene.objects.len()) else {
+    let Some(i) = ui_state.selected.get(scene.objects.len()) else {
         ui.vertical_centered(|ui| {
             ui.add_space(80.0);
             ui.label(egui::RichText::new(icons::CUBE).color(theme::TEXT_DIM).size(28.0));
@@ -39,15 +44,12 @@ pub fn object_tab(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> boo
     });
 
     if do_dup {
-        if let Some(n) = scene::duplicate_object(&mut scene.objects, i) {
-            ui_state.selected = Some(n);
-        }
-        return true;
+        cmds.push(SceneCommand::DuplicateObject(i));
+        return dirty;
     }
     if do_del {
-        scene.objects.remove(i);
-        ui_state.selected = None;
-        return true;
+        cmds.push(SceneCommand::DeleteObject(i));
+        return dirty;
     }
 
     // Meshes get full material editing too: their BVH is material-agnostic and

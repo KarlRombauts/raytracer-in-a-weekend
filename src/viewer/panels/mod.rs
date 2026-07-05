@@ -4,7 +4,7 @@ mod outliner;
 mod top_bar;
 mod viewport;
 
-pub use home::{show_home, HomeAction, HomeState};
+pub use home::{show_home, show_loading, HomeAction, HomeState};
 pub use inspector::show_inspector;
 pub use outliner::show_outliner;
 pub use top_bar::show_top_bar;
@@ -19,6 +19,9 @@ pub enum Action {
     LoadScene,
     ResetCamera,
     Restart,
+    /// Undo / redo the last scene edit.
+    Undo,
+    Redo,
     /// Return to the library (Home) screen.
     GoHome,
 }

@@ -5,12 +5,42 @@ use crate::{
     vec3::{Point3, Vec3},
 };
 
-fn quad(name: &str, q: Point3, u: Vec3, v: Vec3, material: MaterialSpec) -> ObjectSpec {
+/// A wall: a unit quad (1×1, centred on the origin in the XY plane) sized,
+/// oriented and placed by a transform. Building the room from unit primitives
+/// keeps it described in clean 4-unit proportions instead of raw coordinates.
+fn wall(name: &str, material: MaterialSpec, scale: Vec3, rotate: Vec3, translate: Vec3) -> ObjectSpec {
     ObjectSpec {
         name: name.to_string(),
-        shape: Shape::Quad { q, u, v },
+        shape: Shape::Quad {
+            q: Point3::new(-0.5, -0.5, 0.0),
+            u: Vec3::new(1.0, 0.0, 0.0),
+            v: Vec3::new(0.0, 1.0, 0.0),
+        },
         material,
-        transform: Transform::identity(),
+        transform: Transform {
+            rotate,
+            scale,
+            translate,
+        },
+        hidden: false,
+    }
+}
+
+/// A box: a unit cube (1×1×1, centred on the origin) sized and placed by a
+/// transform. `scale` gives its full extents, `translate` its centre.
+fn cube(name: &str, material: MaterialSpec, scale: Vec3, translate: Vec3) -> ObjectSpec {
+    ObjectSpec {
+        name: name.to_string(),
+        shape: Shape::Box {
+            a: Point3::new(-0.5, -0.5, -0.5),
+            b: Point3::new(0.5, 0.5, 0.5),
+        },
+        material,
+        transform: Transform {
+            rotate: Vec3::ZERO,
+            scale,
+            translate,
+        },
         hidden: false,
     }
 }
@@ -29,69 +59,78 @@ pub fn cornell_box() -> Scene {
         emit: TextureSpec::solid(Color::new(15.0, 15.0, 15.0)),
     };
 
+    // A 4×4×4 room: floor at y=0, ceiling at y=4, walls at x=±2 and z=+2, open
+    // toward the camera (−z). Walls are 4×4 quads (scale (4,4,1)).
+    let wall_scale = Vec3::new(4.0, 4.0, 1.0);
+
     let objects = vec![
-        quad(
+        // Side walls: the unit quad's XY plane rotated 90° about Y into ZY.
+        wall(
             "Right wall",
-            Point3::new(555.0, 0.0, 0.0),
-            Vec3::new(0.0, 555.0, 0.0),
-            Vec3::new(0.0, 0.0, 555.0),
             green,
+            wall_scale,
+            Vec3::new(0.0, 90.0, 0.0),
+            Vec3::new(2.0, 2.0, 0.0),
         ),
-        quad(
+        wall(
             "Left wall",
-            Point3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 555.0, 0.0),
-            Vec3::new(0.0, 0.0, 555.0),
             red,
+            wall_scale,
+            Vec3::new(0.0, 90.0, 0.0),
+            Vec3::new(-2.0, 2.0, 0.0),
         ),
-        quad(
-            "Light",
-            Point3::new(343.0, 554.0, 332.0),
-            Vec3::new(-130.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, -105.0),
-            light,
-        ),
-        quad(
+        // Ceiling light: kept as a directly-sized quad rather than a transformed
+        // unit primitive. Only shapes with non-zero `area()` are registered for
+        // direct light sampling in `build_world`, and the transform wrappers
+        // don't forward `area()` — so a bare Quad keeps the one light importance-
+        // sampled (and far less noisy). A ~1.0×0.8 panel centred on the ceiling.
+        ObjectSpec {
+            name: "Light".to_string(),
+            shape: Shape::Quad {
+                q: Point3::new(-0.5, 3.99, -0.4),
+                u: Vec3::new(1.0, 0.0, 0.0),
+                v: Vec3::new(0.0, 0.0, 0.8),
+            },
+            material: light,
+            transform: Transform::identity(),
+            hidden: false,
+        },
+        // Floor and ceiling: the unit quad's XY plane rotated 90° about X into XZ.
+        wall(
             "Floor",
-            Point3::new(0.0, 0.0, 0.0),
-            Vec3::new(555.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 555.0),
             white.clone(),
+            wall_scale,
+            Vec3::new(90.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 0.0),
         ),
-        quad(
+        wall(
             "Ceiling",
-            Point3::new(555.0, 555.0, 555.0),
-            Vec3::new(-555.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, -555.0),
             white.clone(),
+            wall_scale,
+            Vec3::new(90.0, 0.0, 0.0),
+            Vec3::new(0.0, 4.0, 0.0),
         ),
-        quad(
+        // Back wall: the unit quad is already in the XY plane.
+        wall(
             "Back wall",
-            Point3::new(0.0, 0.0, 555.0),
-            Vec3::new(555.0, 0.0, 0.0),
-            Vec3::new(0.0, 555.0, 0.0),
             white.clone(),
+            wall_scale,
+            Vec3::ZERO,
+            Vec3::new(0.0, 2.0, 2.0),
         ),
-        ObjectSpec {
-            name: "Tall box".to_string(),
-            shape: Shape::Box {
-                a: Point3::new(130.0, 0.0, 65.0),
-                b: Point3::new(295.0, 165.0, 230.0),
-            },
-            material: white.clone(),
-            transform: Transform::identity(),
-            hidden: false,
-        },
-        ObjectSpec {
-            name: "Short box".to_string(),
-            shape: Shape::Box {
-                a: Point3::new(265.0, 0.0, 295.0),
-                b: Point3::new(430.0, 330.0, 460.0),
-            },
-            material: white,
-            transform: Transform::identity(),
-            hidden: false,
-        },
+        // Two boxes, sitting on the floor (centre y = half-height).
+        cube(
+            "Tall box",
+            white.clone(),
+            Vec3::new(1.2, 1.2, 1.2),
+            Vec3::new(-0.5, 0.6, -0.9),
+        ),
+        cube(
+            "Short box",
+            white,
+            Vec3::new(1.2, 2.4, 1.2),
+            Vec3::new(0.5, 1.2, 0.7),
+        ),
     ];
 
     let camera = CameraConfig::builder()
@@ -101,8 +140,8 @@ pub fn cornell_box() -> Scene {
         .max_depth(50)
         .background(Color::zeros())
         .fov(40.0)
-        .look_from(Vec3::new(278.0, 278.0, -800.0))
-        .look_at(Vec3::new(278.0, 278.0, 0.0))
+        .look_from(Vec3::new(0.0, 2.0, -7.77))
+        .look_at(Vec3::new(0.0, 2.0, -2.0))
         .dof_angle(0.0)
         .firefly_clamp(10.0)
         .build();

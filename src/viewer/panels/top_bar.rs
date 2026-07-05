@@ -8,7 +8,13 @@ use super::super::{
 use super::Action;
 use crate::scene::Scene;
 
-pub fn show_top_bar(ui: &mut Ui, ui_state: &mut UiState, _scene: &Scene) -> Action {
+pub fn show_top_bar(
+    ui: &mut Ui,
+    ui_state: &mut UiState,
+    _scene: &Scene,
+    can_undo: bool,
+    can_redo: bool,
+) -> Action {
     let mut action = Action::None;
 
     // We need three groups: left (logo + scene chip), center (toggle), right
@@ -56,10 +62,10 @@ pub fn show_top_bar(ui: &mut Ui, ui_state: &mut UiState, _scene: &Scene) -> Acti
         // RIGHT GROUP: save buttons — rendered right-to-left so they hug the
         // right edge while the center toggle is placed absolutely below.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // "Save image" — dark pill, NOT accent blue.
+            // "Save image" — dark pill, NOT accent blue. Picture icon.
             if widgets::pill_button(
                 ui,
-                &format!("{}  Save image", icons::DOWNLOAD),
+                &format!("{}  Save image", icons::IMAGE),
                 false,
                 true,
             )
@@ -67,8 +73,8 @@ pub fn show_top_bar(ui: &mut Ui, ui_state: &mut UiState, _scene: &Scene) -> Acti
             {
                 action = Action::SaveImage;
             }
-            // "Save scene" — dark pill.
-            if widgets::pill_button(ui, &format!("{}  Save scene", icons::FLOPPY), false, true)
+            // "Save scene" — dark pill. Download/save-to-disk icon.
+            if widgets::pill_button(ui, &format!("{}  Save scene", icons::DOWNLOAD), false, true)
                 .clicked()
             {
                 action = Action::SaveScene;
@@ -78,6 +84,22 @@ pub fn show_top_bar(ui: &mut Ui, ui_state: &mut UiState, _scene: &Scene) -> Acti
                 .clicked()
             {
                 action = Action::LoadScene;
+            }
+
+            // Undo / redo — compact icon pills, greyed out when their stack is
+            // empty. Rendered right-to-left, so push Redo first to place Undo to
+            // its left (reads "Undo  Redo" left-to-right).
+            if widgets::pill_button(ui, icons::REDO, false, can_redo)
+                .on_hover_text("Redo (Cmd/Ctrl+Shift+Z)")
+                .clicked()
+            {
+                action = Action::Redo;
+            }
+            if widgets::pill_button(ui, icons::UNDO, false, can_undo)
+                .on_hover_text("Undo (Cmd/Ctrl+Z)")
+                .clicked()
+            {
+                action = Action::Undo;
             }
         });
     });

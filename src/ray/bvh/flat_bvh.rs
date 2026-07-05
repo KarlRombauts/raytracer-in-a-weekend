@@ -1,11 +1,106 @@
-use crate::geometry::triangle;
 use crate::interval::Interval;
 use crate::vec3::{Point3, Vec3};
 use core::f32;
 use std::fmt;
-use std::{path::Display, sync::Arc};
 
-use crate::ray::{hit_record, BVHNode, HitRecord, Intersect, Ray, AABB};
+use crate::ray::{HitRecord, Intersect, Ray, AABB};
+
+/// Number of buckets used per axis when evaluating split-plane candidates with
+/// binned SAH. 12 is the usual sweet spot: enough resolution to find good
+/// splits, few enough that the per-node bin sweep is negligible next to the
+/// single primitive pass that fills the bins.
+const BINS: usize = 12;
+
+/// Subtrees with at least this many primitives are built on separate rayon
+/// tasks (via `rayon::join`). Below it the join overhead outweighs the work, so
+/// we recurse inline on the current thread.
+const PARALLEL_THRESHOLD: usize = 8_192;
+
+/// Hard depth cap. Balanced binned splits put a multi-million-triangle mesh at
+/// ~22 deep, but degenerate (e.g. fully coplanar) inputs could otherwise recurse
+/// past the fixed 64-entry traversal stack — force a leaf before that happens.
+const MAX_DEPTH: u8 = 60;
+
+/// Lightweight min/max bounds used only during construction. Unlike [`AABB`] it
+/// skips the per-merge `pad_to_minimums` work, so binning millions of triangles
+/// stays a tight loop; the final padded `AABB` is produced once per node in
+/// [`Bounds::to_aabb`].
+#[derive(Clone, Copy)]
+struct Bounds {
+    min: Vec3,
+    max: Vec3,
+}
+
+impl Bounds {
+    const EMPTY: Bounds = Bounds {
+        min: Vec3 {
+            x: f32::INFINITY,
+            y: f32::INFINITY,
+            z: f32::INFINITY,
+        },
+        max: Vec3 {
+            x: f32::NEG_INFINITY,
+            y: f32::NEG_INFINITY,
+            z: f32::NEG_INFINITY,
+        },
+    };
+
+    #[inline(always)]
+    fn grow_point(&mut self, p: Vec3) {
+        self.min = Vec3::min(&self.min, &p);
+        self.max = Vec3::max(&self.max, &p);
+    }
+
+    #[inline(always)]
+    fn grow_aabb(&mut self, b: &AABB) {
+        self.min = Vec3::min(&self.min, &b.min_vec());
+        self.max = Vec3::max(&self.max, &b.max_vec());
+    }
+
+    #[inline(always)]
+    fn merge(&mut self, o: &Bounds) {
+        self.min = Vec3::min(&self.min, &o.min);
+        self.max = Vec3::max(&self.max, &o.max);
+    }
+
+    /// Surface-area heuristic half-area. Returns 0 for an empty box so that an
+    /// empty split side contributes nothing (and never a NaN) to the cost.
+    #[inline(always)]
+    fn area(&self) -> f32 {
+        let e = self.max - self.min;
+        if e.x < 0.0 || e.y < 0.0 || e.z < 0.0 {
+            return 0.0;
+        }
+        e.x * e.y + e.y * e.z + e.z * e.x
+    }
+
+    fn to_aabb(&self) -> AABB {
+        AABB::new(
+            Interval::new(self.min.x, self.max.x),
+            Interval::new(self.min.y, self.max.y),
+            Interval::new(self.min.z, self.max.z),
+        )
+    }
+}
+
+/// Intermediate, pointer-linked node produced by the (parallel) recursive build.
+/// It is flattened into the cache-friendly `Vec<BVHFlatNode>` exactly once, in a
+/// single sequential DFS, after the whole tree exists.
+enum BuildNode {
+    Leaf {
+        first: u32,
+        count: u32,
+        bounds: Bounds,
+        depth: u8,
+    },
+    Inner {
+        left: Box<BuildNode>,
+        right: Box<BuildNode>,
+        bounds: Bounds,
+        axis: u8,
+        depth: u8,
+    },
+}
 
 pub struct BVHFlatNode {
     pub left: u32,
@@ -62,159 +157,26 @@ pub struct BVH<T: Intersect> {
 }
 
 impl<T: Intersect> BVH<T> {
-    pub fn build(primitives: Vec<T>) -> Self {
-        let mut root = BVHFlatNode::default();
-        root.primitive_count = primitives.len() as u32;
-
-        let mut bvh = BVH {
-            primitives,
-            nodes: vec![root],
-        };
-
-        bvh.update_node_bounds(0);
-        bvh.subdivide(0);
-        bvh
-    }
-
-    fn evaluateNodeSAHCost(&self, node_idx: usize) -> f32 {
-        let node = &self.nodes[node_idx];
-        let area = node.aabb.area();
-        node.primitive_count as f32 * area
-    }
-
-    fn evaluateSAH(&self, node_idx: usize, axis: u32, split: f32) -> f32 {
-        let mut left_box = AABB::EMPTY;
-        let mut right_box = AABB::EMPTY;
-        let mut left_count = 0;
-        let mut right_count = 0;
-
-        let node = &self.nodes[node_idx];
-        let (start, end) = node.get_primative_bounds();
-        for primitive in &self.primitives[start..end] {
-            if primitive.center()[axis] < split {
-                left_count += 1;
-                left_box = AABB::from_boxes(&left_box, primitive.bounding_box());
-            } else {
-                right_count += 1;
-                right_box = AABB::from_boxes(&right_box, primitive.bounding_box());
-            }
+    pub fn build(mut primitives: Vec<T>) -> Self {
+        if primitives.is_empty() {
+            return BVH {
+                primitives,
+                nodes: vec![BVHFlatNode::default()],
+            };
         }
 
-        let cost = left_count as f32 * left_box.area() + right_count as f32 * right_box.area();
+        // 1. Build the spatial tree recursively, splitting work across rayon
+        //    tasks for large subtrees. Primitives are partitioned in place; each
+        //    task owns a disjoint slice, so no synchronisation is needed.
+        let root = build_node(&mut primitives, 0, 0);
 
-        if cost > 0. {
-            return cost;
-        } else {
-            return f32::INFINITY;
-        }
-    }
+        // 2. Flatten into the contiguous node array the traversal walks. A leaf
+        //    is encoded as `left == right == 0` (index 0 is the root, so it can
+        //    never be a real child), exactly as before.
+        let mut nodes = Vec::with_capacity(2 * primitives.len().max(1));
+        flatten(&root, &mut nodes);
 
-    fn find_split(&self, node_idx: usize) -> (f32, u32, f32) {
-        let node = &self.nodes[node_idx];
-        let mut best_axis = 0;
-        let mut best_split: f32 = 0.;
-        let mut best_cost = f32::INFINITY;
-
-        // let (start, end) = node.get_primative_bounds();
-
-        let num_splits = 10.min(node.primitive_count);
-        for axis in 0..3 {
-            let bounds_min = node.aabb.min_vec()[axis];
-            let bounds_max = node.aabb.max_vec()[axis];
-            if bounds_min == bounds_max {
-                continue;
-            }
-
-            let scale = (bounds_max - bounds_min) / num_splits as f32;
-
-            for i in 1..num_splits {
-                let candidate_split = bounds_min + i as f32 * scale;
-                let cost = self.evaluateSAH(node_idx, axis, candidate_split);
-
-                if cost < best_cost {
-                    best_split = candidate_split;
-                    best_axis = axis;
-                    best_cost = cost;
-                }
-            }
-
-            // for primitive in &self.primitives[start..end] {
-            //     let candidate_split = primitive.center()[axis];
-            //     let cost = self.evaluateSAH(node_idx, axis, candidate_split);
-            //
-            //     if cost < best_cost {
-            //         best_split = candidate_split;
-            //         best_axis = axis;
-            //         best_cost = cost;
-            //     }
-            // }
-        }
-
-        return (best_cost, best_axis, best_split);
-    }
-
-    fn subdivide(&mut self, node_idx: usize) {
-        let nodes_used = self.nodes.len() as u32;
-        let (split_cost, axis, split_pos) = self.find_split(node_idx);
-
-        if split_cost >= self.evaluateNodeSAHCost(node_idx) {
-            return;
-        }
-
-        let node = &mut self.nodes[node_idx];
-
-        node.split_axis = axis as u8;
-
-        let (start, end) = node.get_primative_bounds();
-        let mut i = start;
-        let mut j = end;
-
-        while i < j {
-            if self.primitives[i].center()[axis] < split_pos {
-                i += 1;
-            } else {
-                j -= 1;
-                self.primitives.swap(i, j);
-            }
-        }
-
-        let left_count = i - start;
-        if left_count == 0 || left_count as u32 == node.primitive_count {
-            return;
-        }
-
-        let left_node_idx = nodes_used;
-        node.left = left_node_idx;
-        let mut left_node = BVHFlatNode::default();
-        left_node.first_primitive = start as u32;
-        left_node.primitive_count = left_count as u32;
-        left_node.depth = node.depth + 1;
-
-        let right_node_idx = nodes_used + 1;
-        node.right = right_node_idx;
-        let mut right_node = BVHFlatNode::default();
-        right_node.first_primitive = i as u32;
-        right_node.primitive_count = node.primitive_count - left_count as u32;
-        right_node.depth = node.depth + 1;
-
-        node.primitive_count = 0;
-        self.nodes.push(left_node);
-        self.nodes.push(right_node);
-
-        self.update_node_bounds(left_node_idx as usize);
-        self.update_node_bounds(right_node_idx as usize);
-        self.subdivide(left_node_idx as usize);
-        self.subdivide(right_node_idx as usize);
-    }
-
-    fn update_node_bounds(&mut self, node_idx: usize) {
-        let node = &mut self.nodes[node_idx];
-        let (start, end) = node.get_primative_bounds();
-
-        for primative in &mut self.primitives[start..end] {
-            let bbox = primative.bounding_box();
-            node.aabb = AABB::from_boxes(&node.aabb, &bbox);
-        }
+        BVH { primitives, nodes }
     }
 
     pub fn get_stats(&self) -> BVHStats {
@@ -317,6 +279,197 @@ impl<T: Intersect> BVH<T> {
     }
 }
 
+/// Recursively build the BVH over `prims`, whose slice starts at global index
+/// `offset` in the primitive array. Returns the subtree root. Large subtrees
+/// fork their two children onto separate rayon tasks.
+fn build_node<T: Intersect>(prims: &mut [T], offset: u32, depth: u8) -> BuildNode {
+    // One pass: the node's full bounds (for its AABB) and the bounds of the
+    // primitive *centroids* (the domain we bin over — tighter and split-friendly
+    // than the geometry bounds).
+    let mut node_bounds = Bounds::EMPTY;
+    let mut centroid_bounds = Bounds::EMPTY;
+    for p in prims.iter() {
+        node_bounds.grow_aabb(p.bounding_box());
+        centroid_bounds.grow_point(p.center());
+    }
+
+    let count = prims.len() as u32;
+    let leaf = |bounds| BuildNode::Leaf {
+        first: offset,
+        count,
+        bounds,
+        depth,
+    };
+
+    if count <= 2 || depth >= MAX_DEPTH {
+        return leaf(node_bounds);
+    }
+
+    let Some((axis, split_pos, split_cost)) = find_binned_split(prims, &centroid_bounds) else {
+        return leaf(node_bounds);
+    };
+
+    // Stop if no split beats keeping every primitive in one leaf (the SAH "leaf
+    // cost" = count × surface area). Same termination rule as the old code.
+    let leaf_cost = count as f32 * node_bounds.area();
+    if split_cost >= leaf_cost {
+        return leaf(node_bounds);
+    }
+
+    let mid = partition(prims, axis, split_pos);
+    if mid == 0 || mid == prims.len() {
+        // Degenerate partition (all primitives landed on one side); keep a leaf.
+        return leaf(node_bounds);
+    }
+
+    let (left_slice, right_slice) = prims.split_at_mut(mid);
+    let right_offset = offset + mid as u32;
+    let next_depth = depth + 1;
+
+    let (left, right) = if count as usize >= PARALLEL_THRESHOLD {
+        rayon::join(
+            || build_node(left_slice, offset, next_depth),
+            || build_node(right_slice, right_offset, next_depth),
+        )
+    } else {
+        (
+            build_node(left_slice, offset, next_depth),
+            build_node(right_slice, right_offset, next_depth),
+        )
+    };
+
+    BuildNode::Inner {
+        left: Box::new(left),
+        right: Box::new(right),
+        bounds: node_bounds,
+        axis: axis as u8,
+        depth,
+    }
+}
+
+/// Binned SAH: bucket every primitive once per axis, then sweep the buckets to
+/// evaluate all `BINS - 1` candidate planes in O(BINS) rather than rescanning
+/// the primitives per candidate. Returns the best `(axis, split_pos, cost)`, or
+/// `None` if the centroids are coincident on every axis (nothing to split).
+fn find_binned_split<T: Intersect>(prims: &[T], centroid_bounds: &Bounds) -> Option<(u32, f32, f32)> {
+    let mut best: Option<(u32, f32, f32)> = None;
+
+    for axis in 0..3u32 {
+        let cmin = centroid_bounds.min[axis];
+        let cmax = centroid_bounds.max[axis];
+        if cmin >= cmax {
+            continue; // no extent on this axis
+        }
+        let scale = BINS as f32 / (cmax - cmin);
+
+        let mut bin_bounds = [Bounds::EMPTY; BINS];
+        let mut bin_count = [0u32; BINS];
+        for p in prims {
+            let c = p.center()[axis];
+            let b = (((c - cmin) * scale) as usize).min(BINS - 1);
+            bin_count[b] += 1;
+            bin_bounds[b].grow_aabb(p.bounding_box());
+        }
+
+        // Prefix sweep: cumulative count/area of bins [0..=i].
+        let mut left_area = [0f32; BINS - 1];
+        let mut left_count = [0u32; BINS - 1];
+        let mut acc = Bounds::EMPTY;
+        let mut acc_count = 0u32;
+        for i in 0..BINS - 1 {
+            acc_count += bin_count[i];
+            acc.merge(&bin_bounds[i]);
+            left_count[i] = acc_count;
+            left_area[i] = acc.area();
+        }
+
+        // Suffix sweep: cumulative count/area of bins [i+1..], combined with the
+        // cached prefix to score the plane between bin i and i+1.
+        let mut acc = Bounds::EMPTY;
+        let mut acc_count = 0u32;
+        for i in (0..BINS - 1).rev() {
+            acc_count += bin_count[i + 1];
+            acc.merge(&bin_bounds[i + 1]);
+
+            let lc = left_count[i];
+            let rc = acc_count;
+            if lc == 0 || rc == 0 {
+                continue;
+            }
+            let cost = lc as f32 * left_area[i] + rc as f32 * acc.area();
+            if best.map_or(true, |(_, _, bc)| cost < bc) {
+                let split_pos = cmin + (i as f32 + 1.0) / scale;
+                best = Some((axis, split_pos, cost));
+            }
+        }
+    }
+
+    best
+}
+
+/// Partition `prims` in place so that every primitive with centroid below
+/// `split` on `axis` precedes the rest. Returns the number on the left side.
+fn partition<T: Intersect>(prims: &mut [T], axis: u32, split: f32) -> usize {
+    let mut i = 0;
+    let mut j = prims.len();
+    while i < j {
+        if prims[i].center()[axis] < split {
+            i += 1;
+        } else {
+            j -= 1;
+            prims.swap(i, j);
+        }
+    }
+    i
+}
+
+/// Flatten the pointer-linked build tree into the contiguous node array via a
+/// single sequential DFS, patching child indices once they are known.
+fn flatten(node: &BuildNode, nodes: &mut Vec<BVHFlatNode>) -> u32 {
+    let idx = nodes.len();
+    nodes.push(BVHFlatNode::default()); // reserve this slot
+
+    match node {
+        BuildNode::Leaf {
+            first,
+            count,
+            bounds,
+            depth,
+        } => {
+            nodes[idx] = BVHFlatNode {
+                left: 0,
+                right: 0,
+                aabb: bounds.to_aabb(),
+                first_primitive: *first,
+                primitive_count: *count,
+                split_axis: 0,
+                depth: *depth,
+            };
+        }
+        BuildNode::Inner {
+            left,
+            right,
+            bounds,
+            axis,
+            depth,
+        } => {
+            let l = flatten(left, nodes);
+            let r = flatten(right, nodes);
+            nodes[idx] = BVHFlatNode {
+                left: l,
+                right: r,
+                aabb: bounds.to_aabb(),
+                first_primitive: 0,
+                primitive_count: 0,
+                split_axis: *axis,
+                depth: *depth,
+            };
+        }
+    }
+
+    idx as u32
+}
+
 impl<T: Intersect> Intersect for BVH<T> {
     fn center(&self) -> Vec3 {
         return self.nodes[0].aabb.center();
@@ -328,19 +481,6 @@ impl<T: Intersect> Intersect for BVH<T> {
 
     fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>> {
         return self.intersectBVH(ray, ray_t);
-    }
-
-    fn sample_point(&self, u: f32, v: f32) -> Point3 {
-        if self.primitives.is_empty() {
-            return self.center();
-        }
-        // `u` selects the primitive; its fractional part is reused as a fresh
-        // uniform for the primitive's own surface sample.
-        let n = self.primitives.len();
-        let scaled = u * n as f32;
-        let i = (scaled as usize).min(n - 1);
-        let u2 = scaled - i as f32;
-        self.primitives[i].sample_point(u2, v)
     }
 }
 
@@ -423,35 +563,4 @@ mod sample_tests {
         assert_eq!(misses, 0, "{misses} interior rays missed a flat face (holes)");
     }
 
-    #[test]
-    fn bvh_samples_point_on_a_primitive() {
-        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
-        let t1 = Triangle::from_points(
-            &Point3::new(0.0, 0.0, 0.0),
-            &Point3::new(1.0, 0.0, 0.0),
-            &Point3::new(0.0, 1.0, 0.0),
-            mat.clone(),
-        );
-        let t2 = Triangle::from_points(
-            &Point3::new(0.0, 0.0, 5.0),
-            &Point3::new(1.0, 0.0, 5.0),
-            &Point3::new(0.0, 1.0, 5.0),
-            mat,
-        );
-        let bvh = BVH::build(vec![t1, t2]);
-        let mut rng = SmallRng::seed_from_u64(6);
-        for _ in 0..500 {
-            let p = bvh.sample_point(rng.random::<f32>(), rng.random::<f32>());
-            assert!(
-                p.x >= -1e-4 && p.y >= -1e-4 && p.x + p.y <= 1.0 + 1e-4,
-                "bad bary: {:?}",
-                p
-            );
-            assert!(
-                p.z.abs() < 1e-3 || (p.z - 5.0).abs() < 1e-3,
-                "off both tris: z={}",
-                p.z
-            );
-        }
-    }
 }

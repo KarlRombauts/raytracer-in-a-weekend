@@ -22,7 +22,6 @@ pub const RESIZE: &str = "\u{ED6E}";
 pub const CROSSHAIR: &str = "\u{E1D6}";
 pub const APERTURE: &str = "\u{E00A}";
 pub const IMAGE: &str = "\u{E2CA}";
-pub const FLOPPY: &str = "\u{E2CC}";
 pub const EYE: &str = "\u{E220}";
 pub const EYE_SLASH: &str = "\u{E224}";
 pub const COPY: &str = "\u{E1CC}"; // COPY_SIMPLE — confirmed in vendored Phosphor.ttf
@@ -31,6 +30,8 @@ pub const DOWNLOAD: &str = "\u{E20C}"; // DOWNLOAD_SIMPLE
 pub const CARET_DOWN: &str = "\u{E136}";
 pub const PLAY: &str = "\u{E3D0}";
 pub const RESET: &str = "\u{E038}"; // ARROW_COUNTER_CLOCKWISE
+pub const UNDO: &str = "\u{E038}"; // ARROW_COUNTER_CLOCKWISE
+pub const REDO: &str = "\u{E036}"; // ARROW_CLOCKWISE (E034 is the diagonal arrow-up-right)
 pub const SLIDERS: &str = "\u{E434}"; // SLIDERS_HORIZONTAL
 /// Phosphor regular CHECK (U+E182). Used for the "Local axes" custom checkbox.
 pub const CHECK: &str = "\u{E182}";

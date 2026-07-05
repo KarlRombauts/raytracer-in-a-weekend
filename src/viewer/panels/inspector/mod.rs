@@ -6,10 +6,16 @@ use eframe::egui::{self, Ui};
 
 use crate::scene::Scene;
 
-use super::super::{icons, state::{Tab, UiState}, widgets};
+use super::super::{command::SceneCommand, icons, state::{Tab, UiState}, widgets};
 
-/// Returns `true` if the scene was dirtied (needs a render restart).
-pub fn show_inspector(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> bool {
+/// Returns `true` if the scene was dirtied (needs a render restart). Object
+/// delete/duplicate are emitted as `SceneCommand`s into `cmds`.
+pub fn show_inspector(
+    ui: &mut Ui,
+    ui_state: &mut UiState,
+    scene: &mut Scene,
+    cmds: &mut Vec<SceneCommand>,
+) -> bool {
     let mut dirty = false;
     widgets::pill_tabs(ui, &mut ui_state.tab, &[
         (Tab::Object, icons::CUBE, "Object"),
@@ -19,7 +25,7 @@ pub fn show_inspector(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) ->
     ui.separator();
     egui::ScrollArea::vertical().show(ui, |ui| {
         dirty = match ui_state.tab {
-            Tab::Object => object::object_tab(ui, ui_state, scene),
+            Tab::Object => object::object_tab(ui, ui_state, scene, cmds),
             Tab::Camera => camera::camera_tab(ui, &mut scene.camera),
             Tab::Output => output::output_tab(ui, &mut scene.camera),
         };

@@ -1,4 +1,4 @@
-use crate::{interval::Interval, ray::*, vec3::{Point3, Vec3}};
+use crate::{interval::Interval, ray::*, vec3::Vec3};
 
 pub trait Intersect: Send + Sync {
     fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>>;
@@ -6,47 +6,4 @@ pub trait Intersect: Send + Sync {
     fn bounding_box(&self) -> &AABB;
 
     fn center(&self) -> Vec3;
-
-    /// Sample a point on this object's surface from two canonical uniforms
-    /// `(u, v)` in [0, 1)², for light sampling. Taking explicit uniforms (rather
-    /// than an rng) lets the caller supply *stratified* numbers. The default
-    /// returns the bounding-box center; shapes that can act as lights override it.
-    fn sample_point(&self, _u: f32, _v: f32) -> Point3 {
-        self.center()
-    }
-
-    /// Surface area, for area-light PDFs. Default 0 — a shape that returns 0 is
-    /// treated as not directly sampleable (see `build_world`).
-    fn area(&self) -> f32 {
-        0.0
-    }
-
-    /// Solid-angle PDF of sampling direction `dir` (from `origin`) toward this
-    /// object. Generic default: intersect self along `dir`, then convert the
-    /// uniform `1/area` area PDF to solid angle via the hit distance and the
-    /// light's facing cosine. Correct for any convex single surface that reports
-    /// a real `area()`. `dir` may be unnormalized.
-    fn pdf_value(&self, origin: Point3, dir: Vec3) -> f32 {
-        let ray = Ray::new(origin, dir);
-        match self.intersect(&ray, &Interval::new(0.001, f32::INFINITY)) {
-            None => 0.0,
-            Some(hit) => {
-                let dist2 = hit.t * hit.t * dir.length_squared();
-                let cos = (dir.dot(&hit.normal) / dir.length()).abs();
-                let a = self.area();
-                if cos < 1e-8 || a <= 0.0 {
-                    0.0
-                } else {
-                    dist2 / (cos * a)
-                }
-            }
-        }
-    }
-
-    /// A (unnormalized) direction from `origin` toward a point on this object,
-    /// sampled from uniforms `(u, v)`. Reuses `sample_point`, so it composes
-    /// through groups/BVH/transforms.
-    fn random_dir(&self, origin: Point3, u: f32, v: f32) -> Vec3 {
-        self.sample_point(u, v) - origin
-    }
 }

@@ -1,4 +1,6 @@
+mod command;
 mod controls;
+mod history;
 mod icons;
 mod orbit;
 mod panels;
@@ -121,13 +123,33 @@ pub struct ViewerApp {
     /// preview debounce clock) lives here.
     ui_state: state::UiState,
     /// In-flight scene-file load (None when idle).
-    scene_picker: Option<crate::platform::ScenePicker>,
+    scene_picker: Option<crate::platform::FilePicker>,
+    /// In-flight sample-card open: the (async on web) `.scene` fetch plus the
+    /// sample's display name. None when idle.
+    sample_open: Option<(crate::platform::FilePicker, String)>,
+    /// In-flight scene decode running on a worker thread: the handle, a label for
+    /// the loading view, and an optional final scene-name override (set for
+    /// samples; `None` for a picked file, which uses the embedded name).
+    decoding: Option<(crate::platform::SceneDecoder, String, Option<String>)>,
     /// Transient status line for scene save/load (message + egui-time when set).
     /// Auto-dismissed by the toast a few seconds after it appears.
     scene_status: Option<(String, f64)>,
     /// Cached library/Home screen state (thumbnails + per-sample metadata).
     home: panels::HomeState,
+    /// Undo/redo stack of scene snapshots (see [`history`]).
+    history: history::History<Scene>,
+    /// egui time of the last scroll-wheel dolly, used to coalesce a zoom gesture
+    /// into one undo entry (scroll has no release event, so we settle on idle).
+    last_scroll: f64,
 }
+
+/// Maximum number of undo steps retained. Snapshots are cheap (Arc-shared mesh
+/// data), so this is generous.
+const MAX_UNDO: usize = 100;
+
+/// Idle gap after the last scroll-wheel dolly before its undo transaction is
+/// committed — long enough to bridge frames within one zoom gesture.
+const UNDO_SCROLL_SETTLE: f32 = 0.18;
 
 impl ViewerApp {
     fn new(cc: &eframe::CreationContext<'_>, scene: Scene, width: u32, height: u32) -> Self {
@@ -151,9 +173,33 @@ impl ViewerApp {
             gizmo: transform_gizmo_egui::Gizmo::default(),
             ui_state: state::UiState::default(),
             scene_picker: None,
+            sample_open: None,
+            decoding: None,
             scene_status: None,
             home: panels::HomeState::default(),
+            history: history::History::new(MAX_UNDO),
+            last_scroll: -1.0,
         }
+    }
+
+    /// Undo (or redo, when `undo` is false) the last scene edit: swap the
+    /// current scene for the stored snapshot, rebuild the Edit preview, restart
+    /// the path trace, and drop a now-invalid selection.
+    fn apply_history(&mut self, undo: bool) {
+        let current = self.scene.lock().unwrap().clone();
+        let restored = if undo {
+            self.history.undo(current)
+        } else {
+            self.history.redo(current)
+        };
+        let Some(scene) = restored else { return };
+        let object_count = scene.objects.len();
+        *self.scene.lock().unwrap() = scene;
+        self.gl_renderer.lock().unwrap().mark_dirty();
+        if self.ui_state.selected.raw().is_some_and(|i| i >= object_count) {
+            self.ui_state.selected.clear();
+        }
+        self.render.invalidate();
     }
 
     /// Swap in a new scene, rebuild the Edit preview, restart the render, and
@@ -164,7 +210,8 @@ impl ViewerApp {
         *self.scene.lock().unwrap() = scene;
         self.initial_camera = cam;
         self.gl_renderer.lock().unwrap().mark_dirty();
-        self.ui_state.selected = None;
+        self.ui_state.selected.clear();
+        self.history.clear();
         self.render.invalidate();
         self.ui_state.scene_name = name.into();
         self.ui_state.screen = state::Screen::Editor;
@@ -211,25 +258,25 @@ impl eframe::App for ViewerApp {
         // egui time (seconds), used to time-stamp + auto-dismiss the status toast.
         let now = ui.input(|i| i.time);
 
-        // Apply a completed scene load (the picker resolves asynchronously on web).
+        // --- Scene loading pipeline: (fetch/pick bytes) -> (decode on a worker) ---
+        // Decoding rebuilds mesh BVHs via rayon, which must not run on the UI
+        // thread in the browser, so the bytes are handed to `decode_scene` (a
+        // worker) and the result is polled here. Both the file picker and the
+        // sample cards feed this same decode stage.
+
+        // 1) File picker ("Open .scene"): once bytes arrive, kick off a decode.
         if let Some(status) = self.scene_picker.as_ref().map(|p| p.poll()) {
             match status {
-                crate::platform::PickStatus::Pending => {
-                    ui.ctx().request_repaint(); // keep polling until it resolves
-                }
-                crate::platform::PickStatus::Done(bytes) => {
+                crate::platform::PickStatus::Pending => ui.ctx().request_repaint(),
+                crate::platform::PickStatus::Done(file) => {
                     self.scene_picker = None;
-                    match crate::scene_file::decode(&bytes) {
-                        Ok(loaded) => {
-                            let name = loaded
-                                .name
-                                .clone()
-                                .unwrap_or_else(|| "untitled".to_string());
-                            self.load_scene(loaded.scene, name);
-                            self.scene_status = Some(("Loaded scene".to_string(), now));
-                        }
-                        Err(e) => self.scene_status = Some((format!("Load failed: {e}"), now)),
-                    }
+                    let label = std::path::Path::new(&file.name)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("scene")
+                        .to_string();
+                    self.decoding = Some((crate::platform::decode_scene(file.bytes), label, None));
+                    self.ui_state.screen = state::Screen::Loading;
                 }
                 crate::platform::PickStatus::Cancelled => self.scene_picker = None,
                 crate::platform::PickStatus::Failed(e) => {
@@ -237,6 +284,71 @@ impl eframe::App for ViewerApp {
                     self.scene_status = Some((format!("Load failed: {e}"), now));
                 }
             }
+        }
+
+        // 2) Sample card: its `.scene` is fetched (async on the web). The loading
+        // view appears the moment the fetch is pending so the click feels instant.
+        if let Some(status) = self.sample_open.as_ref().map(|(p, _)| p.poll()) {
+            match status {
+                crate::platform::PickStatus::Pending => {
+                    self.ui_state.screen = state::Screen::Loading;
+                    ui.ctx().request_repaint();
+                }
+                crate::platform::PickStatus::Done(file) => {
+                    let name = self.sample_open.take().map(|(_, n)| n).unwrap_or_default();
+                    self.decoding =
+                        Some((crate::platform::decode_scene(file.bytes), name.clone(), Some(name)));
+                    self.ui_state.screen = state::Screen::Loading;
+                }
+                crate::platform::PickStatus::Cancelled => {
+                    self.sample_open = None;
+                    self.ui_state.screen = state::Screen::Home;
+                }
+                crate::platform::PickStatus::Failed(e) => {
+                    self.sample_open = None;
+                    self.ui_state.screen = state::Screen::Home;
+                    self.scene_status = Some((format!("Couldn't open scene: {e}"), now));
+                }
+            }
+        }
+
+        // 3) Decode stage (runs on a worker): swap in the scene when it's ready.
+        if let Some(status) = self.decoding.as_ref().map(|(d, _, _)| d.poll()) {
+            match status {
+                crate::platform::DecodeStatus::Pending => {
+                    self.ui_state.screen = state::Screen::Loading;
+                    ui.ctx().request_repaint();
+                }
+                crate::platform::DecodeStatus::Done(loaded) => {
+                    let name_override = self.decoding.take().and_then(|(_, _, n)| n);
+                    let name = name_override
+                        .or_else(|| loaded.name.clone())
+                        .unwrap_or_else(|| "untitled".to_string());
+                    self.load_scene(loaded.scene, name); // switches to the editor
+                }
+                crate::platform::DecodeStatus::Failed(e) => {
+                    self.decoding = None;
+                    self.ui_state.screen = state::Screen::Home;
+                    self.scene_status = Some((format!("Couldn't open scene: {e}"), now));
+                }
+            }
+        }
+
+        // Transient loading view while a scene fetches/decodes. The decode runs
+        // off-thread, so the bar keeps animating the whole time.
+        if self.ui_state.screen == state::Screen::Loading {
+            self.render.pause();
+            let label = self
+                .decoding
+                .as_ref()
+                .map(|(_, l, _)| l.clone())
+                .or_else(|| self.sample_open.as_ref().map(|(_, n)| n.clone()))
+                .unwrap_or_else(|| "scene".to_string());
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(theme::BG_APP))
+                .show_inside(ui, |ui| panels::show_loading(ui, &label));
+            ui.ctx().request_repaint(); // animate the bar
+            return;
         }
 
         // Library (Home) screen: full-window, no editor panels and no path
@@ -255,8 +367,14 @@ impl eframe::App for ViewerApp {
                     self.load_scene(samples::new_scene(), "untitled");
                 }
                 panels::HomeAction::OpenSample(i) => {
+                    // Start fetching the sample's .scene (a disk read on native,
+                    // an async HTTP fetch on the web); the poll above applies it.
                     let s = &samples::SAMPLES[i];
-                    self.load_scene((s.build)(), s.name);
+                    self.sample_open = Some((
+                        crate::platform::fetch_file(&samples::scene_url(s.file)),
+                        s.name.to_string(),
+                    ));
+                    ui.ctx().request_repaint();
                 }
                 panels::HomeAction::OpenSceneFile => {
                     self.scene_picker = Some(crate::platform::pick_scene());
@@ -299,7 +417,112 @@ impl eframe::App for ViewerApp {
         // Render↔Edit transition and pause/resume the path trace once.
         let mode_before = self.ui_state.mode;
         let mut dirty = false;
+        // Set true by a gizmo drag or camera orbit/pan/dolly — scene edits that
+        // (unlike panel edits) don't flow through `dirty`. Folded into the undo
+        // change signal below.
+        let mut viewport_changed = false;
         let mut actions: Vec<panels::Action> = Vec::new();
+        // Scene edits (add/delete/duplicate) collected from the panels and
+        // keyboard, applied through one interpreter after layout.
+        let mut commands: Vec<command::SceneCommand> = Vec::new();
+
+        // Snapshot the scene *before* the panels mutate it, so an edit this
+        // frame can record its pre-edit baseline for undo. Skipped on frames
+        // with no user input (e.g. render-thread repaints) to avoid a needless
+        // clone — an edit can only originate from a pointer/keyboard event.
+        // Only needed to *open* a transaction; once one is in flight `begin`
+        // ignores the baseline, so a drag clones just once (its first frame).
+        let editing_input = ctx.input(|i| i.pointer.any_down() || !i.events.is_empty());
+        let before: Option<Scene> = (!self.history.in_transaction() && editing_input)
+            .then(|| self.scene.lock().unwrap().clone());
+
+        // Undo/redo keyboard shortcuts: Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z (plus
+        // Ctrl+Y). `COMMAND` maps to Cmd on macOS and Ctrl elsewhere. Skipped
+        // while a text field has keyboard focus, so a rename's own native undo
+        // works; the scene undo then takes over once the field is blurred.
+        // Applied via the action queue alongside the toolbar buttons.
+        let (key_undo, key_redo) = if ctx.wants_keyboard_input() {
+            (false, false)
+        } else {
+            ctx.input_mut(|i| {
+                use egui::{Key, KeyboardShortcut as Ks, Modifiers as M};
+                // Redo must be consumed BEFORE undo: egui's `matches_logically`
+                // rejects only when the *pattern* needs a modifier the event
+                // lacks, never when the event carries an *extra* one — so the
+                // Cmd+Z (undo) pattern also matches a Cmd+Shift+Z press. Checked
+                // undo-first, undo would eat the redo chord and redo never fires.
+                let redo = i.consume_shortcut(&Ks::new(M::COMMAND | M::SHIFT, Key::Z))
+                    || i.consume_shortcut(&Ks::new(M::COMMAND, Key::Y));
+                let undo = i.consume_shortcut(&Ks::new(M::COMMAND, Key::Z));
+                (undo, redo)
+            })
+        };
+        if key_undo {
+            actions.push(panels::Action::Undo);
+        }
+        if key_redo {
+            actions.push(panels::Action::Redo);
+        }
+
+        // --- Editor shortcuts -------------------------------------------------
+        // G / R / S pick the transform tool, Delete / Backspace / X remove the
+        // selected object, Cmd/Ctrl+D duplicates it, Tab flips Render↔Edit, F
+        // frames (resets) the camera. Suppressed while a text field has focus so
+        // typing a name doesn't trigger them. Single-key chords use COMMAND-less
+        // patterns, so Cmd+S (none here) / Cmd+D still read distinctly.
+        if !ctx.wants_keyboard_input() {
+            use egui::{Key, KeyboardShortcut as Ks, Modifiers as M};
+            let (k_g, k_r, k_s, k_del, k_dup, k_tab, k_frame) = ctx.input_mut(|i| {
+                (
+                    i.consume_shortcut(&Ks::new(M::NONE, Key::G)),
+                    i.consume_shortcut(&Ks::new(M::NONE, Key::R)),
+                    i.consume_shortcut(&Ks::new(M::NONE, Key::S)),
+                    i.consume_key(M::NONE, Key::Delete)
+                        || i.consume_key(M::NONE, Key::Backspace)
+                        || i.consume_shortcut(&Ks::new(M::NONE, Key::X)),
+                    i.consume_shortcut(&Ks::new(M::COMMAND, Key::D)),
+                    i.consume_shortcut(&Ks::new(M::NONE, Key::Tab)),
+                    i.consume_shortcut(&Ks::new(M::NONE, Key::F)),
+                )
+            });
+
+            // Transform-tool selection only makes sense over the Edit gizmo.
+            if self.ui_state.mode == Mode::Edit {
+                let only = |t, r, s| raster::gizmo::GizmoModes {
+                    translate: t,
+                    rotate: r,
+                    scale: s,
+                };
+                if k_g {
+                    self.ui_state.gizmo_modes = only(true, false, false);
+                }
+                if k_r {
+                    self.ui_state.gizmo_modes = only(false, true, false);
+                }
+                if k_s {
+                    self.ui_state.gizmo_modes = only(false, false, true);
+                }
+            }
+            if k_tab {
+                self.ui_state.mode = match self.ui_state.mode {
+                    Mode::Render => Mode::Edit,
+                    Mode::Edit => Mode::Render,
+                };
+            }
+            if k_frame {
+                actions.push(panels::Action::ResetCamera);
+            }
+            // Delete / duplicate the selected object — emitted as a command and
+            // applied (with the render lock + undo baseline) in the one
+            // interpreter pass below. The interpreter validates the index.
+            if let Some(i) = self.ui_state.selected.raw() {
+                if k_del {
+                    commands.push(command::SceneCommand::DeleteObject(i));
+                } else if k_dup {
+                    commands.push(command::SceneCommand::DuplicateObject(i));
+                }
+            }
+        }
 
         // --- Top bar: logo, scene chip, mode toggle, save buttons ---
         egui::Panel::top("top_bar")
@@ -307,7 +530,13 @@ impl eframe::App for ViewerApp {
             .frame(egui::Frame::NONE.fill(theme::BG_TOPBAR).inner_margin(egui::Margin::symmetric(14, 0)))
             .show_inside(ui, |ui| {
                 let scene = self.scene.lock().unwrap();
-                actions.push(panels::show_top_bar(ui, &mut self.ui_state, &scene));
+                actions.push(panels::show_top_bar(
+                    ui,
+                    &mut self.ui_state,
+                    &scene,
+                    self.history.can_undo(),
+                    self.history.can_redo(),
+                ));
             });
 
         // --- Left outliner: scene object rows + Add menu ---
@@ -322,7 +551,7 @@ impl eframe::App for ViewerApp {
             )
             .show_inside(ui, |ui| {
                 let mut scene = self.scene.lock().unwrap();
-                dirty |= panels::show_outliner(ui, &mut self.ui_state, &mut scene);
+                dirty |= panels::show_outliner(ui, &mut self.ui_state, &mut scene, &mut commands);
             });
 
         // --- Right inspector: Object / Camera / Output tabs ---
@@ -337,7 +566,7 @@ impl eframe::App for ViewerApp {
             )
             .show_inside(ui, |ui| {
                 let mut scene = self.scene.lock().unwrap();
-                dirty |= panels::show_inspector(ui, &mut self.ui_state, &mut scene);
+                dirty |= panels::show_inspector(ui, &mut self.ui_state, &mut scene, &mut commands);
             });
 
         // --- Status dock: progress line + status + Samples/Bounces + restart ---
@@ -430,8 +659,11 @@ impl eframe::App for ViewerApp {
                         raster::camera_gl::projection_matrix(
                             &s.camera,
                             rect.width() / rect.height(),
-                            0.05,
-                            1000.0,
+                            // Generous near/far so the preview doesn't clip the
+                            // object you've dollied in on, nor the far reaches of
+                            // a large scene.
+                            0.02,
+                            20000.0,
                         )
                     };
 
@@ -448,7 +680,7 @@ impl eframe::App for ViewerApp {
                     //    gizmo overlays it). The outline tracks `selected`.
                     let scene_arc = self.scene.clone();
                     let renderer = self.gl_renderer.clone();
-                    let selected = self.ui_state.selected;
+                    let selected = self.ui_state.selected.raw();
                     let cb = eframe::egui_glow::CallbackFn::new(move |info, painter| {
                         let scene = scene_arc.lock().unwrap();
                         renderer
@@ -466,7 +698,7 @@ impl eframe::App for ViewerApp {
                     //    camera or reselect.
                     let mut gizmo_active = false;
                     let mut moved = false;
-                    if let Some(i) = self.ui_state.selected {
+                    if let Some(i) = self.ui_state.selected.raw() {
                         let mut scene = self.scene.lock().unwrap();
                         if i < scene.objects.len() {
                             let view = raster::camera_gl::view_matrix(&scene.camera);
@@ -538,6 +770,9 @@ impl eframe::App for ViewerApp {
                         if scroll != 0.0 && ptr.is_some_and(|p| rect.contains(p) && !over_overlay(p)) {
                             orbit::dolly(&mut self.scene.lock().unwrap().camera, scroll);
                             moved = true;
+                            // Mark scroll time so the undo driver keeps this
+                            // zoom's transaction open until scrolling idles.
+                            self.last_scroll = now;
                         }
                         // A click in the preview selects the object under it; a
                         // click on empty space clears the selection. Same
@@ -554,15 +789,18 @@ impl eframe::App for ViewerApp {
                                     1.0 - 2.0 * (pos.y - rect.top()) / rect.height(),
                                 );
                                 let ray = raster::pick::screen_ray(view, proj, ndc);
-                                self.ui_state.selected = raster::pick::pick(&s, &ray);
+                                self.ui_state.selected.set_opt(raster::pick::pick(&s, &ray));
                             } else {
-                                self.ui_state.selected = None;
+                                self.ui_state.selected.clear();
                             }
                             ui.ctx().request_repaint();
                         }
                     }
                     if moved {
                         self.ui_state.last_interact = now;
+                        // Gizmo / camera edits bypass `dirty`; surface them to
+                        // the undo driver below.
+                        viewport_changed = true;
                     }
 
                     // Reduced-resolution preview while actively interacting;
@@ -608,6 +846,29 @@ impl eframe::App for ViewerApp {
         });
 
         // --- Apply panel actions + dirty centrally (all scene locks released) ---
+        // Set by actions that mutate the scene but bypass `dirty` (Reset camera),
+        // so they too land on the undo stack.
+        // --- Scene-edit commands: one interpreter, one valid selection --------
+        // Applied here (not in the panels) so add/delete/duplicate share a single
+        // place that mutates the scene and keeps the selection valid. A change
+        // folds into `dirty`, so the undo-transaction driver below coalesces it
+        // like any other edit.
+        if !commands.is_empty() {
+            let mut scene = self.scene.lock().unwrap();
+            for cmd in commands.drain(..) {
+                let is_add = matches!(cmd, command::SceneCommand::AddObject(_));
+                if command::apply_scene_command(cmd, &mut scene, &mut self.ui_state.selected) {
+                    dirty = true;
+                }
+                // Reveal the Object tab for a freshly added object (a UI concern,
+                // kept out of the pure interpreter).
+                if is_add {
+                    self.ui_state.tab = state::Tab::Object;
+                }
+            }
+        }
+
+        let mut action_changed = false;
         for a in actions {
             match a {
                 panels::Action::SaveImage => {
@@ -622,9 +883,13 @@ impl eframe::App for ViewerApp {
                 panels::Action::ResetCamera => {
                     let mut scene = self.scene.lock().unwrap();
                     scene.camera = self.initial_camera.clone();
+                    drop(scene);
+                    action_changed = true;
                     self.render.invalidate();
                 }
                 panels::Action::Restart => self.render.invalidate(),
+                panels::Action::Undo => self.apply_history(true),
+                panels::Action::Redo => self.apply_history(false),
                 panels::Action::SaveScene => {
                     // Thumbnail from the currently displayed frame (gamma-corrected RGBA).
                     let (rgba, w, h) = {
@@ -649,6 +914,36 @@ impl eframe::App for ViewerApp {
         }
         if dirty {
             self.render.invalidate();
+        }
+
+        // --- Undo transaction driver -------------------------------------
+        // Open a transaction on the first frame the scene changed (recording the
+        // pre-edit `before` baseline), and close it once the interaction settles,
+        // so a continuous gesture coalesces into a single undo entry. An edit is
+        // "still in progress" while any of these hold:
+        //   - the pointer is down       → slider / gizmo / camera-orbit drag
+        //   - a text field has focus    → a rename being typed
+        //   - a scroll just happened    → a zoom gesture (no release event, so we
+        //                                 settle on a short idle gap)
+        // A discrete edit (add/delete/click) matches none of these, so it changes
+        // and commits within the same frame.
+        let now_secs = ctx.input(|i| i.time);
+        let scroll_settling = (now_secs - self.last_scroll) < UNDO_SCROLL_SETTLE as f64;
+        let interacting =
+            ctx.input(|i| i.pointer.any_down()) || ctx.wants_keyboard_input() || scroll_settling;
+
+        let scene_changed = dirty || viewport_changed || action_changed;
+        if scene_changed {
+            if let Some(baseline) = before {
+                self.history.begin(baseline);
+            }
+        }
+        if !interacting {
+            self.history.commit();
+        } else if scroll_settling && self.history.in_transaction() {
+            // Scrolling stops without an event, so schedule the wake-up that lets
+            // the idle window elapse and the transaction commit.
+            ctx.request_repaint_after(Duration::from_secs_f32(UNDO_SCROLL_SETTLE));
         }
 
         // The path trace is wasted work in Edit mode (the GL preview is shown

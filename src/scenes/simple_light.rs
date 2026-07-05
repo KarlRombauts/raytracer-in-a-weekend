@@ -8,12 +8,18 @@ use crate::{
     geometry::{Quad, Sphere},
     group::IntersectGroup,
     material::{diffuse_light, DiffuseLight, Lambertian},
-    texture::{noise_texture, NoiseTexture},
+    texture::{noise_texture, NoiseStyle, NoiseTexture},
     vec3::{Point3, Vec3},
 };
 
 pub fn simple_light() {
-    let noise_texture = Arc::new(NoiseTexture::new(4., 7));
+    let noise_texture = Arc::new(NoiseTexture::new(
+        4.,
+        7,
+        NoiseStyle::Turbulence,
+        Color::new(1., 1., 1.),
+        Color::new(0., 0., 0.),
+    ));
     let noise_material = Arc::new(Lambertian::from_texture(noise_texture));
     let mut world = IntersectGroup::new();
     //ground

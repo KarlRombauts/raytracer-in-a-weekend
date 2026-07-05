@@ -22,6 +22,50 @@ fn color_prop(ui: &mut egui::Ui, label: &str, c: &mut Color) -> bool {
     })
 }
 
+/// Shared editor for a procedural noise texture: pattern style, scale, the two
+/// blend colours, and octave detail. Used by both the full texture editor and a
+/// checker cell. `id` keeps the style ComboBox unique between the two.
+fn noise_controls(
+    ui: &mut egui::Ui,
+    id: &str,
+    scale: &mut f32,
+    depth: &mut u32,
+    style: &mut crate::texture::NoiseStyle,
+    light: &mut Color,
+    dark: &mut Color,
+) -> bool {
+    let mut changed = false;
+    changed |= widgets::prop_row(ui, "Style", |ui| {
+        let mut c = false;
+        egui::ComboBox::from_id_salt(format!("{id}_noise_style"))
+            .selected_text(style.label())
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                menu_item_style(ui);
+                for s in crate::texture::NoiseStyle::ALL {
+                    if ui.selectable_label(*style == s, s.label()).clicked() {
+                        *style = s;
+                        c = true;
+                    }
+                }
+            });
+        c
+    });
+    changed |= widgets::prop_row(ui, "Scale", |ui| {
+        widgets::axis_field(ui, widgets::Axis::None, scale, 0.01, Some(3), "", Some(0.01..=100.0))
+    });
+    changed |= color_prop(ui, "Light", light);
+    changed |= color_prop(ui, "Dark", dark);
+    let mut d = *depth as f32;
+    if widgets::prop_row(ui, "Detail", |ui| {
+        widgets::axis_field(ui, widgets::Axis::None, &mut d, 1.0, Some(0), "", Some(1.0..=10.0))
+    }) {
+        *depth = d.round().clamp(1.0, 10.0) as u32;
+        changed = true;
+    }
+    changed
+}
+
 /// A Phosphor type icon for the object list.
 pub(crate) fn shape_icon(s: &Shape) -> &'static str {
     match s {
@@ -190,7 +234,7 @@ pub(crate) fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
     let current = match t {
         TextureSpec::Solid { .. } => "Color",
         TextureSpec::Checker { .. } => "Checker",
-        TextureSpec::Noise { .. } => "Noise",
+        TextureSpec::Noise { .. } | TextureSpec::NoiseLegacy { .. } => "Noise",
         TextureSpec::Image { .. } => "Image",
     };
 
@@ -223,12 +267,19 @@ pub(crate) fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
                     c = true;
                 }
                 if ui
-                    .selectable_label(matches!(t, TextureSpec::Noise { .. }), "Noise")
+                    .selectable_label(
+                        matches!(t, TextureSpec::Noise { .. } | TextureSpec::NoiseLegacy { .. }),
+                        "Noise",
+                    )
                     .clicked()
                 {
                     *t = TextureSpec::Noise {
                         scale: 4.0,
                         depth: 7,
+                        style: crate::texture::NoiseStyle::Turbulence,
+                        // Carry the current colour as the light tone; dark to black.
+                        light: prev,
+                        dark: Color::new(0.0, 0.0, 0.0),
                     };
                     c = true;
                 }
@@ -246,6 +297,20 @@ pub(crate) fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
         c
     });
 
+    // Upgrade a legacy grayscale noise to the editable coloured form (an
+    // identical white/black turbulence) so its colours and style become
+    // editable. Silent — the look is unchanged, so no re-render is signalled.
+    if let TextureSpec::NoiseLegacy { scale, depth } = t {
+        let (scale, depth) = (*scale, *depth);
+        *t = TextureSpec::Noise {
+            scale,
+            depth,
+            style: crate::texture::NoiseStyle::Turbulence,
+            light: Color::new(1.0, 1.0, 1.0),
+            dark: Color::new(0.0, 0.0, 0.0),
+        };
+    }
+
     match t {
         TextureSpec::Solid { color } => changed |= color_prop(ui, "Color", color),
         TextureSpec::Checker { scale, even, odd } => {
@@ -255,18 +320,11 @@ pub(crate) fn texture_controls(ui: &mut egui::Ui, t: &mut TextureSpec) -> bool {
             changed |= cell_texture_controls(ui, "checker_even", even);
             changed |= cell_texture_controls(ui, "checker_odd", odd);
         }
-        TextureSpec::Noise { scale, depth } => {
-            changed |= widgets::prop_row(ui, "Scale", |ui| {
-                widgets::axis_field(ui, widgets::Axis::None, scale, 0.01, Some(3), "", Some(0.01..=100.0))
-            });
-            let mut d = *depth as f32;
-            if widgets::prop_row(ui, "Detail", |ui| {
-                widgets::axis_field(ui, widgets::Axis::None, &mut d, 1.0, Some(0), "", Some(1.0..=10.0))
-            }) {
-                *depth = d.round().clamp(1.0, 10.0) as u32;
-                changed = true;
-            }
+        TextureSpec::Noise { scale, depth, style, light, dark } => {
+            changed |= noise_controls(ui, "tex", scale, depth, style, light, dark);
         }
+        // Unreachable: upgraded to `Noise` just above.
+        TextureSpec::NoiseLegacy { .. } => {}
         TextureSpec::Image { asset, mapping } => {
             changed |= image_texture_card(ui, asset, mapping);
         }
@@ -279,7 +337,7 @@ fn cell_texture_controls(ui: &mut egui::Ui, id: &str, t: &mut CellTexture) -> bo
     let mut changed = false;
     let current = match t {
         CellTexture::Solid { .. } => "Color",
-        CellTexture::Noise { .. } => "Noise",
+        CellTexture::Noise { .. } | CellTexture::NoiseLegacy { .. } => "Noise",
         CellTexture::Image { .. } => "Image",
     };
 
@@ -300,12 +358,18 @@ fn cell_texture_controls(ui: &mut egui::Ui, id: &str, t: &mut CellTexture) -> bo
                     c = true;
                 }
                 if ui
-                    .selectable_label(matches!(t, CellTexture::Noise { .. }), "Noise")
+                    .selectable_label(
+                        matches!(t, CellTexture::Noise { .. } | CellTexture::NoiseLegacy { .. }),
+                        "Noise",
+                    )
                     .clicked()
                 {
                     *t = CellTexture::Noise {
                         scale: 4.0,
                         depth: 7,
+                        style: crate::texture::NoiseStyle::Turbulence,
+                        light: Color::new(1.0, 1.0, 1.0),
+                        dark: Color::new(0.0, 0.0, 0.0),
                     };
                     c = true;
                 }
@@ -322,32 +386,38 @@ fn cell_texture_controls(ui: &mut egui::Ui, id: &str, t: &mut CellTexture) -> bo
         c
     });
 
+    // Upgrade a legacy grayscale cell noise to the editable coloured form.
+    if let CellTexture::NoiseLegacy { scale, depth } = t {
+        let (scale, depth) = (*scale, *depth);
+        *t = CellTexture::Noise {
+            scale,
+            depth,
+            style: crate::texture::NoiseStyle::Turbulence,
+            light: Color::new(1.0, 1.0, 1.0),
+            dark: Color::new(0.0, 0.0, 0.0),
+        };
+    }
+
     match t {
         CellTexture::Solid { color } => changed |= color_prop(ui, "Color", color),
-        CellTexture::Noise { scale, depth } => {
-            changed |= widgets::prop_row(ui, "Scale", |ui| {
-                widgets::axis_field(ui, widgets::Axis::None, scale, 0.01, Some(3), "", Some(0.01..=100.0))
-            });
-            let mut d = *depth as f32;
-            if widgets::prop_row(ui, "Detail", |ui| {
-                widgets::axis_field(ui, widgets::Axis::None, &mut d, 1.0, Some(0), "", Some(1.0..=10.0))
-            }) {
-                *depth = d.round().clamp(1.0, 10.0) as u32;
-                changed = true;
-            }
+        CellTexture::Noise { scale, depth, style, light, dark } => {
+            changed |= noise_controls(ui, id, scale, depth, style, light, dark);
         }
-        CellTexture::Image { asset } => changed |= image_picker_row(ui, asset),
+        // Unreachable: upgraded to `Noise` just above.
+        CellTexture::NoiseLegacy { .. } => {}
+        CellTexture::Image { asset } => changed |= image_picker_row(ui, asset, id),
     }
     changed
 }
 
-/// A row showing the current image label and a button that opens a native file
-/// dialog, reading the chosen file's bytes straight into the embedded `Asset`.
-/// Used by `cell_texture_controls` for the checker cell Image variant.
-fn image_picker_row(ui: &mut egui::Ui, asset: &mut Asset) -> bool {
+/// A row showing the current image label and a button that opens a file picker,
+/// reading the chosen file's bytes straight into the embedded `Asset`. Used by
+/// `cell_texture_controls` for the checker cell Image variant. `salt` keeps this
+/// row's picker distinct from the main texture's (and the other cell's).
+fn image_picker_row(ui: &mut egui::Ui, asset: &mut Asset, salt: &str) -> bool {
     let mut changed = false;
     widgets::prop_row(ui, "Image", |ui| {
-        changed |= image_load_button(ui, asset);
+        changed |= image_load_button(ui, asset, salt);
         let label = asset.label.clone().unwrap_or_else(|| "(none)".to_string());
         // Truncate long filenames so they don't overflow and push the panel wider.
         ui.add(egui::Label::new(label).truncate());
@@ -355,37 +425,42 @@ fn image_picker_row(ui: &mut egui::Ui, asset: &mut Asset) -> bool {
     changed
 }
 
-/// "Load image…" button: opens a native file picker (native-only; wasm shows a
-/// disabled button). Returns true if a new file was loaded into `asset`.
-/// Factored out so both `image_picker_row` (cell textures) and
-/// `image_texture_card` (full texture) share the rfd logic without duplication.
-fn image_load_button(ui: &mut egui::Ui, asset: &mut Asset) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        if ui
-            .button(format!("{} Load image\u{2026}", icons::FOLDER))
-            .clicked()
-        {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Image", &["png", "jpg", "jpeg"])
-                .pick_file()
-            {
-                if let Ok(bytes) = std::fs::read(&path) {
-                    asset.bytes = bytes.into();
-                    asset.label = path.file_name().map(|s| s.to_string_lossy().into_owned());
-                    return true;
-                }
+/// "Load image…" button and the upload it kicks off. The pick is a blocking
+/// dialog on native and an async `<input type=file>` on the web; either way the
+/// [`FilePicker`](crate::platform::FilePicker) is stashed in egui's per-frame
+/// data under `salt` and polled here each frame, so the bytes land in `asset`
+/// once the user has chosen. `salt` must be stable across frames for a given
+/// asset (and distinct between assets). Returns true the frame a file lands.
+fn image_load_button(ui: &mut egui::Ui, asset: &mut Asset, salt: &str) -> bool {
+    use crate::platform::{FilePicker, PickStatus};
+    let id = ui.make_persistent_id(("image_pick", salt));
+    let mut changed = false;
+
+    // Poll a pick started on an earlier frame (on native it already resolved).
+    if let Some(picker) = ui.data(|d| d.get_temp::<FilePicker>(id)) {
+        match picker.poll() {
+            PickStatus::Pending => ui.ctx().request_repaint(), // keep polling
+            PickStatus::Done(file) => {
+                ui.data_mut(|d| d.remove::<FilePicker>(id));
+                asset.bytes = file.bytes.into();
+                asset.label = Some(file.name);
+                changed = true;
+            }
+            PickStatus::Cancelled | PickStatus::Failed(_) => {
+                ui.data_mut(|d| d.remove::<FilePicker>(id));
             }
         }
     }
-    #[cfg(target_arch = "wasm32")]
+
+    if ui
+        .button(format!("{} Load image\u{2026}", icons::FOLDER))
+        .clicked()
     {
-        let _ = ui
-            .add_enabled(false, egui::Button::new("Load image\u{2026}"))
-            .on_disabled_hover_text("Image import isn't available in the browser yet");
-        let _ = asset;
+        let picker = crate::platform::pick_file("Image", &["png", "jpg", "jpeg"]);
+        ui.data_mut(|d| d.insert_temp(id, picker));
+        ui.ctx().request_repaint();
     }
-    false
+    changed
 }
 
 /// Card-style editor for `TextureSpec::Image`. Shows a thumbnail, filename,
@@ -491,7 +566,7 @@ fn image_texture_card(
                         .truncate(),
                     );
                     ui.add_space(4.0);
-                    changed |= image_load_button(ui, asset);
+                    changed |= image_load_button(ui, asset, "texture_main");
                 });
             });
 
@@ -764,49 +839,127 @@ pub(crate) fn default_plane(n: usize) -> ObjectSpec {
     }
 }
 
-/// Show an "Import .obj" button and, when clicked, open a file picker and load
-/// the chosen mesh. Returns `true` if a new object was successfully added.
-///
-/// On wasm the button is shown disabled with an explanatory tooltip.
-pub(crate) fn import_obj(
-    ui: &mut egui::Ui,
-    objects: &mut Vec<ObjectSpec>,
-    selected: &mut Option<usize>,
-) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
+/// egui-data key for the in-flight OBJ import. Global (not tied to the Add-menu
+/// popup, which closes on click) so [`poll_obj_import`] can pick it up from a
+/// panel that stays mounted.
+const OBJ_PICK_ID: &str = "pending_obj_import";
+
+/// Where to drop a freshly imported mesh: the centre of the existing placeable
+/// geometry and a size ~⅓ of its span, so an import lands visible inside the
+/// scene rather than at the origin. Falls back to a 2-unit object at the origin
+/// for an empty scene.
+fn import_fit_target(objects: &[ObjectSpec]) -> (Vec3, f32) {
+    match scene::placeable_bounds(objects) {
+        Some((min, max)) => {
+            let extent = max - min;
+            let span = extent.x.max(extent.y).max(extent.z);
+            ((min + max) * 0.5, span * 0.33)
+        }
+        None => (Vec3::ZERO, 2.0),
+    }
+}
+
+/// The in-flight OBJ import stored in egui data. Two stages: first the bytes are
+/// fetched/read (`Fetching`, with an optional display-name override — set for
+/// bundled sample meshes, `None` for an uploaded file), then they're parsed and
+/// the mesh BVH is built on a worker (`Building`). The build is off-thread for
+/// the same reason scene decode is: `BVH::build` forks via rayon, which can't
+/// run on the browser's main thread.
+#[derive(Clone)]
+enum ObjImport {
+    Fetching(crate::platform::FilePicker, Option<String>),
+    Building(crate::platform::ObjBuilder),
+}
+
+/// Outcome of [`poll_obj_import`] for the frame.
+pub(crate) enum ImportStatus {
+    /// Nothing importing.
+    Idle,
+    /// A mesh is downloading/reading or building (kept off the UI thread).
+    Loading,
+    /// A mesh was just added (caller should mark the scene dirty).
+    Added,
+}
+
+/// Start loading a bundled sample mesh from `assets/objs/<file>` — a disk read
+/// on native, an HTTP fetch on the web (Trunk copies `assets/objs` into the
+/// bundle). The handle is stashed in egui data and [`poll_obj_import`] builds +
+/// adds it once the bytes arrive, under the display name `label`.
+pub(crate) fn add_sample_mesh(ui: &egui::Ui, label: &str, file: &str) {
+    let picker = crate::platform::fetch_file(&format!("assets/objs/{file}"));
+    let state = ObjImport::Fetching(picker, Some(label.to_string()));
+    ui.data_mut(|d| d.insert_temp(egui::Id::new(OBJ_PICK_ID), state));
+    ui.ctx().request_repaint();
+}
+
+/// Show an "Import .obj" button that starts a file pick (a blocking dialog on
+/// native, an async `<input type=file>` on the web). The picker is stashed in
+/// egui data; [`poll_obj_import`] — called from a panel that stays mounted —
+/// builds + adds the mesh once the bytes arrive. (The Add-menu popup closes on
+/// click, so it can't do the adding itself.)
+pub(crate) fn import_obj(ui: &mut egui::Ui) {
     if ui
         .button(format!("{}  Import .obj\u{2026}", icons::FOLDER))
         .clicked()
     {
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Wavefront OBJ", &["obj"])
-            .pick_file()
-        {
-            let (center, size) = match scene::placeable_bounds(objects) {
-                Some((min, max)) => {
-                    let extent = max - min;
-                    let span = extent.x.max(extent.y).max(extent.z);
-                    ((min + max) * 0.5, span * 0.33)
-                }
-                None => (Vec3::ZERO, 2.0),
-            };
-            if let Some(obj) = ObjectSpec::from_obj(&path, center, size) {
-                objects.push(obj);
-                *selected = Some(objects.len() - 1);
-                return true;
+        let picker = crate::platform::pick_file("Wavefront OBJ", &["obj"]);
+        let state = ObjImport::Fetching(picker, None);
+        ui.data_mut(|d| d.insert_temp(egui::Id::new(OBJ_PICK_ID), state));
+        ui.ctx().request_repaint();
+    }
+}
+
+/// Poll a pending OBJ import once per frame from a panel that always renders
+/// (the outliner). Drives the fetch -> worker-build -> add pipeline. Works for
+/// both uploads and bundled sample meshes, native and web.
+pub(crate) fn poll_obj_import(
+    ui: &egui::Ui,
+    objects: &mut Vec<ObjectSpec>,
+    selected: &mut super::state::Selection,
+) -> ImportStatus {
+    use crate::platform::PickStatus;
+    let id = egui::Id::new(OBJ_PICK_ID);
+    let Some(state) = ui.data(|d| d.get_temp::<ObjImport>(id)) else {
+        return ImportStatus::Idle;
+    };
+    match state {
+        ObjImport::Fetching(picker, name_override) => match picker.poll() {
+            PickStatus::Pending => {
+                ui.ctx().request_repaint(); // keep polling until the fetch resolves
+                ImportStatus::Loading
             }
-        }
+            PickStatus::Done(file) => {
+                // Hand the parse + BVH build to a worker (mustn't block the UI
+                // thread, especially in the browser). Fit is computed here, cheaply.
+                let (center, size) = import_fit_target(objects);
+                let name = name_override.unwrap_or_else(|| {
+                    std::path::Path::new(&file.name)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("mesh")
+                        .to_string()
+                });
+                let builder = crate::platform::build_obj(name, file.bytes, center, size);
+                ui.data_mut(|d| d.insert_temp(id, ObjImport::Building(builder)));
+                ui.ctx().request_repaint();
+                ImportStatus::Loading
+            }
+            PickStatus::Cancelled | PickStatus::Failed(_) => {
+                ui.data_mut(|d| d.remove::<ObjImport>(id));
+                ImportStatus::Idle
+            }
+        },
+        ObjImport::Building(builder) => match builder.poll() {
+            None => {
+                ui.ctx().request_repaint(); // keep polling until the build finishes
+                ImportStatus::Loading
+            }
+            Some(obj) => {
+                ui.data_mut(|d| d.remove::<ObjImport>(id));
+                objects.push(obj);
+                selected.set(objects.len() - 1);
+                ImportStatus::Added
+            }
+        },
     }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = ui
-            .add_enabled(
-                false,
-                egui::Button::new(format!("{}  Import .obj\u{2026}", icons::FOLDER)),
-            )
-            .on_disabled_hover_text("OBJ import isn't available in the browser yet");
-        let _ = objects;
-        let _ = selected;
-    }
-    false
 }

@@ -1,3 +1,4 @@
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use std::sync::Arc;
 
@@ -5,13 +6,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::camera::CameraConfig;
 use crate::color::Color;
+use crate::geometry::transform::{apply, rotation_matrix};
 use crate::geometry::{ObjData, Quad, RenderMesh, Rotate, Scale, Sphere, Translate, Triangle, make_box};
 use crate::group::{IntersectGroup, Light};
 use crate::interval::Interval;
 use crate::material::{Dielectric, DiffuseLight, Glossy, Lambertian, Material, Metal};
-use crate::ray::{HitRecord, Ray, AABB, BVH, Intersect};
+use crate::ray::{AreaLight, HitRecord, Intersect, Ray, AABB, BVH};
 use crate::texture::{
-    CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, Projection, SolidColor, Texture,
+    CheckerTexture, ImageTexture, MappedTexture, NoiseStyle, NoiseTexture, Projection, SolidColor,
+    Texture,
 };
 use crate::vec3::{Point3, Vec3};
 
@@ -91,13 +94,27 @@ pub enum TextureSpec {
         even: CellTexture,
         odd: CellTexture,
     },
-    Noise {
+    /// Legacy grayscale noise (`white × turbulence`). Retained at its original
+    /// position so pre-existing `.scene` files still decode (postcard keys an
+    /// enum by declaration order); the editor upgrades it to [`TextureSpec::Noise`]
+    /// — an identical-looking white/black turbulence — on first view. New
+    /// variants must be appended after this, never inserted before it.
+    NoiseLegacy {
         scale: f32,
         depth: u32,
     },
     Image {
         asset: Asset,
         mapping: Mapping,
+    },
+    /// Coloured procedural noise: a pattern [`style`](NoiseStyle) blended between
+    /// `dark` and `light`. Appended last to keep older variant indices stable.
+    Noise {
+        scale: f32,
+        depth: u32,
+        style: NoiseStyle,
+        light: Color,
+        dark: Color,
     },
 }
 
@@ -106,8 +123,11 @@ pub enum TextureSpec {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum CellTexture {
     Solid { color: Color },
-    Noise { scale: f32, depth: u32 },
+    /// Legacy grayscale noise — see [`TextureSpec::NoiseLegacy`]. Kept at its
+    /// original index for `.scene` compatibility; new variants append after.
+    NoiseLegacy { scale: f32, depth: u32 },
     Image { asset: Asset },
+    Noise { scale: f32, depth: u32, style: NoiseStyle, light: Color, dark: Color },
 }
 
 fn build_image(asset: &Asset) -> Arc<dyn Texture> {
@@ -121,7 +141,16 @@ impl CellTexture {
     fn build(&self) -> Arc<dyn Texture> {
         match self {
             CellTexture::Solid { color } => Arc::new(SolidColor::from_color(*color)),
-            CellTexture::Noise { scale, depth } => Arc::new(NoiseTexture::new(*scale, *depth)),
+            CellTexture::Noise { scale, depth, style, light, dark } => {
+                Arc::new(NoiseTexture::new(*scale, *depth, *style, *light, *dark))
+            }
+            CellTexture::NoiseLegacy { scale, depth } => Arc::new(NoiseTexture::new(
+                *scale,
+                *depth,
+                NoiseStyle::Turbulence,
+                Color::new(1.0, 1.0, 1.0),
+                Color::new(0.0, 0.0, 0.0),
+            )),
             CellTexture::Image { asset } => build_image(asset),
         }
     }
@@ -129,7 +158,8 @@ impl CellTexture {
     fn preview_color(&self) -> Color {
         match self {
             CellTexture::Solid { color } => *color,
-            CellTexture::Noise { .. } => Color::new(0.5, 0.5, 0.5),
+            CellTexture::Noise { light, dark, .. } => (*light + *dark) * 0.5,
+            CellTexture::NoiseLegacy { .. } => Color::new(0.5, 0.5, 0.5),
             CellTexture::Image { .. } => Color::new(0.5, 0.5, 0.5),
         }
     }
@@ -149,7 +179,16 @@ impl TextureSpec {
                 even.build(),
                 odd.build(),
             )),
-            TextureSpec::Noise { scale, depth } => Arc::new(NoiseTexture::new(*scale, *depth)),
+            TextureSpec::Noise { scale, depth, style, light, dark } => {
+                Arc::new(NoiseTexture::new(*scale, *depth, *style, *light, *dark))
+            }
+            TextureSpec::NoiseLegacy { scale, depth } => Arc::new(NoiseTexture::new(
+                *scale,
+                *depth,
+                NoiseStyle::Turbulence,
+                Color::new(1.0, 1.0, 1.0),
+                Color::new(0.0, 0.0, 0.0),
+            )),
             TextureSpec::Image { asset, mapping } => {
                 let inner = build_image(asset);
                 if mapping.is_identity() {
@@ -175,7 +214,8 @@ impl TextureSpec {
             TextureSpec::Checker { even, odd, .. } => {
                 (even.preview_color() + odd.preview_color()) * 0.5
             }
-            TextureSpec::Noise { .. } => Color::new(0.5, 0.5, 0.5),
+            TextureSpec::Noise { light, dark, .. } => (*light + *dark) * 0.5,
+            TextureSpec::NoiseLegacy { .. } => Color::new(0.5, 0.5, 0.5),
             TextureSpec::Image { .. } => Color::new(0.5, 0.5, 0.5),
         }
     }
@@ -228,13 +268,20 @@ impl MaterialSpec {
     }
 }
 
-/// The portable description of a triangle mesh: positions + triangle indices.
-/// Everything else (per-triangle geometry, BVH, preview mesh) is rebuilt from
-/// these on load.
+/// The portable description of a triangle mesh: positions, triangle indices, and
+/// optional per-triangle UVs. Everything else (per-triangle geometry, BVH,
+/// preview mesh) is rebuilt from these on load.
+///
+/// `uvs` is `#[serde(skip)]`: it would break the existing `.scene` postcard
+/// layout if added to `MeshData`'s own wire format, so it travels alongside the
+/// mesh in [`ShapeData::MeshUv`] instead (see `Shape`'s serde). It is either
+/// empty (no texture coordinates) or aligned 1:1 with `faces`.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct MeshData {
     pub verts: Vec<Vec3>,
     pub faces: Vec<[u32; 3]>,
+    #[serde(skip)]
+    pub uvs: Vec<[[f32; 2]; 3]>,
 }
 
 impl MeshData {
@@ -254,18 +301,35 @@ impl MeshData {
             .map(|[i, j, k]| [*i as usize, *j as usize, *k as usize])
             .collect();
         let vn = crate::geometry::vertex_normals(&self.verts, &faces_usize);
+        // Only honour UVs when they line up with the faces; a mismatch (or none)
+        // falls back to the smooth-only triangle (barycentric UV).
+        let has_uv = self.uvs.len() == faces_usize.len();
         let triangles: Vec<Triangle> = faces_usize
             .iter()
-            .map(|[i, j, k]| {
-                Triangle::from_points_smooth(
-                    &self.verts[*i],
-                    &self.verts[*j],
-                    &self.verts[*k],
-                    &vn[*i],
-                    &vn[*j],
-                    &vn[*k],
-                    material.clone(),
-                )
+            .enumerate()
+            .map(|(t, [i, j, k])| {
+                if has_uv {
+                    Triangle::from_points_smooth_uv(
+                        &self.verts[*i],
+                        &self.verts[*j],
+                        &self.verts[*k],
+                        &vn[*i],
+                        &vn[*j],
+                        &vn[*k],
+                        self.uvs[t],
+                        material.clone(),
+                    )
+                } else {
+                    Triangle::from_points_smooth(
+                        &self.verts[*i],
+                        &self.verts[*j],
+                        &self.verts[*k],
+                        &vn[*i],
+                        &vn[*j],
+                        &vn[*k],
+                        material.clone(),
+                    )
+                }
             })
             .collect();
         let bvh = BVH::build(triangles);
@@ -294,12 +358,6 @@ impl Intersect for MaterialOverride {
     }
     fn center(&self) -> Vec3 {
         self.inner.center()
-    }
-    fn sample_point(&self, u: f32, v: f32) -> Point3 {
-        self.inner.sample_point(u, v)
-    }
-    fn area(&self) -> f32 {
-        self.inner.area()
     }
 }
 
@@ -366,7 +424,27 @@ enum ShapeData {
     Sphere { center: Point3, radius: f32 },
     Quad { q: Point3, u: Vec3, v: Vec3 },
     Box { a: Point3, b: Point3 },
+    /// Legacy mesh with no texture coordinates. Kept at its original index so
+    /// pre-existing `.scene` files still decode (postcard keys an enum by
+    /// declaration order). New variants must be appended after it.
     Mesh { data: MeshData },
+    /// Mesh carrying per-triangle UVs (`MeshData::uvs` is `serde(skip)`, so they
+    /// ride alongside here). Appended last to keep older indices stable.
+    MeshUv { data: MeshData, uvs: Vec<[[f32; 2]; 3]> },
+}
+
+/// Reject out-of-range face indices before `data.build()` (which would index a
+/// vertex out of bounds and panic). A corrupt `.scene` must `Err`, not panic.
+fn validate_faces<E: serde::de::Error>(data: &MeshData) -> Result<(), E> {
+    let n = data.verts.len() as u32;
+    for face in &data.faces {
+        for &idx in face.iter() {
+            if idx >= n {
+                return Err(E::custom("mesh face index out of range"));
+            }
+        }
+    }
+    Ok(())
 }
 
 impl Serialize for Shape {
@@ -375,7 +453,15 @@ impl Serialize for Shape {
             Shape::Sphere { center, radius } => ShapeData::Sphere { center: *center, radius: *radius },
             Shape::Quad { q, u, v } => ShapeData::Quad { q: *q, u: *u, v: *v },
             Shape::Box { a, b } => ShapeData::Box { a: *a, b: *b },
-            Shape::Mesh { data, .. } => ShapeData::Mesh { data: (**data).clone() },
+            // Emit the UV-carrying variant only when the mesh actually has UVs, so
+            // untextured meshes stay byte-compatible with the legacy `Mesh` form.
+            Shape::Mesh { data, .. } if data.uvs.is_empty() => {
+                ShapeData::Mesh { data: (**data).clone() }
+            }
+            Shape::Mesh { data, .. } => ShapeData::MeshUv {
+                data: (**data).clone(),
+                uvs: data.uvs.clone(),
+            },
         };
         repr.serialize(s)
     }
@@ -388,19 +474,16 @@ impl<'de> Deserialize<'de> for Shape {
             ShapeData::Quad { q, u, v } => Shape::Quad { q, u, v },
             ShapeData::Box { a, b } => Shape::Box { a, b },
             ShapeData::Mesh { data } => {
-                // Validate face indices before calling data.build(), which would
-                // panic with an out-of-bounds index. A corrupt .scene file must
-                // return Err rather than panic.
-                let n = data.verts.len() as u32;
-                for face in &data.faces {
-                    for &idx in face.iter() {
-                        if idx >= n {
-                            return Err(<D::Error as serde::de::Error>::custom(
-                                "mesh face index out of range",
-                            ));
-                        }
-                    }
-                }
+                validate_faces::<D::Error>(&data)?;
+                let data = Arc::new(data);
+                let (object, render) = data.build();
+                Shape::Mesh { data, object, render }
+            }
+            ShapeData::MeshUv { mut data, uvs } => {
+                validate_faces::<D::Error>(&data)?;
+                // `build` only honours UVs that line up with the faces, so a
+                // mismatch degrades gracefully to barycentric coordinates.
+                data.uvs = uvs;
                 let data = Arc::new(data);
                 let (object, render) = data.build();
                 Shape::Mesh { data, object, render }
@@ -440,30 +523,17 @@ pub struct ObjectSpec {
 }
 
 impl ObjectSpec {
-    /// Load a Wavefront OBJ as a BVH-backed mesh object, auto-fitting it to
-    /// `target_center` and `target_size` (the largest mesh dimension is scaled
-    /// to roughly `target_size`). This keeps imports visible regardless of the
-    /// OBJ's native units/origin. The mesh keeps the baked default material and
-    /// is positioned via Transform, never per-vertex. Returns `None` if the
-    /// file isn't readable.
-    ///
-    /// Note: the underlying loader panics on malformed OBJ content; we only
-    /// guard the readability of the path here.
-    pub fn from_obj(path: &Path, target_center: Vec3, target_size: f32) -> Option<ObjectSpec> {
-        let path_str = path.to_str()?;
-        std::fs::metadata(path).ok()?; // bail early if unreadable
-
-        let name = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "mesh".to_string());
-
+    /// Build a mesh object from already-parsed OBJ data, auto-fitting it to
+    /// `target_center`/`target_size` (the largest dimension is scaled to roughly
+    /// `target_size`) so it lands visible regardless of the OBJ's native units.
+    /// The mesh keeps the baked default material and is placed via `Transform`,
+    /// never per-vertex. Shared by the native (path) and web (bytes) loaders.
+    fn from_obj_data(name: String, obj: &ObjData, target_center: Vec3, target_size: f32) -> ObjectSpec {
         let material = MaterialSpec::Lambertian {
             albedo: TextureSpec::solid(Color::new(0.73, 0.73, 0.73)),
         };
-        let obj = ObjData::load(path_str);
-        let (verts, faces) = obj.mesh_data();
-        let data = Arc::new(MeshData { verts, faces });
+        let (verts, faces, uvs) = obj.mesh_data();
+        let data = Arc::new(MeshData { verts, faces, uvs });
         let (object, render) = data.build();
 
         // Auto-fit: scale the mesh to the target size and recentre it.
@@ -479,26 +549,69 @@ impl ObjectSpec {
             translate: target_center - c,
         };
 
-        Some(ObjectSpec {
+        ObjectSpec {
             name,
             shape: Shape::Mesh { data, object, render },
             material,
             transform,
             hidden: false,
-        })
+        }
+    }
+
+    /// Load a Wavefront OBJ from disk as a BVH-backed mesh object. Returns `None`
+    /// if the file isn't readable. Native only (reads the filesystem).
+    ///
+    /// Note: the underlying loader panics on malformed OBJ content; we only
+    /// guard the readability of the path here.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_obj(path: &Path, target_center: Vec3, target_size: f32) -> Option<ObjectSpec> {
+        let path_str = path.to_str()?;
+        std::fs::metadata(path).ok()?; // bail early if unreadable
+
+        let name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "mesh".to_string());
+
+        let obj = ObjData::load(path_str);
+        Some(Self::from_obj_data(name, &obj, target_center, target_size))
+    }
+
+    /// Load a Wavefront OBJ from in-memory text (the web upload path) as a
+    /// BVH-backed mesh object. `name` is the display name (no extension).
+    pub fn from_obj_bytes(name: &str, raw: &str, target_center: Vec3, target_size: f32) -> ObjectSpec {
+        let obj = ObjData::parse(raw);
+        Self::from_obj_data(name.to_string(), &obj, target_center, target_size)
     }
 
     /// World-space centre of the object's base geometry, ignoring its transform.
     /// This is the pivot `build` rotates and scales about, and the point the GL
     /// preview centres on — so it's where the transform gizmo should sit.
+    ///
+    /// The bounding box is material-independent, so this builds with a throwaway
+    /// solid material instead of the object's own. Building the real one decodes
+    /// any image texture, and `pivot` runs *every frame* while the gizmo drags —
+    /// re-decoding a texture per frame is what made dragging textured objects
+    /// crawl.
     pub(crate) fn pivot(&self) -> Vec3 {
-        self.shape
-            .build(self.material.build())
-            .bounding_box()
-            .center()
+        let cheap = MaterialSpec::Lambertian {
+            albedo: TextureSpec::solid(Color::new(0.5, 0.5, 0.5)),
+        }
+        .build();
+        self.shape.build(cheap).bounding_box().center()
     }
 
     pub(crate) fn build(&self) -> Arc<dyn Intersect> {
+        // A quad is transform-aware: bake the transform straight into a concrete
+        // world-space quad, the same representation used for light sampling — one
+        // surface, one affine definition (see `placed_quad`). Sphere/Box/Mesh
+        // keep the decorator stack below: a baked `Sphere` would lose its
+        // texture's rotation (it stores no orientation), and Box/Mesh can't
+        // collapse to a single primitive.
+        if let Shape::Quad { q, u, v } = &self.shape {
+            return Arc::new(placed_quad(*q, *u, *v, &self.transform, self.material.build()));
+        }
+
         let t = &self.transform;
         let mut object = self.shape.build(self.material.build());
 
@@ -529,6 +642,101 @@ pub struct Scene {
     pub objects: Vec<ObjectSpec>,
 }
 
+/// Object→world placement: rotate then scale about the base geometry's centre
+/// `c`, then translate. This is the single definition of how a `Transform` maps
+/// geometry into the world — shared by quad building and light baking so the
+/// convention lives in one place. (The `Sphere`/`Box`/`Mesh` decorator path in
+/// `ObjectSpec::build` is the other, necessarily-separate expression, since
+/// those can't collapse to one baked primitive.)
+struct Placement {
+    r: [Vec3; 3],
+    c: Vec3,
+    s: Vec3,
+    t: Vec3,
+}
+
+impl Placement {
+    fn new(transform: &Transform, center: Vec3) -> Self {
+        Placement {
+            r: rotation_matrix(transform.rotate),
+            c: center,
+            s: transform.scale,
+            t: transform.translate,
+        }
+    }
+
+    /// Map a point on the base geometry into world space.
+    fn point(&self, p: Point3) -> Point3 {
+        apply(&self.r, (p - self.c) * self.s) + self.c + self.t
+    }
+
+    /// Map an edge/direction vector — the linear part only (no centre offset,
+    /// no translation).
+    fn vector(&self, e: Vec3) -> Vec3 {
+        apply(&self.r, e * self.s)
+    }
+}
+
+/// Bake a quad's defining data through `transform` into a concrete world-space
+/// quad (base centre = its centroid). A transformed quad is still a quad, so
+/// this is exact for both intersection and light sampling — including under
+/// non-uniform scale (area = |u'×v'|) — and preserves UVs, since an affine map
+/// keeps the fractional position along each edge.
+fn placed_quad(q: Point3, u: Vec3, v: Vec3, transform: &Transform, material: Arc<dyn Material>) -> Quad {
+    let pl = Placement::new(transform, q + (u + v) * 0.5);
+    Quad::new(pl.point(q), pl.vector(u), pl.vector(v), material)
+}
+
+/// One baked emissive primitive, viewed both as world geometry (for
+/// intersection) and as a sampleable `AreaLight` (for next-event estimation).
+/// Both handles share a single allocation.
+struct BakedLight {
+    intersect: Arc<dyn Intersect>,
+    light: Arc<dyn AreaLight>,
+}
+
+/// Wrap a concrete primitive once and expose it as both an `Intersect` and an
+/// `AreaLight`. The two `Arc`s coerce from the same `Arc<T>`, so there is one
+/// underlying surface, not two.
+fn bake<T: AreaLight + 'static>(prim: T) -> BakedLight {
+    let arc = Arc::new(prim);
+    BakedLight {
+        intersect: arc.clone(),
+        light: arc,
+    }
+}
+
+/// Bake an emissive object's transform directly into a concrete, exactly
+/// sampleable primitive, so a *transformed* light still gets next-event
+/// estimation. Returns `None` for geometry we can't sample exactly — a
+/// non-uniformly scaled sphere (an ellipsoid), a Box, or a Mesh — which then
+/// deliberately falls back to BSDF-only illumination.
+fn bake_area_light(
+    shape: &Shape,
+    transform: &Transform,
+    material: Arc<dyn Material>,
+) -> Option<BakedLight> {
+    match shape {
+        Shape::Quad { q, u, v } => Some(bake(placed_quad(*q, *u, *v, transform, material))),
+        Shape::Sphere { center, radius } => {
+            // A sphere stays a sphere only under uniform scale; a non-uniform
+            // scale makes an ellipsoid we can't sample as a Sphere. Rotation
+            // leaves a sphere fixed about its own centre, so it maps to
+            // `center + translate` with the radius scaled uniformly.
+            let s = transform.scale;
+            let uniform = (s.x - s.y).abs() < 1e-6 && (s.y - s.z).abs() < 1e-6;
+            if !uniform {
+                return None;
+            }
+            let world_center = Placement::new(transform, *center).point(*center);
+            Some(bake(Sphere::stationary(world_center, *radius * s.x, material)))
+        }
+        // Box (6 quads) and Mesh (a BVH of triangles) need group/area-weighted
+        // sampling — out of scope for now, they stay BSDF-only.
+        Shape::Box { .. } | Shape::Mesh { .. } => None,
+    }
+}
+
 /// Assemble the renderable world from the scene description. Cheap enough to
 /// call on every edit (Mesh handles are shared, not rebuilt). Emissive objects
 /// are also registered in `world.lights` for direct light sampling.
@@ -538,23 +746,31 @@ pub fn build_world(scene: &Scene) -> IntersectGroup {
         if obj.hidden {
             continue;
         }
-        let geom = obj.build();
-        world.add(geom.clone());
         if let MaterialSpec::DiffuseLight { emit } = &obj.material {
-            // Only register emitters we can importance-sample (area() > 0).
-            // Others (sphere/mesh/transformed) still glow when hit directly,
-            // they're just not shadow-ray sampled.
-            if geom.area() > 0.0 {
+            // Bake the transform into an exactly-sampleable primitive. On success
+            // the one baked surface is both the world geometry and the NEE light.
+            if let Some(baked) = bake_area_light(&obj.shape, &obj.transform, obj.material.build()) {
+                world.add(baked.intersect);
                 world.lights.push(Light {
-                    geom,
                     // Emission is Solid-only in Phase 1, so `preview_color()`
                     // equals the true emitted colour exactly. If emission ever
-                    // becomes a non-Solid texture, this would feed a
-                    // representative average here — revisit then.
+                    // becomes a non-Solid texture, feed a representative average
+                    // here — revisit then.
+                    geom: baked.light,
                     emit: emit.preview_color(),
                 });
+                continue;
             }
+            // Deliberate, narrow fallback (was a silent blanket drop before the
+            // AreaLight split): ellipsoid / Box / Mesh lights still glow when hit
+            // directly, they're just not shadow-ray sampled.
+            #[cfg(not(target_arch = "wasm32"))]
+            eprintln!(
+                "light '{}' can't be area-sampled (non-uniform sphere, box, or mesh); BSDF-only",
+                obj.name
+            );
         }
+        world.add(obj.build());
     }
     world
 }
@@ -710,6 +926,182 @@ mod registration_tests {
         // Both objects still live in the world geometry too.
         assert_eq!(world.objects.len(), 2, "both objects remain in the world");
     }
+
+    #[test]
+    fn transformed_quad_emitter_registers() {
+        // A quad light that has been rotated, non-uniformly scaled, and moved.
+        // Before the AreaLight split this silently failed: build() wraps the quad
+        // in Translate/Scale/Rotate decorators whose area() defaults to 0, so the
+        // `area()>0` gate dropped it from next-event estimation entirely.
+        let quad_light = ObjectSpec {
+            name: "quad".to_string(),
+            shape: Shape::Quad {
+                q: Point3::new(-1.0, 0.0, -1.0),
+                u: Vec3::new(2.0, 0.0, 0.0),
+                v: Vec3::new(0.0, 0.0, 2.0),
+            },
+            material: MaterialSpec::DiffuseLight {
+                emit: TextureSpec::solid(Color::new(5.0, 5.0, 5.0)),
+            },
+            transform: Transform {
+                rotate: Vec3::new(0.0, 0.0, 45.0),
+                scale: Vec3::new(1.5, 1.0, 1.0),
+                translate: Vec3::new(0.0, 5.0, 0.0),
+            },
+            hidden: false,
+        };
+        let scene = Scene {
+            camera: CameraConfig::builder().build(),
+            objects: vec![quad_light],
+        };
+        let world = build_world(&scene);
+        assert_eq!(
+            world.lights.len(),
+            1,
+            "a transformed quad emitter must still register for NEE"
+        );
+        assert_eq!(world.objects.len(), 1, "the emitter remains in the world");
+    }
+
+    #[test]
+    fn baked_transformed_quad_light_has_analytic_pdf() {
+        // Base quad on y=0 centred at the origin (area 4), scaled ×2 in x and
+        // lifted to y=2. Baking must place it at y=2, spanning x∈[-2,2], z∈[-1,1]
+        // with area 8. From the origin, aiming at its centre (0,2,0):
+        //   dist² = 4, cos = 1, area = 8  ⇒  solid-angle pdf = 4 / (1·8) = 0.5.
+        let quad_light = ObjectSpec {
+            name: "quad".to_string(),
+            shape: Shape::Quad {
+                q: Point3::new(-1.0, 0.0, -1.0),
+                u: Vec3::new(2.0, 0.0, 0.0),
+                v: Vec3::new(0.0, 0.0, 2.0),
+            },
+            material: MaterialSpec::DiffuseLight {
+                emit: TextureSpec::solid(Color::new(5.0, 5.0, 5.0)),
+            },
+            transform: Transform {
+                rotate: Vec3::ZERO,
+                scale: Vec3::new(2.0, 1.0, 1.0),
+                translate: Vec3::new(0.0, 2.0, 0.0),
+            },
+            hidden: false,
+        };
+        let scene = Scene {
+            camera: CameraConfig::builder().build(),
+            objects: vec![quad_light],
+        };
+        let world = build_world(&scene);
+        assert_eq!(world.lights.len(), 1);
+        let pdf = world.lights[0]
+            .geom
+            .pdf_value(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0));
+        assert!(
+            (pdf - 0.5).abs() < 1e-5,
+            "baked non-uniform-scaled quad pdf={pdf}, expected 0.5"
+        );
+    }
+
+    #[test]
+    fn uniform_scaled_sphere_registers_but_ellipsoid_falls_back() {
+        let emit = MaterialSpec::DiffuseLight {
+            emit: TextureSpec::solid(Color::new(5.0, 5.0, 5.0)),
+        };
+        let sphere = |scale: Vec3| ObjectSpec {
+            name: "sphere".to_string(),
+            shape: Shape::Sphere {
+                center: Point3::new(0.0, 0.0, 0.0),
+                radius: 1.0,
+            },
+            material: emit.clone(),
+            transform: Transform {
+                rotate: Vec3::ZERO,
+                scale,
+                translate: Vec3::new(0.0, 3.0, 0.0),
+            },
+            hidden: false,
+        };
+        // Uniform scale stays a sphere ⇒ bakes and registers.
+        let uniform = Scene {
+            camera: CameraConfig::builder().build(),
+            objects: vec![sphere(Vec3::new(2.0, 2.0, 2.0))],
+        };
+        let w = build_world(&uniform);
+        assert_eq!(w.lights.len(), 1, "uniform-scaled sphere registers");
+        assert_eq!(w.objects.len(), 1);
+
+        // Non-uniform scale is an ellipsoid ⇒ deliberate BSDF-only fallback.
+        let ellipsoid = Scene {
+            camera: CameraConfig::builder().build(),
+            objects: vec![sphere(Vec3::new(2.0, 1.0, 1.0))],
+        };
+        let w = build_world(&ellipsoid);
+        assert_eq!(w.lights.len(), 0, "non-uniform sphere falls back to BSDF-only");
+        assert_eq!(w.objects.len(), 1, "the ellipsoid still lives in the world");
+    }
+}
+
+#[cfg(test)]
+mod bake_equivalence_tests {
+    use super::*;
+    use crate::interval::Interval;
+    use crate::material::Lambertian;
+
+    /// A baked quad must intersect *identically* to the old decorator stack —
+    /// same hit/miss, hit point, normal, and UVs — under a rotate + non-uniform
+    /// scale + translate. This is the safety net for routing `build()`'s quad
+    /// path through `placed_quad`.
+    #[test]
+    fn baked_quad_matches_the_decorator_stack() {
+        let mat = || -> Arc<dyn Material> {
+            Arc::new(Lambertian::from_color(Color::new(0.2, 0.4, 0.6)))
+        };
+        let q = Point3::new(-1.0, 0.0, -1.0);
+        let u = Vec3::new(2.0, 0.0, 0.0);
+        let v = Vec3::new(0.0, 0.0, 2.0);
+        let transform = Transform {
+            rotate: Vec3::new(20.0, 35.0, -10.0),
+            scale: Vec3::new(1.5, 1.0, 0.7),
+            translate: Vec3::new(1.0, 2.0, -0.5),
+        };
+
+        // New path: baked concrete quad.
+        let baked: Arc<dyn Intersect> = Arc::new(placed_quad(q, u, v, &transform, mat()));
+
+        // Old path: the decorator stack, built by hand exactly as the previous
+        // `build()` did (rotate/scale about the base centre, then translate).
+        let c = q + (u + v) * 0.5;
+        let base: Arc<dyn Intersect> = Arc::new(Quad::new(q, u, v, mat()));
+        let mut deco = Arc::new(Translate::new(base, -c)) as Arc<dyn Intersect>;
+        deco = Arc::new(Scale::new(deco, transform.scale));
+        deco = Arc::new(Rotate::new(deco, transform.rotate));
+        deco = Arc::new(Translate::new(deco, c));
+        deco = Arc::new(Translate::new(deco, transform.translate));
+
+        // Fire a ring of rays at the transformed centroid (c is the origin here,
+        // so the world centroid is c + translate).
+        let target = c + transform.translate;
+        let ti = Interval::new(0.001, f32::INFINITY);
+        let mut hits = 0;
+        for k in 0..64 {
+            let a = k as f32 * 0.19;
+            let origin = Point3::new(3.0 * a.cos(), 4.0, 3.0 * a.sin());
+            let ray = Ray::new(origin, target - origin);
+            let hb = baked.intersect(&ray, &ti);
+            let hd = deco.intersect(&ray, &ti);
+            assert_eq!(hb.is_some(), hd.is_some(), "hit/miss disagree at k={k}");
+            if let (Some(a), Some(b)) = (hb, hd) {
+                hits += 1;
+                assert!((a.p - b.p).length() < 1e-3, "point mismatch {:?} vs {:?}", a.p, b.p);
+                assert!(a.normal.dot(&b.normal) > 0.999, "normal mismatch");
+                assert!(
+                    (a.u - b.u).abs() < 1e-3 && (a.v - b.v).abs() < 1e-3,
+                    "uv mismatch ({},{}) vs ({},{})",
+                    a.u, a.v, b.u, b.v
+                );
+            }
+        }
+        assert!(hits > 8, "expected several hits to compare, got {hits}");
+    }
 }
 
 #[cfg(test)]
@@ -770,12 +1162,16 @@ mod texture_spec_tests {
     }
 
     #[test]
-    fn noise_previews_mid_gray() {
+    fn noise_previews_the_average_of_its_colours() {
         let t = TextureSpec::Noise {
             scale: 4.0,
             depth: 7,
+            style: NoiseStyle::Turbulence,
+            light: Color::new(1.0, 1.0, 1.0),
+            dark: Color::new(0.0, 0.0, 0.0),
         };
         let _ = t.build();
+        // light=white, dark=black → mid-gray.
         assert_eq!(t.preview_color(), Color::new(0.5, 0.5, 0.5));
     }
 
@@ -838,6 +1234,7 @@ mod mesh_serde_tests {
                 Vec3::new(0.0, 1.0, 0.0),
             ],
             faces: vec![[0, 1, 2]],
+            uvs: vec![],
         };
         let (object, render) = data.build();
         let mesh = ObjectSpec {
@@ -888,6 +1285,44 @@ mod mesh_serde_tests {
         let world = build_world(&back);
         assert!(world.bounding_box().center().x.is_finite());
     }
+
+    /// A mesh that carries per-triangle UVs round-trips through postcard (via the
+    /// `MeshUv` shape variant) with its UVs intact.
+    #[test]
+    fn textured_mesh_uvs_round_trip() {
+        let data = MeshData {
+            verts: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            ],
+            faces: vec![[0, 1, 2]],
+            uvs: vec![[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]],
+        };
+        let (object, render) = data.build();
+        let mesh = ObjectSpec {
+            name: "uv-tri".to_string(),
+            shape: Shape::Mesh { data: Arc::new(data), object, render },
+            material: MaterialSpec::Lambertian {
+                albedo: TextureSpec::solid(Color::new(0.7, 0.7, 0.7)),
+            },
+            transform: Transform::identity(),
+            hidden: false,
+        };
+        let scene = Scene {
+            camera: CameraConfig::builder().image_width(16).build(),
+            objects: vec![mesh],
+        };
+
+        let bytes = postcard::to_allocvec(&scene).expect("encode");
+        let back: Scene = postcard::from_bytes(&bytes).expect("decode");
+        match &back.objects[0].shape {
+            Shape::Mesh { data, .. } => {
+                assert_eq!(data.uvs, vec![[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]]);
+            }
+            _ => panic!("expected mesh"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -916,7 +1351,13 @@ mod serde_tests {
         let t = TextureSpec::Checker {
             scale: 2.5,
             even: CellTexture::Solid { color: Color::new(0.1, 0.2, 0.3) },
-            odd: CellTexture::Noise { scale: 4.0, depth: 7 },
+            odd: CellTexture::Noise {
+                scale: 4.0,
+                depth: 7,
+                style: NoiseStyle::Marble,
+                light: Color::new(0.9, 0.9, 0.9),
+                dark: Color::new(0.1, 0.1, 0.1),
+            },
         };
         let bytes = postcard::to_allocvec(&t).expect("encode");
         let back: TextureSpec = postcard::from_bytes(&bytes).expect("decode");

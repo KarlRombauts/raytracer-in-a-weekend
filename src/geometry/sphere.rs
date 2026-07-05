@@ -84,6 +84,38 @@ impl Intersect for Sphere {
         self.bbox.center()
     }
 
+    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>> {
+        let current_center = self.center.at(ray.time);
+        let oc = ray.origin - current_center;
+        let a = ray.direction.length_squared();
+        let half_b = oc.dot(&ray.direction);
+        let c = oc.length_squared() - self.radius * self.radius;
+        let discriminant = half_b * half_b - a * c;
+
+        if discriminant < 0.0 {
+            return None;
+        }
+
+        let sqrt_d = discriminant.sqrt();
+        let mut root = (-half_b - sqrt_d) / a;
+
+        if !ray_t.surrounds(root) {
+            root = (-half_b + sqrt_d) / a;
+            if !ray_t.surrounds(root) {
+                return None;
+            }
+        }
+
+        let p = ray.at(root);
+        let outward_normal = (p - current_center).unit();
+        let mut hit_record = HitRecord::new(root, p, outward_normal, self.material.as_ref());
+        (hit_record.u, hit_record.v) = self.get_spherical_uv(&outward_normal);
+        hit_record.set_face_normal(ray, &outward_normal);
+        Some(hit_record)
+    }
+}
+
+impl Sphere {
     fn sample_point(&self, u: f32, v: f32) -> Point3 {
         let center = self.center.at(0.0);
         center + self.radius * uniform_sphere_dir(u, v)
@@ -92,11 +124,13 @@ impl Intersect for Sphere {
     fn area(&self) -> f32 {
         4.0 * std::f32::consts::PI * self.radius * self.radius
     }
+}
 
+impl AreaLight for Sphere {
     /// A direction from `origin` toward this sphere, sampled uniformly over the
     /// solid angle (cone) the sphere subtends — the importance-sampling match for
     /// a sphere light. Falls back to a uniform direction when `origin` is inside.
-    fn random_dir(&self, origin: Point3, u: f32, v: f32) -> Vec3 {
+    fn sample_dir(&self, origin: Point3, u: f32, v: f32) -> Vec3 {
         let center = self.center.at(0.0);
         let to_center = center - origin;
         let d2 = to_center.length_squared();
@@ -134,36 +168,6 @@ impl Intersect for Sphere {
         }
         let cos_theta_max = (1.0 - r2 / d2).sqrt();
         1.0 / (2.0 * std::f32::consts::PI * (1.0 - cos_theta_max))
-    }
-
-    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>> {
-        let current_center = self.center.at(ray.time);
-        let oc = ray.origin - current_center;
-        let a = ray.direction.length_squared();
-        let half_b = oc.dot(&ray.direction);
-        let c = oc.length_squared() - self.radius * self.radius;
-        let discriminant = half_b * half_b - a * c;
-
-        if discriminant < 0.0 {
-            return None;
-        }
-
-        let sqrt_d = discriminant.sqrt();
-        let mut root = (-half_b - sqrt_d) / a;
-
-        if !ray_t.surrounds(root) {
-            root = (-half_b + sqrt_d) / a;
-            if !ray_t.surrounds(root) {
-                return None;
-            }
-        }
-
-        let p = ray.at(root);
-        let outward_normal = (p - current_center).unit();
-        let mut hit_record = HitRecord::new(root, p, outward_normal, self.material.as_ref());
-        (hit_record.u, hit_record.v) = self.get_spherical_uv(&outward_normal);
-        hit_record.set_face_normal(ray, &outward_normal);
-        Some(hit_record)
     }
 }
 
@@ -257,7 +261,7 @@ mod cone_light_tests {
         let mut upper_half = 0usize;
         for _ in 0..n {
             let (u, v): (f32, f32) = (rng.random(), rng.random());
-            let dir = s.random_dir(origin, u, v).unit();
+            let dir = s.sample_dir(origin, u, v).unit();
             let cos = dir.dot(&axis);
             // Every sampled direction lies within the subtended cone.
             assert!(cos >= cos_max - 1e-3, "outside cone: cos={} cos_max={}", cos, cos_max);

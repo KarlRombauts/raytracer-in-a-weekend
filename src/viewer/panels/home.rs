@@ -12,11 +12,58 @@ pub enum HomeAction {
     OpenSceneFile,
 }
 
-/// Per-sample display data, computed once and cached.
+/// Full-screen "loading scene" view: the wordmark, the scene name, and an
+/// indeterminate animated bar. Shown the instant a sample card is clicked while
+/// its `.scene` is still fetching (async on the web), so the click feels
+/// immediate instead of leaving the welcome page looking frozen. The caller
+/// repaints every frame to drive the animation.
+pub fn show_loading(ui: &mut Ui, name: &str) {
+    let area = ui.available_rect_before_wrap();
+    let t = ui.input(|i| i.time) as f32;
+    let p = ui.painter();
+    let (cx, cy) = (area.center().x, area.center().y);
+
+    p.text(
+        egui::pos2(cx, cy - 52.0),
+        egui::Align2::CENTER_CENTER,
+        icons::APERTURE,
+        egui::FontId::proportional(30.0),
+        theme::ACCENT,
+    );
+    p.text(
+        egui::pos2(cx, cy - 8.0),
+        egui::Align2::CENTER_CENTER,
+        format!("Loading {name}\u{2026}"),
+        egui::FontId::proportional(15.0),
+        theme::TEXT,
+    );
+
+    // Indeterminate bar: a track with a highlight segment sliding across it.
+    let (bar_w, bar_h) = (320.0_f32, 6.0_f32);
+    let track = egui::Rect::from_center_size(egui::pos2(cx, cy + 26.0), egui::vec2(bar_w, bar_h));
+    let radius = egui::CornerRadius::same(3);
+    p.rect_filled(track, radius, theme::FIELD_BG);
+
+    let seg = 0.34_f32;
+    let phase = (t * 0.7).rem_euclid(1.0); // one sweep every ~1.4s
+    let x0 = (phase * (1.0 + seg) - seg).clamp(0.0, 1.0);
+    let x1 = (x0 + seg).clamp(0.0, 1.0);
+    if x1 > x0 {
+        let hi = egui::Rect::from_min_max(
+            egui::pos2(track.left() + x0 * bar_w, track.top()),
+            egui::pos2(track.left() + x1 * bar_w, track.bottom()),
+        );
+        p.rect_filled(hi, radius, theme::ACCENT);
+    }
+}
+
+/// Per-sample display data, computed once and cached. The thumbnail PNG (the
+/// saved render that ships with each `.scene`) is the only thing decoded here;
+/// the scene itself is loaded lazily on click, so its resolution is read from
+/// the thumbnail's own dimensions rather than by decoding the (large) scene.
 struct Card {
     name: String,
-    objects: usize,
-    res: (u32, u32),
+    subtitle: String,
     texture: Option<egui::TextureHandle>,
 }
 
@@ -26,30 +73,22 @@ pub struct HomeState {
 }
 
 impl HomeState {
-    /// Build (once) the derived metadata + decoded thumbnail textures.
+    /// Build (once) the decoded thumbnail textures + derived metadata.
     fn ensure(&mut self, ctx: &egui::Context) {
         if !self.cards.is_empty() {
             return;
         }
         for sample in samples::SAMPLES {
-            let scene = (sample.build)();
-            let height =
-                ((scene.camera.image_width as f64 / scene.camera.aspect_ratio) as u32).max(1);
-            let texture = decode_texture(
-                ctx,
-                &samples::slug(sample.name),
-                samples::thumbnail_png(sample.name),
-            );
             self.cards.push(Card {
                 name: sample.name.to_string(),
-                objects: scene.objects.len(),
-                res: (scene.camera.image_width, height),
-                texture,
+                subtitle: format!("{}×{}", sample.res.0, sample.res.1),
+                texture: decode_texture(ctx, sample.file, samples::sample_thumbnail(sample.file)),
             });
         }
     }
 }
 
+/// Decode a thumbnail PNG into an egui texture.
 fn decode_texture(ctx: &egui::Context, key: &str, png: &[u8]) -> Option<egui::TextureHandle> {
     if png.is_empty() {
         return None;
@@ -215,18 +254,28 @@ fn sample_card(ui: &mut Ui, card: &Card, w: f32) -> egui::Response {
         .rect_filled(rect, egui::CornerRadius::same(12), theme::BG_PANEL);
 
     // Thumbnail (top), cover-fit so the scene fills the 16:10 box without distortion.
+    // Round the top corners to match the card; leave the bottom edge square since
+    // the text block sits flush below it.
     let thumb_h = w * 10.0 / 16.0;
     let thumb_rect = egui::Rect::from_min_size(rect.min, egui::vec2(w, thumb_h));
+    let thumb_radius = egui::CornerRadius {
+        nw: 12,
+        ne: 12,
+        sw: 0,
+        se: 0,
+    };
     match &card.texture {
         Some(tex) => {
             let [iw, ih] = tex.size();
             let uv = cover_uv(iw as f32 / ih as f32, w / thumb_h);
-            ui.painter()
-                .image(tex.id(), thumb_rect, uv, egui::Color32::WHITE);
+            ui.painter().add(
+                egui::epaint::RectShape::filled(thumb_rect, thumb_radius, egui::Color32::WHITE)
+                    .with_texture(tex.id(), uv),
+            );
         }
         None => {
             ui.painter()
-                .rect_filled(thumb_rect, egui::CornerRadius::same(0), theme::BG_VIEWPORT);
+                .rect_filled(thumb_rect, thumb_radius, theme::BG_VIEWPORT);
         }
     }
 
@@ -241,7 +290,7 @@ fn sample_card(ui: &mut Ui, card: &Card, w: f32) -> egui::Response {
     ui.painter().text(
         egui::pos2(rect.left() + 14.0, thumb_rect.bottom() + 36.0),
         egui::Align2::LEFT_TOP,
-        format!("{} objects    {}×{}", card.objects, card.res.0, card.res.1),
+        &card.subtitle,
         egui::FontId::proportional(11.0),
         theme::TEXT_DIM,
     );

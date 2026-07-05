@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     interval::Interval,
     material::{material, Material},
-    ray::{HitRecord, Intersect, Ray, AABB},
+    ray::{surface_pdf_value, AreaLight, HitRecord, Intersect, Ray, AABB},
     vec3::{Point3, Vec3},
 };
 
@@ -95,13 +95,25 @@ impl Intersect for Quad {
     fn bounding_box(&self) -> &AABB {
         &self.bbox
     }
+}
 
+impl Quad {
     fn sample_point(&self, u: f32, v: f32) -> Point3 {
         self.q + u * self.u + v * self.v
     }
 
     fn area(&self) -> f32 {
         self.u.cross(&self.v).length()
+    }
+}
+
+impl AreaLight for Quad {
+    fn sample_dir(&self, origin: Point3, u: f32, v: f32) -> Vec3 {
+        self.sample_point(u, v) - origin
+    }
+
+    fn pdf_value(&self, origin: Point3, dir: Vec3) -> f32 {
+        surface_pdf_value(self, self.area(), origin, dir)
     }
 }
 

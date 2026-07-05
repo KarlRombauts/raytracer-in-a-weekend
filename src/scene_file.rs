@@ -179,6 +179,7 @@ mod tests {
                 Vec3::new(0.0, 1.0, 0.0),
             ],
             faces: vec![[0, 1, 99]], // index 99 is out of range for 3 verts
+            uvs: vec![],
         };
 
         // ShapeData is private, so we mirror its serde layout to produce raw

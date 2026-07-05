@@ -4,14 +4,21 @@ use crate::{
     camera::{Camera, CameraConfig},
     geometry::Sphere,
     group::IntersectGroup,
+    color::Color,
     material::Lambertian,
-    texture::NoiseTexture,
+    texture::{NoiseStyle, NoiseTexture},
     vec3::Point3,
 };
 
 pub fn perlin_spheres() {
     let mut world = IntersectGroup::new();
-    let perlin_texture = Arc::new(NoiseTexture::new(4., 7));
+    let perlin_texture = Arc::new(NoiseTexture::new(
+        4.,
+        7,
+        NoiseStyle::Turbulence,
+        Color::new(1., 1., 1.),
+        Color::new(0., 0., 0.),
+    ));
 
     world.add(Arc::new(Sphere::stationary(
         Point3::new(0., -1000., 0.),

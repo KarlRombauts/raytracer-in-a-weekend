@@ -10,8 +10,8 @@ use crate::{
 
 pub fn new_bvh() -> Scene {
     let obj = ObjData::load("./objs/dragon.obj");
-    let (verts, faces) = obj.mesh_data();
-    let data = Arc::new(MeshData { verts, faces });
+    let (verts, faces, uvs) = obj.mesh_data();
+    let data = Arc::new(MeshData { verts, faces, uvs });
     let (object, render) = data.build();
 
     let dragon = ObjectSpec {

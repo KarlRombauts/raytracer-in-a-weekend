@@ -9,7 +9,7 @@ use std::sync::Arc;
 /// An emissive object the integrator can sample directly (next event
 /// estimation). Pairs a sampleable geometry handle with a constant emission.
 pub struct Light {
-    pub geom: Arc<dyn Intersect>,
+    pub geom: Arc<dyn AreaLight>,
     pub emit: Color,
 }
 
@@ -73,7 +73,7 @@ impl IntersectGroup {
             return None;
         }
         let i = rng.random_range(0..self.lights.len());
-        Some(self.lights[i].geom.random_dir(origin, u, v))
+        Some(self.lights[i].geom.sample_dir(origin, u, v))
     }
 }
 
@@ -99,19 +99,6 @@ impl Intersect for IntersectGroup {
 
         closest_hit
     }
-
-    fn sample_point(&self, u: f32, v: f32) -> Point3 {
-        if self.objects.is_empty() {
-            return self.center();
-        }
-        // Use `u` to pick the child, then its fractional part as a fresh uniform
-        // so the child's own surface sample stays well-distributed.
-        let n = self.objects.len();
-        let scaled = u * n as f32;
-        let i = (scaled as usize).min(n - 1);
-        let u2 = scaled - i as f32;
-        self.objects[i].sample_point(u2, v)
-    }
 }
 
 #[cfg(test)]
@@ -127,7 +114,7 @@ mod light_mixture_tests {
 
     // Overhead quad light on the y=2 plane, area 4 (same as the analytic
     // pdf_value setup: pdf_value((0,0,0),(0,2,0)) == 1.0).
-    fn overhead_light() -> Arc<dyn Intersect> {
+    fn overhead_light() -> Arc<dyn AreaLight> {
         let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
         Arc::new(Quad::new(
             Point3::new(-1.0, 2.0, -1.0),
@@ -172,45 +159,3 @@ mod light_mixture_tests {
     }
 }
 
-#[cfg(test)]
-mod sample_tests {
-    use super::*;
-    use crate::geometry::Quad;
-    use crate::material::Lambertian;
-    use crate::vec3::{Point3, Vec3};
-    use rand::rngs::SmallRng;
-    use rand::SeedableRng;
-    use std::sync::Arc;
-
-    #[test]
-    fn group_samples_one_of_its_children() {
-        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
-        let q_a = Arc::new(Quad::new(
-            Point3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-            mat.clone(),
-        ));
-        let q_b = Arc::new(Quad::new(
-            Point3::new(10.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-            mat,
-        ));
-        let mut g = IntersectGroup::new();
-        g.add(q_a);
-        g.add(q_b);
-
-        let mut rng = SmallRng::seed_from_u64(4);
-        let (mut hit_a, mut hit_b) = (false, false);
-        for _ in 0..500 {
-            let p = g.sample_point(rng.random::<f32>(), rng.random::<f32>());
-            let in_a = (0.0..=1.0).contains(&p.x);
-            let in_b = (10.0..=11.0).contains(&p.x);
-            assert!(in_a || in_b, "point on neither child: {:?}", p);
-            hit_a |= in_a;
-            hit_b |= in_b;
-        }
-        assert!(hit_a && hit_b, "expected to sample both children");
-    }
-}

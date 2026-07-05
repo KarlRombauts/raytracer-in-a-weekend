@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Raytracer</title>
     <link data-trunk rel="rust" data-target-name="raytracer_in_a_weekend" data-wasm-opt="0" data-bindgen-target="web" />
+    <!-- Ship the sample .scene files so the welcome-page cards can fetch them at
+         runtime (they're far too large to embed in the wasm binary). The target
+         path mirrors the native layout, so the same `assets/scenes/<f>.scene`
+         URL resolves on both. -->
+    <link data-trunk rel="copy-dir" href="assets/scenes" data-target-path="assets/scenes" />
+    <!-- Bundled sample meshes, fetched when an "Add → Sample mesh" row is clicked. -->
+    <link data-trunk rel="copy-dir" href="assets/objs" data-target-path="assets/objs" />
     <style>
       html, body { margin: 0; height: 100%; background: #1e1e1e; }
       #the_canvas_id { width: 100%; height: 100%; display: block; }

@@ -1,115 +1,118 @@
-//! Bundled sample scenes for the library (Home) screen, plus a pre-baked
-//! thumbnail generator driven by `just thumbnails`.
+//! Bundled sample scenes for the library (Home) screen. Each sample is a
+//! `.scene` file under `assets/scenes/`, loaded on demand, with a matching
+//! `.png` thumbnail saved beside it.
 
-use crate::camera::Camera;
-use crate::render::ProgressiveRenderer;
-use crate::scene::{build_world, MaterialSpec, ObjectSpec, Scene, Shape, TextureSpec, Transform};
+use crate::scene::{MaterialSpec, ObjectSpec, Scene, Shape, TextureSpec, Transform};
 use crate::vec3::{Point3, Vec3};
 
-/// One bundled sample scene. `build` reconstructs the scene on demand; the
-/// thumbnail PNG is embedded separately (see [`thumbnail_png`]) so this registry
-/// compiles before any thumbnails exist.
+/// One bundled sample scene. `file` is the basename (no extension): the scene is
+/// `assets/scenes/<file>.scene`, fetched on click ([`scene_url`]). The card
+/// thumbnail is a small PNG embedded in the binary (see [`sample_thumbnail`]) so
+/// cards render instantly on both native and the web. `res` is the scene's
+/// render resolution, shown on the card (the scene itself isn't decoded to learn
+/// it — too large).
 pub struct Sample {
     pub name: &'static str,
-    pub build: fn() -> Scene,
+    pub file: &'static str,
+    pub res: (u32, u32),
 }
 
-pub static SAMPLES: &[Sample] = &[Sample {
-    name: "Cornell Box",
-    build: crate::scenes::cornell_box::cornell_box,
-}];
+pub static SAMPLES: &[Sample] = &[
+    Sample { name: "Cornell Box", file: "cornell-box", res: (600, 600) },
+    Sample { name: "Cornell Box II", file: "cornell-box-2", res: (600, 600) },
+    Sample { name: "Glass Block", file: "glass-block", res: (960, 600) },
+    Sample { name: "Teapot", file: "teapot", res: (600, 600) },
+    Sample { name: "Spoons", file: "spoons", res: (900, 600) },
+    Sample { name: "Sample Objects II", file: "sample-objects-2", res: (920, 600) },
+    Sample { name: "Sculpture", file: "sculpture", res: (600, 600) },
+    Sample { name: "Sample Objects", file: "sample-objects", res: (960, 720) },
+];
 
-/// kebab-case filename slug: lowercase, non-alphanumerics collapsed to single
-/// hyphens, trimmed. "Cornell Box" -> "cornell-box".
-pub fn slug(name: &str) -> String {
-    let mut out = String::new();
-    let mut prev_hyphen = true; // also trims leading hyphens
-    for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-            prev_hyphen = false;
-        } else if !prev_hyphen {
-            out.push('-');
-            prev_hyphen = true;
-        }
+/// Where a sample's `.scene` lives: a filesystem path on native, an HTTP path
+/// (relative to the page) in the browser. Trunk copies `assets/scenes` into the
+/// bundle, so the same string resolves on both via [`crate::platform::fetch_file`].
+pub fn scene_url(file: &str) -> String {
+    format!("assets/scenes/{file}.scene")
+}
+
+/// A sample's card thumbnail — a small PNG baked into the binary, so cards show
+/// instantly and offline on both native and the web (the full-res scene PNGs on
+/// disk aren't reachable from a browser). Empty for an unknown file.
+pub fn sample_thumbnail(file: &str) -> &'static [u8] {
+    match file {
+        "cornell-box" => include_bytes!("../../assets/thumbnails/cornell-box.png"),
+        "cornell-box-2" => include_bytes!("../../assets/thumbnails/cornell-box-2.png"),
+        "glass-block" => include_bytes!("../../assets/thumbnails/glass-block.png"),
+        "teapot" => include_bytes!("../../assets/thumbnails/teapot.png"),
+        "spoons" => include_bytes!("../../assets/thumbnails/spoons.png"),
+        "sample-objects-2" => include_bytes!("../../assets/thumbnails/sample-objects-2.png"),
+        "sculpture" => include_bytes!("../../assets/thumbnails/sculpture.png"),
+        "sample-objects" => include_bytes!("../../assets/thumbnails/sample-objects.png"),
+        _ => &[],
     }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    out
+}
+
+/// Decode a sample's `.scene` straight from disk. Native-only — the app loads
+/// samples through [`crate::platform::fetch_file`] (which fetches over HTTP on
+/// the web); this is kept for tests that verify the bundled scenes decode.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load_sample(file: &str) -> Option<Scene> {
+    let bytes = std::fs::read(scene_url(file)).ok()?;
+    crate::scene_file::decode(&bytes).ok().map(|loaded| loaded.scene)
 }
 
 /// Minimal starting scene for "New scene": a default camera plus a neutral
 /// ground plane, so the viewport isn't empty and the user can Add Object.
 pub fn new_scene() -> Scene {
-    // Reuse the cornell camera config (valid dimensions/aspect) but replace the
-    // objects with a single grey ground plane.
-    let mut scene = crate::scenes::cornell_box::cornell_box();
-    scene.objects = vec![ObjectSpec {
+    // A 5×5 ground plane centred on the origin (x, z ∈ [-2.5, 2.5]), at y = 0 so
+    // added objects sit on it.
+    let ground = ObjectSpec {
         name: "Ground".to_string(),
         shape: Shape::Quad {
-            q: Point3::new(-5.0, 0.0, -5.0),
-            u: Vec3::new(10.0, 0.0, 0.0),
-            v: Vec3::new(0.0, 0.0, 10.0),
+            q: Point3::new(-2.5, 0.0, -2.5),
+            u: Vec3::new(5.0, 0.0, 0.0),
+            v: Vec3::new(0.0, 0.0, 5.0),
         },
         material: MaterialSpec::Lambertian {
             albedo: TextureSpec::solid(crate::color::Color::new(0.62, 0.62, 0.64)),
         },
         transform: Transform::identity(),
         hidden: false,
-    }];
-    scene
-}
+    };
 
-/// Render `build()`'s scene to PNG bytes at `width` px (height follows the
-/// scene's aspect) with `samples` accumulation passes. Used by both the
-/// thumbnail CLI and tests.
-pub fn render_thumbnail_png(build: fn() -> Scene, width: u32, samples: u32) -> Vec<u8> {
-    let mut scene = build();
-    scene.camera.image_width = width.max(1);
-    let world = build_world(&scene);
-    let camera = Camera::from(scene.camera.clone());
-    let mut r = ProgressiveRenderer::new(camera.image_width(), camera.image_height());
-    for _ in 0..samples.max(1) {
-        r.add_pass(&camera, &world);
+    // A three-quarter view from the front, slightly elevated and aimed just
+    // above the ground centre, so the whole plate is in frame with headroom for
+    // objects the user adds. Sky-blue background rather than the Cornell void.
+    let camera = crate::camera::CameraConfig::builder()
+        .aspect_ratio(1.0)
+        .image_width(600)
+        .samples(200)
+        .max_depth(50)
+        .fov(38.0)
+        .look_from(Vec3::new(3.8, 3.3, 6.6))
+        .look_at(Vec3::new(0.0, 0.4, 0.0))
+        .background(crate::color::Color::new(0.70, 0.80, 1.0))
+        .dof_angle(0.0)
+        .build();
+
+    Scene {
+        camera,
+        objects: vec![ground],
     }
-    r.to_png_bytes()
 }
 
-/// Render every sample to `assets/thumbnails/<slug>.png`. Invoked by
-/// `just thumbnails` (`cargo run -- --gen-thumbnails`).
+/// Sample thumbnails now ship alongside each `.scene` as `assets/scenes/<file>.png`
+/// (saved with the scene), so there's nothing to pre-bake. Kept so the
+/// `--gen-thumbnails` CLI entry still resolves.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn gen_thumbnails() -> std::io::Result<()> {
-    let dir = std::path::Path::new("assets/thumbnails");
-    std::fs::create_dir_all(dir)?;
-    for sample in SAMPLES {
-        let png = render_thumbnail_png(sample.build, 320, 128);
-        let path = dir.join(format!("{}.png", slug(sample.name)));
-        std::fs::write(&path, &png)?;
-        println!("wrote {} ({} bytes)", path.display(), png.len());
-    }
+    println!("Sample thumbnails ship as assets/scenes/<file>.png; nothing to generate.");
     Ok(())
-}
-
-/// Embedded pre-baked thumbnail PNG bytes for a sample (empty if unknown).
-/// Files are produced by `just thumbnails`.
-pub fn thumbnail_png(name: &str) -> &'static [u8] {
-    match name {
-        "Cornell Box" => include_bytes!("../../assets/thumbnails/cornell-box.png"),
-        _ => &[],
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn slug_basic_cases() {
-        assert_eq!(slug("Cornell Box"), "cornell-box");
-        assert_eq!(slug("  Spaced  Out  "), "spaced-out");
-        assert_eq!(slug("Cornell — Clay!"), "cornell-clay");
-    }
 
     #[test]
     fn new_scene_has_ground_and_valid_camera() {
@@ -118,32 +121,22 @@ mod tests {
         assert!(s.camera.image_width > 0);
     }
 
+    /// Every registered sample's `.scene` and `.png` exist on disk, decode, and
+    /// the scene has a usable camera. Native-only (no filesystem on wasm).
     #[test]
-    fn every_sample_builds() {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn every_sample_file_loads_with_a_thumbnail() {
         for sample in SAMPLES {
-            let s = (sample.build)();
+            let scene = load_sample(sample.file)
+                .unwrap_or_else(|| panic!("{} ({}) failed to load", sample.name, sample.file));
             assert!(
-                s.camera.image_width > 0,
+                scene.camera.image_width > 0,
                 "{} has zero-width camera",
                 sample.name
             );
-        }
-    }
-
-    #[test]
-    fn thumbnail_renders_valid_png() {
-        let png = render_thumbnail_png(SAMPLES[0].build, 64, 2);
-        let img = image::load_from_memory(&png).expect("valid PNG");
-        assert_eq!(img.width(), 64);
-        assert!(img.height() > 0);
-    }
-
-    #[test]
-    fn thumbnail_png_decodes_for_each_sample() {
-        for sample in SAMPLES {
-            let bytes = thumbnail_png(sample.name);
-            assert!(!bytes.is_empty(), "{} thumbnail missing", sample.name);
-            image::load_from_memory(bytes).expect("embedded thumbnail is valid PNG");
+            let thumb = sample_thumbnail(sample.file);
+            assert!(!thumb.is_empty(), "{} thumbnail missing", sample.name);
+            image::load_from_memory(thumb).expect("sample thumbnail is a valid PNG");
         }
     }
 }

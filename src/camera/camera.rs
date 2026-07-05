@@ -444,7 +444,7 @@ mod mixture_tests {
 
     // Large overhead emitter (covers a big solid angle so pure-GI sampling
     // converges with feasible sample counts).
-    fn ceiling_light() -> Arc<dyn Intersect> {
+    fn ceiling_light() -> Arc<Quad> {
         let mat = Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0)));
         Arc::new(Quad::new(
             Point3::new(-5.0, 2.0, -5.0),
@@ -540,7 +540,7 @@ mod mis_tests {
 
     // Small, bright overhead light: pure GI rarely hits it (high variance);
     // NEE samples it every bounce (low variance).
-    fn small_light() -> Arc<dyn Intersect> {
+    fn small_light() -> Arc<Quad> {
         let mat = Arc::new(DiffuseLight::from_color(Color::new(40.0, 40.0, 40.0)));
         Arc::new(Quad::new(
             Point3::new(-0.5, 4.0, -0.5),

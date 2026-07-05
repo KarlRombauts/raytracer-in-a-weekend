@@ -3,14 +3,35 @@ use eframe::egui::{self, Ui};
 use crate::scene::Scene;
 
 use super::super::{
+    command::SceneCommand,
     controls, icons,
     state::{Tab, UiState},
     theme,
 };
 
-/// Returns `true` if the scene was dirtied (needs a render restart).
-pub fn show_outliner(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> bool {
+/// Returns `true` if the scene was dirtied (needs a render restart). Object
+/// additions are emitted as `SceneCommand`s into `cmds` rather than mutating the
+/// scene here, so all CRUD flows through one interpreter.
+pub fn show_outliner(
+    ui: &mut Ui,
+    ui_state: &mut UiState,
+    scene: &mut Scene,
+    cmds: &mut Vec<SceneCommand>,
+) -> bool {
     let mut dirty = false;
+
+    // Add a freshly uploaded / sample-mesh OBJ once its (async, on the web) load
+    // resolves. Polled here — the outliner always renders, unlike the Add-menu
+    // popup that starts the load and then closes.
+    let mut mesh_loading = false;
+    match controls::poll_obj_import(ui, &mut scene.objects, &mut ui_state.selected) {
+        controls::ImportStatus::Added => {
+            ui_state.tab = Tab::Object;
+            dirty = true;
+        }
+        controls::ImportStatus::Loading => mesh_loading = true,
+        controls::ImportStatus::Idle => {}
+    }
 
     // Header: SCENE label + object count.
     ui.horizontal(|ui| {
@@ -75,73 +96,73 @@ pub fn show_outliner(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> 
         ui.spacing_mut().item_spacing.y = 2.0;
         ui.spacing_mut().button_padding.x = 10.0;
 
-        // Indent the category label to line up with the option icons below
-        // (primitive buttons use button_padding.x = 10; mesh rows add_space(10)).
-        ui.add_space(10.0);
-        ui.label(
-            egui::RichText::new("PRIMITIVES")
-                .size(10.0)
-                .color(theme::TEXT_DIM),
-        );
+        // Indent the category label horizontally to line up with the option
+        // icons below (primitives have button_padding.x = 10; mesh rows
+        // add_space(10)). A plain `add_space` here would only add vertical gap.
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(10.0);
+            ui.label(
+                egui::RichText::new("PRIMITIVES")
+                    .size(10.0)
+                    .color(theme::TEXT_DIM),
+            );
+        });
         if ui.button(format!("{}  Plane", icons::RECTANGLE)).clicked() {
-            let obj = controls::default_plane(scene.objects.len());
-            scene.objects.push(obj);
-            ui_state.selected = Some(scene.objects.len() - 1);
-            ui_state.tab = Tab::Object;
-            dirty = true;
+            cmds.push(SceneCommand::AddObject(controls::default_plane(scene.objects.len())));
         }
         if ui.button(format!("{}  Box", icons::CUBE)).clicked() {
-            let obj = controls::default_box(scene.objects.len());
-            scene.objects.push(obj);
-            ui_state.selected = Some(scene.objects.len() - 1);
-            ui_state.tab = Tab::Object;
-            dirty = true;
+            cmds.push(SceneCommand::AddObject(controls::default_box(scene.objects.len())));
         }
         if ui.button(format!("{}  Sphere", icons::SPHERE)).clicked() {
-            let obj = controls::default_sphere(scene.objects.len());
-            scene.objects.push(obj);
-            ui_state.selected = Some(scene.objects.len() - 1);
-            ui_state.tab = Tab::Object;
-            dirty = true;
+            cmds.push(SceneCommand::AddObject(controls::default_sphere(scene.objects.len())));
         }
 
         ui.separator();
-        // Indent the category label to line up with the option icons below
-        // (primitive buttons use button_padding.x = 10; mesh rows add_space(10)).
-        ui.add_space(10.0);
-        ui.label(
-            egui::RichText::new("SAMPLE MESHES")
-                .size(10.0)
-                .color(theme::TEXT_DIM),
-        );
-        for m in [
-            "Suzanne",
-            "Stanford Bunny",
-            "Utah Teapot",
-            "Stanford Dragon",
+        // Indent the category label horizontally to align with the rows below.
+        ui.horizontal(|ui| {
+            ui.add_space(10.0);
+            ui.label(
+                egui::RichText::new("SAMPLE MESHES")
+                    .size(10.0)
+                    .color(theme::TEXT_DIM),
+            );
+        });
+        for (label, file) in [
+            ("Suzanne Monkey", "monkey.obj"),
+            ("Stanford Bunny", "bunny.obj"),
+            ("Utah Teapot", "teapot.obj"),
+            ("Stanford Dragon", "dragon.obj"),
         ] {
-            // Custom row: icon + name + ".obj" mono suffix (dim), fully disabled.
-            // egui Button doesn't support mixed-style text, so we allocate a
-            // fixed row rect and draw the content manually.
+            // Custom row: icon + name + ".obj" mono suffix. egui Button doesn't
+            // support mixed-style text, so we allocate a row rect, draw the
+            // content manually, and handle the click ourselves.
             let row_h = 32.0;
             let (row_rect, row_resp) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), row_h),
-                egui::Sense::hover(),
+                egui::Sense::click(),
             );
+            let hovered = row_resp.hovered();
+            if hovered {
+                ui.painter().rect_filled(
+                    row_rect,
+                    egui::CornerRadius::same(6),
+                    egui::Color32::from_rgb(0x22, 0x25, 0x2a),
+                );
+            }
+            // Enabled look matching the primitives (bright name, muted icon),
+            // brightening on hover — no longer greyed out.
+            let (icon_col, name_col) = if hovered {
+                (theme::TEXT, theme::TEXT_STRONG)
+            } else {
+                (theme::TEXT_MUTED, theme::TEXT)
+            };
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(row_rect));
             child.horizontal(|ui| {
                 ui.add_space(10.0);
-                ui.label(
-                    egui::RichText::new(icons::POLYGON)
-                        .color(theme::TEXT_DIM)
-                        .size(13.0),
-                );
+                ui.label(egui::RichText::new(icons::POLYGON).color(icon_col).size(13.0));
                 ui.add_space(2.0);
-                ui.label(
-                    egui::RichText::new(m)
-                        .color(theme::TEXT_MUTED)
-                        .size(13.0),
-                );
+                ui.label(egui::RichText::new(label).color(name_col).size(13.0));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(4.0);
                     ui.label(
@@ -152,15 +173,32 @@ pub fn show_outliner(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> 
                     );
                 });
             });
-            row_resp.on_hover_text("Bundled sample meshes are coming soon");
+
+            // Start loading the bundled mesh (disk on native, HTTP fetch on the
+            // web); `poll_obj_import` at the top of the panel adds it when ready.
+            let row_resp = row_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+            if row_resp.clicked() {
+                controls::add_sample_mesh(ui, label, file);
+            }
         }
 
         ui.separator();
-        if controls::import_obj(ui, &mut scene.objects, &mut ui_state.selected) {
-            ui_state.tab = Tab::Object;
-            dirty = true;
-        }
+        controls::import_obj(ui);
     });
+
+    // Feedback while a mesh is downloading/reading (notably the big sample
+    // meshes fetched over HTTP on the web).
+    if mesh_loading {
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.add(egui::Spinner::new().size(14.0).color(theme::ACCENT));
+            ui.label(
+                egui::RichText::new("Loading mesh\u{2026}")
+                    .color(theme::TEXT_MUTED)
+                    .size(12.0),
+            );
+        });
+    }
 
     ui.add_space(6.0);
 
@@ -173,7 +211,7 @@ pub fn show_outliner(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> 
         let mut new_selection: Option<usize> = None;
 
         for (i, obj) in scene.objects.iter().enumerate() {
-            let selected = ui_state.selected == Some(i);
+            let selected = ui_state.selected.get(scene.objects.len()) == Some(i);
 
             // Pre-allocate the full row rect so we can paint highlights
             // BEHIND the row content (painter goes below widgets).
@@ -279,7 +317,7 @@ pub fn show_outliner(ui: &mut Ui, ui_state: &mut UiState, scene: &mut Scene) -> 
             dirty = true;
         }
         if let Some(i) = new_selection {
-            ui_state.selected = Some(i);
+            ui_state.selected.set(i);
             ui_state.tab = Tab::Object;
         }
     });
