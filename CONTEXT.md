@@ -134,6 +134,10 @@ _Avoid_: render (for the raster view), viewport render
 **Pass**:
 One progressive iteration that adds samples to the accumulating render.
 
+**Integrator**:
+The algorithm that estimates the radiance returned along a camera ray — path tracing. Selected per render (Naive or MIS) behind the `Integrator` trait, built from the camera config. Distinct from the **Render** (the image) and the progressive accumulator (`ProgressiveRenderer`) that drives it.
+_Avoid_: renderer (that's the accumulator), ray_color
+
 **Tone mapping**:
 Mapping high-dynamic-range radiance down to a displayable colour (ACES filmic).
 
