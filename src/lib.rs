@@ -2,6 +2,7 @@ pub mod camera;
 pub mod color;
 pub mod geometry;
 pub mod group;
+pub mod integrator;
 pub mod interval;
 pub mod material;
 pub mod platform;
