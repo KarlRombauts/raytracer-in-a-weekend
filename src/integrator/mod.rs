@@ -1,8 +1,10 @@
 pub mod common;
 pub mod mis;
+pub mod naive;
 pub mod sky;
 
 pub use mis::Mis;
+pub use naive::Naive;
 pub use sky::Sky;
 
 use rand::rngs::SmallRng;
@@ -36,8 +38,6 @@ fn sky_from(cfg: &CameraConfig) -> Sky {
 pub fn build_integrator(cfg: &CameraConfig) -> Box<dyn Integrator> {
     match cfg.integrator {
         IntegratorKind::Mis => Box::new(Mis { max_depth: cfg.max_depth, sky: sky_from(cfg) }),
-        // TEMP: the Naive integrator lands in the next slice; until then this arm
-        // builds Mis so the factory stays total and compiling.
-        IntegratorKind::Naive => Box::new(Mis { max_depth: cfg.max_depth, sky: sky_from(cfg) }),
+        IntegratorKind::Naive => Box::new(Naive { max_depth: cfg.max_depth, sky: sky_from(cfg) }),
     }
 }
