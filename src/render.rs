@@ -491,4 +491,17 @@ mod tests {
         assert_eq!(img.height(), 4);
         let _ = &mut r;
     }
+
+    #[test]
+    fn render_to_png_produces_a_valid_png_at_the_requested_size() {
+        use crate::camera::CameraConfig;
+        let config = CameraConfig::builder().image_width(8).aspect_ratio(1.0).build();
+        let integrator = crate::integrator::build_integrator(&config);
+        let camera = Camera::from(config);
+        let world = IntersectGroup::new();
+        let bytes = ProgressiveRenderer::render_to_png(&camera, integrator.as_ref(), &world, f32::INFINITY, 4);
+        assert_eq!(&bytes[..8], &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+        let img = image::load_from_memory(&bytes).expect("valid PNG");
+        assert_eq!((img.width(), img.height()), (8, 8));
+    }
 }
