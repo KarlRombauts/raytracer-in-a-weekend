@@ -111,7 +111,7 @@ const LEAF_BIT: u32 = 1 << 31;
 /// parent, so the left index is redundant and derived, not stored. Only the right
 /// child (interior) or first-primitive index (leaf) needs a slot — `offset`.
 /// `meta` packs the leaf flag with either the split axis or the primitive count.
-pub struct BVHFlatNode {
+struct BVHFlatNode {
     aabb: AABB,
     /// Interior: right-child index. Leaf: first-primitive index.
     offset: u32,
@@ -238,17 +238,10 @@ impl<T: Intersect> BVH<T> {
                 let axis = node.split_axis();
                 let left = node_idx + 1;
                 let right = node.right_child();
-                if dirs[axis] >= 0.0 {
-                    stack[top] = right;
-                    top += 1;
-                    stack[top] = left;
-                    top += 1;
-                } else {
-                    stack[top] = left;
-                    top += 1;
-                    stack[top] = right;
-                    top += 1;
-                }
+                let (first, second) = if dirs[axis] >= 0.0 { (right, left) } else { (left, right) };
+                stack[top] = first;
+                stack[top + 1] = second;
+                top += 2;
             }
         }
 
