@@ -6,6 +6,13 @@ edition = "2024"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Deterministic BVH traversal-work counters (node box tests + leaf primitive
+# tests). Off by default, so normal and timing builds keep zero-cost, identical
+# codegen — the traversal increments are `#[cfg]`-gated. Enabled by the counter
+# tests and the `bvh_stats` diagnostic example.
+bvh-stats = []
+
 [dependencies]
 image = { version = "*", features = ["rayon"] }
 rayon = "*"

@@ -221,6 +221,8 @@ impl<T: Intersect> BVH<T> {
         while top > 0 {
             top -= 1;
             let node = &nodes[stack[top]];
+            #[cfg(feature = "bvh-stats")]
+            super::stats::count_box();
             if !node.aabb.intersect(ray, &Interval { min: min_t, max: curr_max }) {
                 continue;
             }
@@ -228,6 +230,8 @@ impl<T: Intersect> BVH<T> {
             if node.is_leaf() {
                 let (start, end) = node.get_primative_bounds();
                 for prim in &prims[start..end] {
+                    #[cfg(feature = "bvh-stats")]
+                    super::stats::count_primitive();
                     if let Some(hit) = prim.intersect(ray, &Interval { min: min_t, max: curr_max }) {
                         curr_max = hit.t;
                         closest = Some((hit, prim));
@@ -573,5 +577,104 @@ mod sample_tests {
         // A ray that clears every sphere reports no winner.
         let miss = Ray::new(Point3::new(-10.0, 10.0, 0.0), Vec3::new(1.0, 0.0, 0.0));
         assert!(bvh.closest_hit(&miss, &ray_t).is_none());
+    }
+}
+
+#[cfg(all(test, feature = "bvh-stats"))]
+mod stats_tests {
+    use super::*;
+    use crate::geometry::Sphere;
+    use crate::interval::Interval;
+    use crate::ray::bvh::stats;
+    use crate::ray::Ray;
+    use crate::vec3::{Point3, Vec3};
+
+    // Three unit spheres strung along +x at x = 0, 4, 8.
+    fn three_spheres() -> BVH<Sphere> {
+        BVH::build(vec![
+            Sphere::stationary(Point3::new(0.0, 0.0, 0.0), 1.0),
+            Sphere::stationary(Point3::new(4.0, 0.0, 0.0), 1.0),
+            Sphere::stationary(Point3::new(8.0, 0.0, 0.0), 1.0),
+        ])
+    }
+
+    #[test]
+    fn counts_primitive_tests_during_traversal() {
+        let bvh = three_spheres();
+        let ray = Ray::new(Point3::new(-10.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0));
+        let ti = Interval::new(0.001, f32::INFINITY);
+
+        stats::reset();
+        let _ = bvh.closest_hit(&ray, &ti);
+        let (_boxes, prims) = stats::snapshot();
+        // The ray hit a sphere, so at least one primitive was tested — and never
+        // more than the three that exist.
+        assert!(prims >= 1, "expected at least one primitive test, got {prims}");
+        assert!(prims <= 3, "expected at most three primitive tests, got {prims}");
+    }
+
+    #[test]
+    fn counts_node_box_tests_during_traversal() {
+        let bvh = three_spheres();
+        let ray = Ray::new(Point3::new(-10.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0));
+        let ti = Interval::new(0.001, f32::INFINITY);
+
+        stats::reset();
+        let _ = bvh.closest_hit(&ray, &ti);
+        let (boxes, _prims) = stats::snapshot();
+        // Traversal always tests at least the root node's bounding box.
+        assert!(boxes >= 1, "expected at least the root box test, got {boxes}");
+    }
+
+    // A fixed battery of rays around the cluster — deterministic, no rng.
+    fn ray_battery() -> Vec<Ray> {
+        let mut rays = Vec::new();
+        for k in 0..64 {
+            let a = k as f32 * 0.19;
+            let origin = Point3::new(12.0 * a.cos(), 3.0 * (a * 0.5).sin(), 12.0 * a.sin());
+            let target = Point3::new(4.0, 0.0, 0.0); // cluster centre
+            rays.push(Ray::new(origin, target - origin));
+        }
+        rays
+    }
+
+    fn counts_for(bvh: &BVH<Sphere>, rays: &[Ray]) -> (u64, u64) {
+        let ti = Interval::new(0.001, f32::INFINITY);
+        stats::reset();
+        for ray in rays {
+            let _ = bvh.closest_hit(ray, &ti);
+        }
+        stats::snapshot()
+    }
+
+    #[test]
+    fn counts_are_deterministic_across_runs() {
+        let bvh = three_spheres();
+        let rays = ray_battery();
+        // The counter is a pure function of (tree, rays): two identical runs must
+        // agree exactly — nothing about traversal work is nondeterministic.
+        assert_eq!(counts_for(&bvh, &rays), counts_for(&bvh, &rays));
+    }
+
+    // `n` unit-ish spheres packed along the same x ∈ [0, 8] segment.
+    fn packed_spheres(n: usize) -> BVH<Sphere> {
+        let denom = (n as f32 - 1.0).max(1.0);
+        let v = (0..n)
+            .map(|i| Sphere::stationary(Point3::new(8.0 * i as f32 / denom, 0.0, 0.0), 0.4))
+            .collect();
+        BVH::build(v)
+    }
+
+    #[test]
+    fn a_denser_cluster_records_more_primitive_tests() {
+        let rays = ray_battery();
+        let (_, sparse) = counts_for(&packed_spheres(4), &rays);
+        let (_, dense) = counts_for(&packed_spheres(48), &rays);
+        // More primitives in the same volume ⇒ a ray crossing the cluster tests
+        // more of them. (The BVH makes this grow sub-linearly, not not-at-all.)
+        assert!(
+            dense > sparse,
+            "denser cluster should record more primitive tests: dense={dense} sparse={sparse}"
+        );
     }
 }
