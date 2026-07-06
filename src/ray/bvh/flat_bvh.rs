@@ -200,10 +200,10 @@ impl<T: Intersect> BVH<T> {
     }
 
     /// Closest hit along `ray` within `ray_t`, together with the primitive that
-    /// produced it. Same traversal as [`intersectBVH`](Self::intersectBVH), but it
-    /// keeps the winning primitive alongside the hit so a two-level BVH can resolve
-    /// which object was struck (the bare-`GeoHit` [`Intersect`] impl carries no
-    /// identity). `None` on a miss.
+    /// produced it. The BVH's single traversal: the [`Intersect`] impl calls it and
+    /// drops the primitive, while a two-level BVH keeps it to resolve which object
+    /// was struck (the bare [`GeoHit`] carries no identity). `None` on a miss.
+    #[inline(always)]
     pub fn closest_hit(&self, ray: &Ray, ray_t: &Interval) -> Option<(GeoHit, &T)> {
         const STACK_SIZE: usize = 64;
         let mut stack: [usize; STACK_SIZE] = [0; STACK_SIZE];
@@ -260,85 +260,6 @@ impl<T: Intersect> BVH<T> {
         }
 
         closest
-    }
-
-    #[inline(always)]
-    fn intersectBVH(&self, ray: &Ray, ray_t: &Interval) -> Option<GeoHit> {
-        // Fixed-size stack (avoid Vec overhead)
-        const STACK_SIZE: usize = 64;
-        let mut stack: [usize; STACK_SIZE] = [0; STACK_SIZE];
-        let mut top: usize = 0;
-        // Push root
-        stack[top] = 0;
-        top += 1;
-
-        let mut closest_hit: Option<GeoHit> = None;
-        // Track current maximum t for interval
-        let mut curr_max = ray_t.max;
-        let min_t = ray_t.min;
-        let dirs = &ray.direction;
-        let nodes = &self.nodes;
-        let prims = &self.primitives;
-
-        while top > 0 {
-            top -= 1;
-            let node_idx = stack[top];
-            let node = &nodes[node_idx];
-            // AABB test with tightened interval
-            if !node.aabb.intersect(
-                ray,
-                &Interval {
-                    min: min_t,
-                    max: curr_max,
-                },
-            ) {
-                continue;
-            }
-
-            if node.is_leaf() {
-                let (start, end) = node.get_primative_bounds();
-                // Test primitives in leaf
-                for prim in &prims[start..end] {
-                    if let Some(hit) = prim.intersect(
-                        ray,
-                        &Interval {
-                            min: min_t,
-                            max: curr_max,
-                        },
-                    ) {
-                        curr_max = hit.t;
-                        closest_hit = Some(hit);
-                    }
-                }
-            } else {
-                // Determine traversal order
-                let axis = node.split_axis as usize;
-                let left = node.left as usize;
-                let right = node.right as usize;
-                // push farther child first
-                if dirs[axis as u32] >= 0.0 {
-                    if right != 0 {
-                        stack[top] = right;
-                        top += 1;
-                    }
-                    if left != 0 {
-                        stack[top] = left;
-                        top += 1;
-                    }
-                } else {
-                    if left != 0 {
-                        stack[top] = left;
-                        top += 1;
-                    }
-                    if right != 0 {
-                        stack[top] = right;
-                        top += 1;
-                    }
-                }
-            }
-        }
-
-        closest_hit
     }
 }
 
@@ -543,7 +464,9 @@ impl<T: Intersect> Intersect for BVH<T> {
     }
 
     fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<GeoHit> {
-        return self.intersectBVH(ray, ray_t);
+        // The same traversal identity-carrying callers use; the primitive is
+        // dropped here (and optimizes away when this inlines).
+        self.closest_hit(ray, ray_t).map(|(hit, _)| hit)
     }
 }
 
