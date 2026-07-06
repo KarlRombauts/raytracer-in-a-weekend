@@ -55,7 +55,7 @@ impl Intersect for IntersectGroup {
 
         for object in &self.objects {
             if let Some(hit_record) = object.intersect(ray, &Interval::new(ray_t.min, closest_t)) {
-                closest_t = hit_record.t as f32;
+                closest_t = hit_record.t;
                 closest_hit = Some(hit_record);
             }
         }

@@ -50,9 +50,11 @@ pub struct HitRecord<'a> {
 }
 
 impl<'a> HitRecord<'a> {
-    /// Build a shading record directly (front-facing, zero UVs). The World builds
-    /// records via [`from_geo`](Self::from_geo); this is a convenience for unit
-    /// tests that exercise a material against a fabricated hit.
+    /// Build a shading record directly (front-facing, zero UVs). Production code
+    /// only ever builds records via [`from_geo`](Self::from_geo) — the World is
+    /// the sole place a material is bound to a hit — so this is gated to tests
+    /// that exercise a material against a fabricated hit.
+    #[cfg(test)]
     pub fn new(t: f32, p: Point3, normal: Vec3, material: &'a dyn Material) -> Self {
         HitRecord {
             t,

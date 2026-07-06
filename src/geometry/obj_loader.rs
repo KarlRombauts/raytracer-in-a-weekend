@@ -1,10 +1,5 @@
-use crate::{
-    geometry::Triangle,
-    group::IntersectGroup,
-    ray::Intersect,
-    vec3::Vec3,
-};
-use std::{fs, sync::Arc};
+use crate::vec3::Vec3;
+use std::fs;
 
 pub struct ObjData {
     verts: Vec<Vec3>,
@@ -131,46 +126,6 @@ impl ObjData {
                 .collect()
         };
         (self.verts.clone(), faces, uvs)
-    }
-
-    pub fn into_mesh(self) -> IntersectGroup {
-        let mut group = IntersectGroup::new();
-
-        println!("Loaded {} faces", self.faces.len());
-        let vn = crate::geometry::vertex_normals(&self.verts, &self.faces);
-        self.faces.into_iter().for_each(|[i, j, k]| {
-            let tri = Arc::new(Triangle::from_points_smooth(
-                &self.verts[i],
-                &self.verts[j],
-                &self.verts[k],
-                &vn[i],
-                &vn[j],
-                &vn[k],
-            )) as Arc<dyn Intersect>;
-            group.add(tri);
-        });
-
-        group
-    }
-
-    pub fn into_triangles(self) -> Vec<Triangle> {
-        let mut triangles = Vec::new();
-
-        println!("Loaded {} faces", self.faces.len());
-        let vn = crate::geometry::vertex_normals(&self.verts, &self.faces);
-        self.faces.into_iter().for_each(|[i, j, k]| {
-            let tri = Triangle::from_points_smooth(
-                &self.verts[i],
-                &self.verts[j],
-                &self.verts[k],
-                &vn[i],
-                &vn[j],
-                &vn[k],
-            );
-            triangles.push(tri);
-        });
-
-        return triangles;
     }
 }
 
