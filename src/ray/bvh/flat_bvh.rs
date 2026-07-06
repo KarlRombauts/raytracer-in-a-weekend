@@ -192,10 +192,57 @@ impl<T: Intersect> BVH<T> {
         BVH { primitives, nodes }
     }
 
+    /// Early-exit occlusion traversal: `true` as soon as any primitive is hit
+    /// within `ray_t`. Because any blocker ends the query, it needs no
+    /// front-to-back ordering and no `curr_max` tightening, and it builds no hit
+    /// record — so it is simpler and cheaper than [`closest_hit`](Self::closest_hit).
+    /// Leaves defer to each primitive's own `occluded`, so a two-level BVH
+    /// early-exits through an object's inner BVH too.
+    fn any_hit(&self, ray: &Ray, ray_t: &Interval) -> bool {
+        const STACK_SIZE: usize = 64;
+        let mut stack: [usize; STACK_SIZE] = [0; STACK_SIZE];
+        let mut top: usize = 0;
+        stack[top] = 0;
+        top += 1;
+
+        let nodes = &self.nodes;
+        let prims = &self.primitives;
+
+        while top > 0 {
+            top -= 1;
+            let node_idx = stack[top];
+            let node = &nodes[node_idx];
+            #[cfg(feature = "bvh-stats")]
+            super::stats::count_box();
+            if !node.aabb.intersect(ray, ray_t) {
+                continue;
+            }
+
+            if node.is_leaf() {
+                let (start, end) = node.leaf_range();
+                for prim in &prims[start..end] {
+                    #[cfg(feature = "bvh-stats")]
+                    super::stats::count_primitive();
+                    if prim.occluded(ray, ray_t) {
+                        return true;
+                    }
+                }
+            } else {
+                // Any hit ends the query, so child order doesn't matter.
+                stack[top] = node_idx + 1;
+                top += 1;
+                stack[top] = node.right_child();
+                top += 1;
+            }
+        }
+        false
+    }
+
     /// Closest hit along `ray` within `ray_t`, together with the primitive that
-    /// produced it. The BVH's single traversal: the [`Intersect`] impl calls it and
-    /// drops the primitive, while a two-level BVH keeps it to resolve which object
-    /// was struck (the bare [`GeoHit`] carries no identity). `None` on a miss.
+    /// produced it. The BVH's single closest-hit traversal: the [`Intersect`] impl
+    /// calls it and drops the primitive, while a two-level BVH keeps it to resolve
+    /// which object was struck (the bare [`GeoHit`] carries no identity). `None` on
+    /// a miss.
     #[inline(always)]
     pub fn closest_hit(&self, ray: &Ray, ray_t: &Interval) -> Option<(GeoHit, &T)> {
         const STACK_SIZE: usize = 64;
@@ -428,6 +475,10 @@ impl<T: Intersect> Intersect for BVH<T> {
         // dropped here (and optimizes away when this inlines).
         self.closest_hit(ray, ray_t).map(|(hit, _)| hit)
     }
+
+    fn occluded(&self, ray: &Ray, ray_t: &Interval) -> bool {
+        self.any_hit(ray, ray_t)
+    }
 }
 
 #[cfg(test)]
@@ -513,6 +564,57 @@ mod sample_tests {
         // A ray that clears every sphere reports no winner.
         let miss = Ray::new(Point3::new(-10.0, 10.0, 0.0), Vec3::new(1.0, 0.0, 0.0));
         assert!(bvh.closest_hit(&miss, &ray_t).is_none());
+    }
+}
+
+#[cfg(test)]
+mod occlusion_tests {
+    use super::*;
+    use crate::geometry::Sphere;
+    use crate::interval::Interval;
+    use crate::ray::Ray;
+    use crate::vec3::Point3;
+    use rand::rngs::SmallRng;
+    use rand::{Rng, SeedableRng};
+
+    fn spheres() -> BVH<Sphere> {
+        let centers = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(3.0, 1.0, -2.0),
+            Point3::new(-2.5, -1.0, 1.5),
+            Point3::new(1.0, -2.0, 3.0),
+            Point3::new(-1.5, 2.0, -3.0),
+        ];
+        BVH::build(centers.iter().map(|c| Sphere::stationary(*c, 0.8)).collect())
+    }
+
+    #[test]
+    fn occluded_agrees_with_closest_hit() {
+        // An occlusion query is exactly "does any surface intersect within the
+        // interval" — the same fact `intersect(...).is_some()` reports. Over a
+        // battery of random rays *and* random distance bounds (so the t_max cutoff
+        // is exercised), the fast boolean must agree with the closest-hit truth.
+        let bvh = spheres();
+        let mut rng = SmallRng::seed_from_u64(0x0CC1);
+        for _ in 0..1000 {
+            let origin = Point3::new(
+                rng.random_range(-8.0..8.0),
+                rng.random_range(-8.0..8.0),
+                rng.random_range(-8.0..8.0),
+            );
+            let target = Point3::new(
+                rng.random_range(-3.0..3.0),
+                rng.random_range(-3.0..3.0),
+                rng.random_range(-3.0..3.0),
+            );
+            let ray = Ray::new(origin, target - origin);
+            let ti = Interval::new(0.001, rng.random_range(0.5..1.5));
+            assert_eq!(
+                bvh.occluded(&ray, &ti),
+                bvh.intersect(&ray, &ti).is_some(),
+                "occluded disagreed with closest-hit for interval {ti:?}"
+            );
+        }
     }
 }
 

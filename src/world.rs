@@ -84,6 +84,12 @@ impl Intersect for ObjRef {
     fn center(&self) -> Vec3 {
         self.geometry.center()
     }
+
+    fn occluded(&self, ray: &Ray, ray_t: &Interval) -> bool {
+        // Delegate to the geometry's own occlusion so a mesh object's inner BVH
+        // early-exits, rather than the default (which would closest-hit it).
+        self.geometry.occluded(ray, ray_t)
+    }
 }
 
 /// The built, acceleration-backed runtime structure the path tracer walks: the
@@ -160,6 +166,14 @@ impl World {
         self.bvh.closest_hit(ray, ray_t).map(|(geo, proxy)| {
             HitRecord::from_geo(geo, self.objects[proxy.object].material.as_ref())
         })
+    }
+
+    /// Whether any object blocks `ray` within `ray_t` — a distance-bounded
+    /// occlusion query for shadow rays. Early-exits on the first blocker (through
+    /// the top-level BVH and any mesh object's inner BVH) and builds no shading
+    /// record, so it is cheaper than [`intersect`](Self::intersect).
+    pub fn occluded(&self, ray: &Ray, ray_t: &Interval) -> bool {
+        self.bvh.occluded(ray, ray_t)
     }
 
     /// Radiance seen along `dir` by a ray that hit nothing.
@@ -495,5 +509,80 @@ mod top_bvh_tests {
             }
         }
         assert!(hits > 50, "expected a healthy mix of hits, got {hits}");
+    }
+}
+
+#[cfg(test)]
+mod occlusion_tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::geometry::{Sphere, Triangle};
+    use crate::material::Lambertian;
+    use crate::ray::BVH;
+    use crate::vec3::Point3;
+    use rand::rngs::SmallRng;
+    use rand::{Rng, SeedableRng};
+
+    fn lambertian() -> Arc<dyn crate::material::Material> {
+        Arc::new(Lambertian::from_color(Color::new(0.7, 0.7, 0.7)))
+    }
+
+    // A world of two sphere primitives plus one *mesh* object — a `BVH<Triangle>`
+    // wrapped as geometry — so occlusion has to recurse through the top-level BVH
+    // into an object's inner BVH.
+    fn world_with_mesh() -> World {
+        // A single triangle standing in the x = 5 plane, spanning y,z ∈ [-1,1].
+        let tri = Arc::new(BVH::build(vec![Triangle::from_points(
+            &Point3::new(5.0, -1.0, -1.0),
+            &Point3::new(5.0, 1.5, 0.0),
+            &Point3::new(5.0, -1.0, 1.5),
+        )])) as Arc<dyn Intersect>;
+        World::new(
+            vec![
+                // Off the +x axis, so a ray fired down it can only meet the mesh.
+                Object { geometry: Arc::new(Sphere::stationary(Point3::new(0.0, 3.0, 0.0), 0.8)), material: lambertian(), light: None },
+                Object { geometry: Arc::new(Sphere::stationary(Point3::new(-3.0, -2.0, 2.0), 0.6)), material: lambertian(), light: None },
+                Object { geometry: tri, material: lambertian(), light: None },
+            ],
+            Sky::Flat(Color::ZERO),
+        )
+    }
+
+    #[test]
+    fn occluded_matches_intersect_over_random_rays() {
+        let world = world_with_mesh();
+        let mut rng = SmallRng::seed_from_u64(0x0CC17);
+        for _ in 0..800 {
+            let origin = Point3::new(
+                rng.random_range(-8.0..8.0),
+                rng.random_range(-8.0..8.0),
+                rng.random_range(-8.0..8.0),
+            );
+            let target = Point3::new(
+                rng.random_range(-1.0..6.0),
+                rng.random_range(-3.0..3.0),
+                rng.random_range(-3.0..3.0),
+            );
+            let ray = Ray::new(origin, target - origin);
+            let ti = Interval::new(0.001, rng.random_range(0.3..1.2));
+            assert_eq!(
+                world.occluded(&ray, &ti),
+                world.intersect(&ray, &ti).is_some(),
+                "World::occluded disagreed with closest-hit"
+            );
+        }
+    }
+
+    #[test]
+    fn occlusion_reaches_into_a_mesh_object() {
+        let world = world_with_mesh();
+        // A ray from the origin toward the triangle's interior (hit at t = 1). It
+        // clears both spheres, so only the mesh object can occlude it — proving the
+        // inner BVH's any-hit path is reached.
+        let to_tri = Point3::new(5.0, -0.2, 0.2) - Point3::ZERO;
+        let at_mesh = Ray::new(Point3::ZERO, to_tri);
+        assert!(world.occluded(&at_mesh, &Interval::new(0.001, f32::INFINITY)), "mesh triangle should occlude");
+        // Bounded short of the triangle (t=1): no longer occluded (distance works).
+        assert!(!world.occluded(&at_mesh, &Interval::new(0.001, 0.5)), "triangle beyond t_max must not occlude");
     }
 }
