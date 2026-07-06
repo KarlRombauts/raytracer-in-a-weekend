@@ -3,6 +3,7 @@ use crate::integrator::Sky;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::{AreaLight, GeoHit, HitRecord, Intersect, Ray, AABB};
+use crate::texture::env_map::EnvMap;
 use crate::vec3::{Point3, Vec3};
 use rand::rngs::SmallRng;
 use rand::Rng;
@@ -27,6 +28,36 @@ pub struct Object {
     /// for ordinary surfaces and for emitters we can't sample exactly (ellipsoid
     /// / box / mesh — they still glow when hit, just aren't shadow-ray sampled).
     pub light: Option<Arc<dyn AreaLight>>,
+}
+
+/// A borrowed view of one directly-sampleable light, derived on the fly from the
+/// World's objects and sky rather than stored in a parallel list: either an
+/// emissive surface (an [`AreaLight`]) or the environment map. Both answer "a
+/// direction toward me and its solid-angle pdf" — the env light's pdf is
+/// position-independent (it is infinitely far away), so it ignores the origin.
+enum LightRef<'a> {
+    Area(&'a dyn AreaLight),
+    Env(&'a EnvMap),
+}
+
+impl LightRef<'_> {
+    /// Solid-angle pdf of sampling `dir` (from `origin`) toward this light.
+    fn pdf_value(&self, origin: Point3, dir: Vec3) -> f32 {
+        match self {
+            LightRef::Area(l) => l.pdf_value(origin, dir),
+            LightRef::Env(env) => env.direction_pdf(&dir),
+        }
+    }
+
+    /// A (unnormalized) direction from `origin` toward this light, using the two
+    /// canonical uniforms `(u, v)`. The env sampler's own pdf is recomputed by
+    /// [`World::light_pdf`] (the marginal over all lights), so it is dropped here.
+    fn sample_dir(&self, origin: Point3, u: f32, v: f32) -> Vec3 {
+        match self {
+            LightRef::Area(l) => l.sample_dir(origin, u, v),
+            LightRef::Env(env) => env.sample_direction(u, v).0,
+        }
+    }
 }
 
 /// The built, acceleration-backed runtime structure the path tracer walks: the
@@ -113,36 +144,40 @@ impl World {
         self.lights.iter().map(|&i| &self.objects[i])
     }
 
-    /// The area-light handle of the `k`th registered emitter. Every index in
-    /// `self.lights` points at an object with `light: Some`, so this can't fail.
-    fn area_light(&self, k: usize) -> &Arc<dyn AreaLight> {
-        self.objects[self.lights[k]]
-            .light
-            .as_ref()
-            .expect("lights indexes only sampleable emitters")
+    /// Every directly-sampleable light as a borrowed [`LightRef`], in the order
+    /// `light_count` counts them: the registered emissive objects first, then the
+    /// environment map when `sky` is one. Derived on the fly — no stored list.
+    fn light_refs(&self) -> impl Iterator<Item = LightRef<'_>> {
+        self.lights
+            .iter()
+            .map(|&i| {
+                let l = self.objects[i]
+                    .light
+                    .as_deref()
+                    .expect("lights indexes only sampleable emitters");
+                LightRef::Area(l)
+            })
+            .chain(match &self.sky {
+                Sky::Env(env) => Some(LightRef::Env(env)),
+                Sky::Flat(_) => None,
+            })
     }
 
     /// Average solid-angle PDF of sampling `dir` (from `origin`) toward any
-    /// registered light. 0 when there are no lights. The env light (if any) is
-    /// the last light in the set.
+    /// registered light. 0 when there are no lights.
     pub fn light_pdf(&self, origin: Point3, dir: Vec3) -> f32 {
         let n = self.light_count();
         if n == 0 {
             return 0.0;
         }
-        let mut sum: f32 = (0..self.lights.len())
-            .map(|k| self.area_light(k).pdf_value(origin, dir))
-            .sum();
-        if let Sky::Env(env) = &self.sky {
-            sum += env.direction_pdf(&dir);
-        }
+        let sum: f32 = self.light_refs().map(|l| l.pdf_value(origin, dir)).sum();
         sum / n as f32
     }
 
     /// A (unnormalized) direction from `origin` toward a registered light: `rng`
     /// chooses which light (discrete), and the canonical uniforms `(u, v)` sample
     /// a point on its surface — so the surface sample can be stratified by the
-    /// caller. `None` when there are no lights. The env light is the last slot.
+    /// caller. `None` when there are no lights.
     pub fn sample_light_dir(
         &self,
         origin: Point3,
@@ -155,16 +190,8 @@ impl World {
             return None;
         }
         let i = rng.random_range(0..n);
-        Some(if i < self.lights.len() {
-            self.area_light(i).sample_dir(origin, u, v)
-        } else {
-            // The env light: (u, v) are the two canonical uniforms; the env
-            // sampler's own pdf is recomputed by `light_pdf` (the marginal).
-            match &self.sky {
-                Sky::Env(env) => env.sample_direction(u, v).0,
-                Sky::Flat(_) => unreachable!("env light slot without an env sky"),
-            }
-        })
+        let light = self.light_refs().nth(i).expect("i < light_count");
+        Some(light.sample_dir(origin, u, v))
     }
 }
 
