@@ -158,8 +158,7 @@ mod tests {
     fn empty_world_returns_the_flat_sky() {
         // A camera ray (throughput 1) that hits nothing returns the sky exactly.
         let mis = Mis { max_depth: 10 };
-        let mut world = World::new();
-        world.sky = crate::integrator::Sky::Flat(Color::new(0.2, 0.4, 0.6));
+        let world = World::new(vec![], crate::integrator::Sky::Flat(Color::new(0.2, 0.4, 0.6)));
         let ray = Ray::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0));
         let mut rng = SmallRng::seed_from_u64(1);
         assert_eq!(mis.radiance(&ray, &world, sample(), &mut rng), Color::new(0.2, 0.4, 0.6));
@@ -170,8 +169,7 @@ mod tests {
         // First hit is the emitter: emission is taken at full weight (camera ray),
         // scatter returns None, the path ends — a deterministic result.
         let mis = Mis { max_depth: 10 };
-        let mut world = World::new();
-        world.add(ceiling_light());
+        let world = World::new(vec![ceiling_light()], crate::integrator::Sky::Flat(Color::ZERO));
         let ray = Ray::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
         let mut rng = SmallRng::seed_from_u64(1);
         let c = mis.radiance(&ray, &world, sample(), &mut rng);
@@ -182,7 +180,7 @@ mod tests {
     fn max_depth_zero_traces_nothing() {
         // With no bounces the loop never runs, so not even the sky is gathered.
         let mis = Mis { max_depth: 0 };
-        let world = World::new();
+        let world = World::new(vec![], crate::integrator::Sky::Flat(Color::ZERO));
         let ray = Ray::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0));
         let mut rng = SmallRng::seed_from_u64(1);
         assert_eq!(mis.radiance(&ray, &world, sample(), &mut rng), Color::ZERO);
@@ -232,16 +230,20 @@ mod mixture_tests {
 
     fn avg_floor_color(register_light: bool) -> f32 {
         let integ = integ();
-        let mut world = World::new();
-        world.add(floor());
         let light = ceiling_light();
         // Registered for NEE only when `register_light`; otherwise it still glows
         // (its material) but isn't shadow-sampled — pure-GI.
-        world.add(Object {
-            geometry: light.clone(),
-            material: Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0))),
-            light: register_light.then(|| light.clone() as Arc<dyn AreaLight>),
-        });
+        let world = World::new(
+            vec![
+                floor(),
+                Object {
+                    geometry: light.clone(),
+                    material: Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0))),
+                    light: register_light.then(|| light.clone() as Arc<dyn AreaLight>),
+                },
+            ],
+            crate::integrator::Sky::Flat(Color::ZERO),
+        );
         // Look straight down at the floor centre.
         let ray = Ray::new(Point3::new(0.0, 1.0, 0.0), Vec3::new(0.0, -1.0, 0.0));
         let mut rng = SmallRng::seed_from_u64(7);
@@ -307,14 +309,18 @@ mod mis_tests {
     // Returns (mean, variance) of the .x channel over `n` samples.
     fn stats(register_light: bool, n: u32) -> (f32, f32) {
         let integ = integ();
-        let mut world = World::new();
-        world.add(floor());
         let l = small_light();
-        world.add(Object {
-            geometry: l.clone(),
-            material: Arc::new(DiffuseLight::from_color(Color::new(40.0, 40.0, 40.0))),
-            light: register_light.then(|| l.clone() as Arc<dyn AreaLight>),
-        });
+        let world = World::new(
+            vec![
+                floor(),
+                Object {
+                    geometry: l.clone(),
+                    material: Arc::new(DiffuseLight::from_color(Color::new(40.0, 40.0, 40.0))),
+                    light: register_light.then(|| l.clone() as Arc<dyn AreaLight>),
+                },
+            ],
+            crate::integrator::Sky::Flat(Color::ZERO),
+        );
         let ray = Ray::new(Point3::new(0.0, 1.0, 0.0), Vec3::new(0.0, -1.0, 0.0));
         let mut rng = SmallRng::seed_from_u64(7);
         let mut sum = 0.0;
@@ -371,14 +377,14 @@ mod env_mis_tests {
         let mut data = vec![[0.05f32; 3]; w * h];
         data[w + 8] = [200.0, 200.0, 200.0];
         let env = Arc::new(EnvMap::from_pixels(w, h, data));
-        let mut world = World::new();
-        world.add(Object {
-            geometry: floor,
-            material: Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0))),
-            light: None,
-        });
-        world.sky = Sky::Env(env);
-        world
+        World::new(
+            vec![Object {
+                geometry: floor,
+                material: Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0))),
+                light: None,
+            }],
+            Sky::Env(env),
+        )
     }
 
     // (mean, variance) of the .x channel looking straight down at the lit floor.
@@ -426,14 +432,14 @@ mod env_mis_tests {
             }
         }
         let env = Arc::new(EnvMap::from_pixels(w, h, data));
-        let mut world = World::new();
-        world.add(Object {
-            geometry: floor,
-            material: Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0))),
-            light: None,
-        });
-        world.sky = Sky::Env(env);
-        world
+        World::new(
+            vec![Object {
+                geometry: floor,
+                material: Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0))),
+                light: None,
+            }],
+            Sky::Env(env),
+        )
     }
 
     #[test]

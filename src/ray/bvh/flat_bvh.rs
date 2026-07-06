@@ -199,6 +199,69 @@ impl<T: Intersect> BVH<T> {
         }
     }
 
+    /// Closest hit along `ray` within `ray_t`, together with the primitive that
+    /// produced it. Same traversal as [`intersectBVH`](Self::intersectBVH), but it
+    /// keeps the winning primitive alongside the hit so a two-level BVH can resolve
+    /// which object was struck (the bare-`GeoHit` [`Intersect`] impl carries no
+    /// identity). `None` on a miss.
+    pub fn closest_hit(&self, ray: &Ray, ray_t: &Interval) -> Option<(GeoHit, &T)> {
+        const STACK_SIZE: usize = 64;
+        let mut stack: [usize; STACK_SIZE] = [0; STACK_SIZE];
+        let mut top: usize = 0;
+        stack[top] = 0;
+        top += 1;
+
+        let mut closest: Option<(GeoHit, &T)> = None;
+        let mut curr_max = ray_t.max;
+        let min_t = ray_t.min;
+        let dirs = &ray.direction;
+        let nodes = &self.nodes;
+        let prims = &self.primitives;
+
+        while top > 0 {
+            top -= 1;
+            let node = &nodes[stack[top]];
+            if !node.aabb.intersect(ray, &Interval { min: min_t, max: curr_max }) {
+                continue;
+            }
+
+            if node.is_leaf() {
+                let (start, end) = node.get_primative_bounds();
+                for prim in &prims[start..end] {
+                    if let Some(hit) = prim.intersect(ray, &Interval { min: min_t, max: curr_max }) {
+                        curr_max = hit.t;
+                        closest = Some((hit, prim));
+                    }
+                }
+            } else {
+                let axis = node.split_axis as usize;
+                let left = node.left as usize;
+                let right = node.right as usize;
+                if dirs[axis as u32] >= 0.0 {
+                    if right != 0 {
+                        stack[top] = right;
+                        top += 1;
+                    }
+                    if left != 0 {
+                        stack[top] = left;
+                        top += 1;
+                    }
+                } else {
+                    if left != 0 {
+                        stack[top] = left;
+                        top += 1;
+                    }
+                    if right != 0 {
+                        stack[top] = right;
+                        top += 1;
+                    }
+                }
+            }
+        }
+
+        closest
+    }
+
     #[inline(always)]
     fn intersectBVH(&self, ray: &Ray, ray_t: &Interval) -> Option<GeoHit> {
         // Fixed-size stack (avoid Vec overhead)
@@ -557,4 +620,35 @@ mod sample_tests {
         assert_eq!(misses, 0, "{misses} interior rays missed a flat face (holes)");
     }
 
+    #[test]
+    fn closest_hit_reports_the_winning_primitive() {
+        use crate::geometry::Sphere;
+        use crate::interval::Interval;
+        use crate::ray::Ray;
+        use crate::vec3::{Point3, Vec3};
+
+        // Three unit spheres strung along +x at x = 0, 4, 8.
+        let spheres = vec![
+            Sphere::stationary(Point3::new(0.0, 0.0, 0.0), 1.0),
+            Sphere::stationary(Point3::new(4.0, 0.0, 0.0), 1.0),
+            Sphere::stationary(Point3::new(8.0, 0.0, 0.0), 1.0),
+        ];
+        let bvh = BVH::build(spheres);
+        let ray_t = Interval::new(0.001, f32::INFINITY);
+
+        // From -x the first sphere (x=0) is closest; from +x the last (x=8) is.
+        let from_left = Ray::new(Point3::new(-10.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0));
+        let (hit, winner) = bvh.closest_hit(&from_left, &ray_t).expect("hits the near sphere");
+        assert_eq!(winner.center(), Point3::new(0.0, 0.0, 0.0), "nearest from the left");
+        // The winner-returning query agrees with the bare-GeoHit path on distance.
+        assert_eq!(hit.t, bvh.intersect(&from_left, &ray_t).unwrap().t);
+
+        let from_right = Ray::new(Point3::new(20.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0));
+        let (_, winner) = bvh.closest_hit(&from_right, &ray_t).expect("hits the near sphere");
+        assert_eq!(winner.center(), Point3::new(8.0, 0.0, 0.0), "nearest from the right");
+
+        // A ray that clears every sphere reports no winner.
+        let miss = Ray::new(Point3::new(-10.0, 10.0, 0.0), Vec3::new(1.0, 0.0, 0.0));
+        assert!(bvh.closest_hit(&miss, &ray_t).is_none());
+    }
 }

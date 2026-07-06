@@ -98,16 +98,19 @@ mod tests {
     }
 
     fn lit_world() -> World {
-        let mut w = World::new();
-        w.add(floor());
         let light = ceiling_light();
-        // Registered for NEE (Mis shadow-samples it; Naive ignores lights).
-        w.add(Object {
-            geometry: light.clone(),
-            material: Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0))),
-            light: Some(light),
-        });
-        w
+        // The emitter is registered for NEE (Mis shadow-samples it; Naive ignores lights).
+        World::new(
+            vec![
+                floor(),
+                Object {
+                    geometry: light.clone(),
+                    material: Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0))),
+                    light: Some(light),
+                },
+            ],
+            crate::integrator::Sky::Flat(Color::ZERO),
+        )
     }
 
     // Average the .x channel of `n` radiance samples of the lit floor, looking
@@ -134,8 +137,7 @@ mod tests {
     #[test]
     fn empty_world_returns_the_flat_sky() {
         let naive = Naive { max_depth: 10 };
-        let mut world = World::new();
-        world.sky = crate::integrator::Sky::Flat(Color::new(0.2, 0.4, 0.6));
+        let world = World::new(vec![], crate::integrator::Sky::Flat(Color::new(0.2, 0.4, 0.6)));
         let ray = Ray::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0));
         let mut rng = SmallRng::seed_from_u64(1);
         assert_eq!(

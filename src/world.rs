@@ -2,7 +2,7 @@ use crate::color::Color;
 use crate::integrator::Sky;
 use crate::interval::Interval;
 use crate::material::Material;
-use crate::ray::{AreaLight, GeoHit, HitRecord, Intersect, Ray, AABB};
+use crate::ray::{AreaLight, GeoHit, HitRecord, Intersect, Ray, BVH, AABB};
 use crate::texture::env_map::EnvMap;
 use crate::vec3::{Point3, Vec3};
 use rand::rngs::SmallRng;
@@ -60,6 +60,32 @@ impl LightRef<'_> {
     }
 }
 
+/// A lightweight proxy the top-level BVH is built over: an object's geometry
+/// handle paired with the *stable* index of that object in [`World::objects`].
+/// The BVH reorders proxies freely for spatial locality; the object array never
+/// moves — it stays in scene order, the source of truth for materials and
+/// light-sampling order. On a hit, the proxy's `object` index resolves the
+/// object whose material is attached. Intersection and bounds delegate to the
+/// shared geometry handle, so no geometry is copied into the proxy.
+struct ObjRef {
+    geometry: Arc<dyn Intersect>,
+    object: usize,
+}
+
+impl Intersect for ObjRef {
+    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<GeoHit> {
+        self.geometry.intersect(ray, ray_t)
+    }
+
+    fn bounding_box(&self) -> &AABB {
+        self.geometry.bounding_box()
+    }
+
+    fn center(&self) -> Vec3 {
+        self.geometry.center()
+    }
+}
+
 /// The built, acceleration-backed runtime structure the path tracer walks: the
 /// scene's geometry plus the scene-global state the integrator needs — the
 /// directly-sampleable lights and the [`Sky`] seen on a miss. Produced from a
@@ -67,65 +93,73 @@ impl LightRef<'_> {
 ///
 /// Lights have one source of truth: an emissive [`Object`]'s own `light` handle
 /// (tracked by index in `lights`), plus the environment map when `sky` is one.
-/// Distinct from [`IntersectGroup`](crate::group::IntersectGroup), a plain list
-/// of hittables used *inside* objects; the World is the top level and is not
-/// itself an `Intersect`.
+/// Intersection is accelerated by a top-level BVH over object proxies (the outer
+/// half of a two-level TLAS/BLAS structure — each mesh keeps its own inner
+/// triangle BVH, reused by reference). Distinct from
+/// [`IntersectGroup`](crate::group::IntersectGroup), a plain list of hittables
+/// used *inside* objects; the World is the top level and is not itself an
+/// `Intersect`.
 pub struct World {
     pub objects: Vec<Object>,
-    /// Indices into `objects` of the sampleable emitters, in registration order —
-    /// the discrete set next-event estimation chooses among (alongside the env
-    /// light, when `sky` is an environment map). Derived as objects are added.
+    /// Indices into `objects` of the sampleable emitters, in scene order — the
+    /// discrete set next-event estimation chooses among (alongside the env light,
+    /// when `sky` is an environment map). Derived from the objects at build time.
     lights: Vec<usize>,
     /// The radiance a ray sees when it hits nothing. Owned by the World so its
     /// miss-shading and its light-sampling (when it's an environment map) share
     /// one source of truth — the env map lives here, not in a second light list.
     pub sky: Sky,
-    bbox: AABB,
+    /// Top-level BVH over [`ObjRef`] proxies of `objects`. Each proxy carries its
+    /// object's stable scene-order index, so the BVH may reorder proxies for
+    /// locality without disturbing `objects`. Its root bounds the whole World.
+    bvh: BVH<ObjRef>,
 }
 
 impl World {
-    pub fn new() -> Self {
+    /// Build the runtime World from a complete set of objects (in scene order)
+    /// plus the sky. Everything derived from the objects is computed once here —
+    /// the light index set and the top-level BVH over object proxies — because a
+    /// BVH cannot be cheaply appended to, which also makes a built World
+    /// immutable. `objects` keeps scene order (the source of truth for materials
+    /// and light-sampling order); only the BVH's proxies are reordered.
+    pub fn new(objects: Vec<Object>, sky: Sky) -> Self {
+        // A sampleable emitter is a light — derived from the objects, one place,
+        // no parallel list to keep in sync.
+        let lights = objects
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| o.light.is_some())
+            .map(|(i, _)| i)
+            .collect();
+        let proxies = objects
+            .iter()
+            .enumerate()
+            .map(|(i, o)| ObjRef {
+                geometry: o.geometry.clone(),
+                object: i,
+            })
+            .collect();
         World {
-            objects: Vec::new(),
-            lights: Vec::new(),
-            sky: Sky::Flat(Color::ZERO),
-            bbox: AABB::EMPTY,
+            objects,
+            lights,
+            sky,
+            bvh: BVH::build(proxies),
         }
     }
 
-    pub fn add(&mut self, object: Object) -> &mut Self {
-        self.bbox = AABB::from_boxes(&self.bbox, object.geometry.bounding_box());
-        // A sampleable emitter registers itself as a light — one place, derived
-        // from the object, no parallel list to keep in sync.
-        if object.light.is_some() {
-            self.lights.push(self.objects.len());
-        }
-        self.objects.push(object);
-        self
-    }
-
+    /// Bounds of the whole World — the top-level BVH's root AABB.
     pub fn bounding_box(&self) -> &AABB {
-        &self.bbox
+        self.bvh.bounding_box()
     }
 
-    /// Closest hit along `ray` within `ray_t`, or `None` on a miss. Geometry
-    /// reports a material-agnostic [`GeoHit`]; the winning object's material is
-    /// attached here to produce the shading [`HitRecord`].
+    /// Closest hit along `ray` within `ray_t`, or `None` on a miss. The top-level
+    /// BVH returns the winning object proxy; the proxy's index resolves that
+    /// object, whose material is attached here to produce the shading
+    /// [`HitRecord`] — the single material-attach seam.
     pub fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>> {
-        let mut closest: Option<(GeoHit, &Arc<dyn Material>)> = None;
-        let mut closest_t = ray_t.max;
-
-        for object in &self.objects {
-            if let Some(geo) = object
-                .geometry
-                .intersect(ray, &Interval::new(ray_t.min, closest_t))
-            {
-                closest_t = geo.t;
-                closest = Some((geo, &object.material));
-            }
-        }
-
-        closest.map(|(geo, material)| HitRecord::from_geo(geo, material.as_ref()))
+        self.bvh.closest_hit(ray, ray_t).map(|(geo, proxy)| {
+            HitRecord::from_geo(geo, self.objects[proxy.object].material.as_ref())
+        })
     }
 
     /// Radiance seen along `dir` by a ray that hit nothing.
@@ -223,14 +257,13 @@ mod light_mixture_tests {
 
     #[test]
     fn light_pdf_is_zero_without_lights() {
-        let w = World::new();
+        let w = World::new(vec![], Sky::Flat(Color::ZERO));
         assert_eq!(w.light_pdf(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0)), 0.0);
     }
 
     #[test]
     fn light_pdf_averages_single_light() {
-        let mut w = World::new();
-        w.add(light_object());
+        let w = World::new(vec![light_object()], Sky::Flat(Color::ZERO));
         // One light => average == that light's pdf_value; analytic value is 1.0.
         let p = w.light_pdf(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0));
         assert!((p - 1.0).abs() < 1e-5, "p={p}");
@@ -238,15 +271,14 @@ mod light_mixture_tests {
 
     #[test]
     fn sample_light_dir_is_none_without_lights() {
-        let w = World::new();
+        let w = World::new(vec![], Sky::Flat(Color::ZERO));
         let mut rng = SmallRng::seed_from_u64(1);
         assert!(w.sample_light_dir(Point3::new(0.0, 0.0, 0.0), 0.5, 0.5, &mut rng).is_none());
     }
 
     #[test]
     fn sample_light_dir_points_toward_the_light() {
-        let mut w = World::new();
-        w.add(light_object());
+        let w = World::new(vec![light_object()], Sky::Flat(Color::ZERO));
         let mut rng = SmallRng::seed_from_u64(2);
         for _ in 0..100 {
             let (u, v) = (rng.random::<f32>(), rng.random::<f32>());
@@ -263,8 +295,7 @@ mod light_mixture_tests {
         let mut data = vec![[0.05f32; 3]; ew * eh];
         data[ew + 6] = [80.0, 80.0, 80.0];
         let env = Arc::new(EnvMap::from_pixels(ew, eh, data));
-        let mut w = World::new();
-        w.sky = Sky::Env(env.clone());
+        let w = World::new(vec![], Sky::Env(env.clone()));
         let origin = Point3::new(0.0, 0.0, 0.0);
 
         // A single env light => the World's light_pdf is exactly the env's pdf.
@@ -317,9 +348,13 @@ mod material_ownership_tests {
     /// on the ray.
     #[test]
     fn world_attaches_the_hit_objects_material_closest_first() {
-        let mut w = World::new();
-        w.add(emitter(1.0, Color::new(3.0, 0.0, 0.0))); // red at y=1
-        w.add(emitter(5.0, Color::new(0.0, 7.0, 0.0))); // green at y=5
+        let w = World::new(
+            vec![
+                emitter(1.0, Color::new(3.0, 0.0, 0.0)), // red at y=1
+                emitter(5.0, Color::new(0.0, 7.0, 0.0)), // green at y=5
+            ],
+            Sky::Flat(Color::ZERO),
+        );
         let ti = Interval::new(0.001, f32::INFINITY);
 
         // Fired up from the origin: the y=1 (red) object is the closest hit.
@@ -366,13 +401,99 @@ mod material_ownership_tests {
 
         let up = Ray::new(Point3::ZERO, Vec3::new(0.0, 1.0, 0.0));
         let ti = Interval::new(0.001, f32::INFINITY);
-        let (mut wr, mut wg) = (World::new(), World::new());
-        wr.add(red);
-        wg.add(green);
+        let wr = World::new(vec![red], Sky::Flat(Color::ZERO));
+        let wg = World::new(vec![green], Sky::Flat(Color::ZERO));
         let hr = wr.intersect(&up, &ti).unwrap();
         let hg = wg.intersect(&up, &ti).unwrap();
         // The shared geometry, two different resolved materials.
         assert_eq!(hr.material.emitted(hr.u, hr.v, hr.p), Color::new(3.0, 0.0, 0.0));
         assert_eq!(hg.material.emitted(hg.u, hg.v, hg.p), Color::new(0.0, 7.0, 0.0));
+    }
+}
+
+#[cfg(test)]
+mod top_bvh_tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::geometry::Sphere;
+    use crate::material::Lambertian;
+    use crate::vec3::Point3;
+    use rand::rngs::SmallRng;
+    use rand::{Rng, SeedableRng};
+
+    /// A brute-force linear scan over the public object list — the closest hit's
+    /// distance and the index of the object that produced it. This is the
+    /// independent source of truth the BVH-accelerated `intersect` must match; no
+    /// such linear path is kept in production.
+    fn linear_closest(world: &World, ray: &Ray, ray_t: &Interval) -> Option<(f32, usize)> {
+        let mut best: Option<(f32, usize)> = None;
+        let mut closest_t = ray_t.max;
+        for (i, obj) in world.objects.iter().enumerate() {
+            if let Some(geo) = obj
+                .geometry
+                .intersect(ray, &Interval::new(ray_t.min, closest_t))
+            {
+                closest_t = geo.t;
+                best = Some((geo.t, i));
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn intersect_matches_a_brute_force_scan() {
+        // Several spheres spread through space, each with its own material so the
+        // resolved material pins down *which* object a ray hit.
+        let centers = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(3.0, 1.0, -2.0),
+            Point3::new(-2.5, -1.0, 1.5),
+            Point3::new(1.0, -2.0, 3.0),
+            Point3::new(-1.5, 2.0, -3.0),
+            Point3::new(2.0, 2.5, 2.0),
+        ];
+        let objects: Vec<Object> = centers
+            .iter()
+            .enumerate()
+            .map(|(i, c)| Object {
+                geometry: Arc::new(Sphere::stationary(*c, 0.8)),
+                material: Arc::new(Lambertian::from_color(Color::new(0.1 * i as f32, 0.2, 0.3))),
+                light: None,
+            })
+            .collect();
+        let world = World::new(objects, Sky::Flat(Color::ZERO));
+
+        let ti = Interval::new(0.001, f32::INFINITY);
+        let mut rng = SmallRng::seed_from_u64(0xB57);
+        let mut hits = 0;
+        for _ in 0..500 {
+            // Origin on a shell around the cluster, aimed at a jittered point
+            // inside it — a healthy mix of hits and misses.
+            let origin = Point3::new(
+                rng.random_range(-8.0..8.0),
+                rng.random_range(-8.0..8.0),
+                rng.random_range(-8.0..8.0),
+            );
+            let target = Point3::new(
+                rng.random_range(-3.0..3.0),
+                rng.random_range(-3.0..3.0),
+                rng.random_range(-3.0..3.0),
+            );
+            let ray = Ray::new(origin, target - origin);
+
+            let bvh = world.intersect(&ray, &ti);
+            let lin = linear_closest(&world, &ray, &ti);
+            assert_eq!(bvh.is_some(), lin.is_some(), "hit/miss disagree");
+            if let (Some(hr), Some((lt, li))) = (bvh, lin) {
+                hits += 1;
+                // Both paths call the same geometry, so the distance is exact.
+                assert_eq!(hr.t, lt, "closest distance disagrees");
+                assert!(
+                    std::ptr::eq(hr.material, world.objects[li].material.as_ref()),
+                    "resolved material disagrees at object {li}"
+                );
+            }
+        }
+        assert!(hits > 50, "expected a healthy mix of hits, got {hits}");
     }
 }

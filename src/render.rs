@@ -449,8 +449,7 @@ mod adaptive_tests {
         let integrator = crate::integrator::build_integrator(&config);
         let camera = Camera::from(config);
         // The sky now lives in the World, not the integrator.
-        let mut world = World::new();
-        world.sky = crate::integrator::Sky::Flat(bg);
+        let world = World::new(vec![], crate::integrator::Sky::Flat(bg));
         let mut r = ProgressiveRenderer::new(8, 8, f32::INFINITY);
 
         let mut passes = 0;
@@ -500,7 +499,7 @@ mod tests {
         let config = CameraConfig::builder().image_width(8).aspect_ratio(1.0).build();
         let integrator = crate::integrator::build_integrator(&config);
         let camera = Camera::from(config);
-        let world = World::new();
+        let world = World::new(vec![], crate::integrator::Sky::Flat(crate::color::Color::ZERO));
         let bytes = ProgressiveRenderer::render_to_png(&camera, integrator.as_ref(), &world, f32::INFINITY, 4);
         assert_eq!(&bytes[..8], &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
         let img = image::load_from_memory(&bytes).expect("valid PNG");

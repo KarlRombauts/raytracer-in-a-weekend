@@ -59,7 +59,7 @@ fn bake_area_light(shape: &Shape, transform: &Transform) -> Option<BakedLight> {
 /// that can be sampled exactly also carry their `light` handle, so the World
 /// registers them once for both roles.
 pub fn build_world(scene: &Scene) -> World {
-    let mut world = World::new();
+    let mut objects = Vec::new();
     for obj in &scene.objects {
         if obj.hidden {
             continue;
@@ -70,7 +70,7 @@ pub fn build_world(scene: &Scene) -> World {
             // both the world geometry and — via its `light` handle — the
             // next-event-estimation light.
             if let Some(baked) = bake_area_light(&obj.shape, &obj.transform) {
-                world.add(Object {
+                objects.push(Object {
                     geometry: baked.intersect,
                     material: obj.material.build(),
                     light: Some(baked.light),
@@ -86,7 +86,7 @@ pub fn build_world(scene: &Scene) -> World {
                 obj.name
             );
         }
-        world.add(Object {
+        objects.push(Object {
             geometry: obj.build(),
             material: obj.material.build(),
             light: None,
@@ -97,12 +97,14 @@ pub fn build_world(scene: &Scene) -> World {
     // the flat background. When it's an env map it is *also* a directionally
     // sampled light — the World derives that from `sky`, so it lives here only.
     let cfg = &scene.camera;
-    match cfg.sky.as_deref().and_then(load_cached) {
-        Some(env) => world.sky = Sky::Env(env),
-        None => world.sky = Sky::Flat(cfg.background),
-    }
+    let sky = match cfg.sky.as_deref().and_then(load_cached) {
+        Some(env) => Sky::Env(env),
+        None => Sky::Flat(cfg.background),
+    };
 
-    world
+    // One-pass immutable construction: the top-level BVH and light set are built
+    // from the complete object list here (a BVH can't be cheaply appended to).
+    World::new(objects, sky)
 }
 
 #[cfg(test)]
