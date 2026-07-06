@@ -89,6 +89,26 @@ candidate 4's runtime `Object` (geometry + material). This is a separate axis.
   half can be promoted to a placeable entity alongside `objects`.
 - Payoff: gizmo-movable camera, multiple cameras, an outliner row. All
   editor/document features — orthogonal to candidates 2 and 4.
+
+### Downstream candidate: multi-material mesh import (OBJ `usemtl`/`mtllib`)
+
+Follows the object-level material work (candidate 4, thread 1). Import an OBJ
+with several materials on different face groups. Three layers:
+
+- **Runtime** — already handled by thread 1's additive bias: `GeoHit` gains a
+  `material_index`, the runtime `Object`'s single material becomes a slot `Vec`,
+  `Triangle` gains a slot id. No teardown of thread-1 work.
+- **Import/parse** — teach the OBJ loader `usemtl` (per-face material name) and
+  `mtllib` (the sidecar `.mtl` file). Then a **translation layer**: MTL is a
+  lossy Phong-ish lingua franca (`Kd`/`Ks`/`Ns`/`d`/`Ni`/`Ke`/`map_Kd`), so
+  importing means heuristically mapping MTL fields onto our `MaterialSpec`
+  (`Kd`→Diffuse, `Ke`→Emission, `d<1`/`Ni>1`→Glass, `Ns`+`Ks`→Glossy/Metal,
+  `map_Kd`→Image). Approximate by nature — every engine's material spec differs.
+  (glTF metallic-roughness is the modern PBR alternative if higher fidelity is
+  ever wanted — different format.)
+- **Document** — today `ObjectSpec` has one `material: MaterialSpec`. Multi-material
+  needs several: either `ObjectSpec` goes plural or the material list moves onto
+  `MeshData` with per-face slot indices. A document-model decision for this unit.
 - Also adjacent: `.scratch/render-settings-split/` (splitting `CameraConfig`).
 
 ## How to start the new thread
