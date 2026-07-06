@@ -4,7 +4,6 @@ use rand::prelude::*;
 use crate::color::Color;
 use crate::group::IntersectGroup;
 use crate::integrator::common::{cosine_direction_from_uv, russian_roulette};
-use crate::integrator::sky::Sky;
 use crate::integrator::Integrator;
 use crate::interval::Interval;
 use crate::material::Material;
@@ -13,10 +12,9 @@ use crate::sampling::SampleId;
 
 /// Naive path tracer: BSDF sampling only. Emission is taken whenever a ray lands
 /// on an emitter (no next-event estimation, no MIS) — noisier than `Mis`, and the
-/// baseline it is compared against.
+/// baseline it is compared against. The sky is owned by the World.
 pub struct Naive {
     pub max_depth: u32,
-    pub sky: Sky,
 }
 
 impl Integrator for Naive {
@@ -28,7 +26,7 @@ impl Integrator for Naive {
 
         for depth in 0..self.max_depth {
             let Some(hit) = world.intersect(&current, &interval) else {
-                color += throughput * self.sky.radiance(&current.direction);
+                color += throughput * world.sky_radiance(&current.direction);
                 break;
             };
 
@@ -127,14 +125,15 @@ mod tests {
     fn naive_lights_a_diffuse_floor_via_bsdf_bounces() {
         // No NEE: the floor is lit only because cosine bounces sometimes land on
         // the (large) emitter. The mean must still be positive.
-        let naive = Naive { max_depth: 10, sky: Sky::Flat(Color::ZERO) };
+        let naive = Naive { max_depth: 10 };
         assert!(avg_floor(&naive, 8000) > 0.0, "naive should light the floor by bouncing onto the emitter");
     }
 
     #[test]
     fn empty_world_returns_the_flat_sky() {
-        let naive = Naive { max_depth: 10, sky: Sky::Flat(Color::new(0.2, 0.4, 0.6)) };
-        let world = IntersectGroup::new();
+        let naive = Naive { max_depth: 10 };
+        let mut world = IntersectGroup::new();
+        world.sky = crate::integrator::Sky::Flat(Color::new(0.2, 0.4, 0.6));
         let ray = Ray::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0));
         let mut rng = SmallRng::seed_from_u64(1);
         assert_eq!(
@@ -147,8 +146,8 @@ mod tests {
     fn naive_and_mis_agree_in_mean() {
         // Both are unbiased estimators of the same scene, so their means must
         // agree; MIS just has lower variance. This is the proof the seam is real.
-        let naive = Naive { max_depth: 10, sky: Sky::Flat(Color::ZERO) };
-        let mis = Mis { max_depth: 10, sky: Sky::Flat(Color::ZERO) };
+        let naive = Naive { max_depth: 10 };
+        let mis = Mis { max_depth: 10 };
         let (n, m) = (avg_floor(&naive, 8000), avg_floor(&mis, 8000));
         assert!(n > 0.0 && m > 0.0, "both lit: naive={n} mis={m}");
         let rel = (n - m).abs() / m;

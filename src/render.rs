@@ -448,7 +448,9 @@ mod adaptive_tests {
             .build();
         let integrator = crate::integrator::build_integrator(&config);
         let camera = Camera::from(config);
-        let world = IntersectGroup::new();
+        // The sky now lives in the World, not the integrator.
+        let mut world = IntersectGroup::new();
+        world.sky = crate::integrator::Sky::Flat(bg);
         let mut r = ProgressiveRenderer::new(8, 8, f32::INFINITY);
 
         let mut passes = 0;

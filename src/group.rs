@@ -1,4 +1,5 @@
 use crate::color::Color;
+use crate::integrator::Sky;
 use crate::interval::Interval;
 use crate::ray::*;
 use crate::texture::env_map::EnvMap;
@@ -20,6 +21,10 @@ pub enum Light {
 pub struct IntersectGroup {
     pub objects: Vec<Arc<dyn Intersect>>,
     pub lights: Vec<Light>,
+    /// The radiance a ray sees when it hits nothing. Owned by the World so its
+    /// miss-shading and its light-sampling (when it's an environment map) share
+    /// one source of truth.
+    pub sky: Sky,
     bbox: AABB,
 }
 
@@ -28,8 +33,14 @@ impl IntersectGroup {
         IntersectGroup {
             objects: Vec::new(),
             lights: Vec::new(),
+            sky: Sky::Flat(Color::ZERO),
             bbox: AABB::EMPTY,
         }
+    }
+
+    /// Radiance seen along `dir` by a ray that hit nothing.
+    pub fn sky_radiance(&self, dir: &Vec3) -> Color {
+        self.sky.radiance(dir)
     }
 
     pub fn add(&mut self, object: Arc<dyn Intersect>) -> &mut Self {

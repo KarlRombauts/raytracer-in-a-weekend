@@ -4,7 +4,6 @@ use rand::prelude::*;
 use crate::color::Color;
 use crate::group::IntersectGroup;
 use crate::integrator::common::{cosine_direction_from_uv, power_heuristic, russian_roulette};
-use crate::integrator::sky::Sky;
 use crate::integrator::Integrator;
 use crate::interval::Interval;
 use crate::material::Material;
@@ -12,10 +11,10 @@ use crate::ray::{Intersect, Ray};
 use crate::sampling::SampleId;
 
 /// Path tracer with next-event estimation and multiple importance sampling
-/// (power heuristic). The low-variance default.
+/// (power heuristic). The low-variance default. The sky (miss-radiance and its
+/// importance-sampled light) is owned by the World.
 pub struct Mis {
     pub max_depth: u32,
-    pub sky: Sky,
 }
 
 impl Integrator for Mis {
@@ -33,7 +32,7 @@ impl Integrator for Mis {
 
         for depth in 0..self.max_depth {
             let Some(hit) = world.intersect(&current, &interval) else {
-                color += throughput * self.sky.radiance(&current.direction);
+                color += throughput * world.sky_radiance(&current.direction);
                 break;
             };
 
@@ -144,8 +143,9 @@ mod tests {
     #[test]
     fn empty_world_returns_the_flat_sky() {
         // A camera ray (throughput 1) that hits nothing returns the sky exactly.
-        let mis = Mis { max_depth: 10, sky: Sky::Flat(Color::new(0.2, 0.4, 0.6)) };
-        let world = IntersectGroup::new();
+        let mis = Mis { max_depth: 10 };
+        let mut world = IntersectGroup::new();
+        world.sky = crate::integrator::Sky::Flat(Color::new(0.2, 0.4, 0.6));
         let ray = Ray::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0));
         let mut rng = SmallRng::seed_from_u64(1);
         assert_eq!(mis.radiance(&ray, &world, sample(), &mut rng), Color::new(0.2, 0.4, 0.6));
@@ -155,7 +155,7 @@ mod tests {
     fn a_ray_into_an_emitter_returns_its_emission() {
         // First hit is the emitter: emission is taken at full weight (camera ray),
         // scatter returns None, the path ends — a deterministic result.
-        let mis = Mis { max_depth: 10, sky: Sky::Flat(Color::ZERO) };
+        let mis = Mis { max_depth: 10 };
         let mut world = IntersectGroup::new();
         world.add(ceiling_light());
         let ray = Ray::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
@@ -167,7 +167,7 @@ mod tests {
     #[test]
     fn max_depth_zero_traces_nothing() {
         // With no bounces the loop never runs, so not even the sky is gathered.
-        let mis = Mis { max_depth: 0, sky: Sky::Flat(Color::new(1.0, 1.0, 1.0)) };
+        let mis = Mis { max_depth: 0 };
         let world = IntersectGroup::new();
         let ray = Ray::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0));
         let mut rng = SmallRng::seed_from_u64(1);
@@ -191,7 +191,7 @@ mod mixture_tests {
     use std::sync::Arc;
 
     fn integ() -> Mis {
-        Mis { max_depth: 10, sky: Sky::Flat(Color::ZERO) }
+        Mis { max_depth: 10 }
     }
 
     fn floor() -> Arc<dyn Intersect> {
@@ -262,7 +262,7 @@ mod mis_tests {
     use std::sync::Arc;
 
     fn integ() -> Mis {
-        Mis { max_depth: 10, sky: Sky::Flat(Color::ZERO) }
+        Mis { max_depth: 10 }
     }
 
     fn floor() -> Arc<dyn Intersect> {

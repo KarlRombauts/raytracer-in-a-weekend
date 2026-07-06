@@ -9,7 +9,9 @@ use crate::color::Color;
 use crate::geometry::transform::{apply, rotation_matrix};
 use crate::geometry::{ObjData, Quad, RenderMesh, Rotate, Scale, Sphere, Translate, Triangle, make_box};
 use crate::group::{IntersectGroup, Light};
+use crate::integrator::Sky;
 use crate::interval::Interval;
+use crate::texture::env_map::load_cached;
 use crate::material::{Dielectric, DiffuseLight, Glossy, Lambertian, Material, Metal};
 use crate::ray::{AreaLight, HitRecord, Intersect, Ray, AABB, BVH};
 use crate::texture::{
@@ -772,6 +774,19 @@ pub fn build_world(scene: &Scene) -> IntersectGroup {
         }
         world.add(obj.build());
     }
+
+    // The sky: an HDR environment map if the camera names one and it loads, else
+    // the flat background. An environment map is also registered as a samplable
+    // light — importance-sampled — so MIS finds its bright directions cleanly.
+    let cfg = &scene.camera;
+    match cfg.sky.as_deref().and_then(load_cached) {
+        Some(env) => {
+            world.sky = Sky::Env(env.clone());
+            world.lights.push(Light::Env(env));
+        }
+        None => world.sky = Sky::Flat(cfg.background),
+    }
+
     world
 }
 
