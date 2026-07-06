@@ -751,7 +751,7 @@ pub fn build_world(scene: &Scene) -> IntersectGroup {
             // the one baked surface is both the world geometry and the NEE light.
             if let Some(baked) = bake_area_light(&obj.shape, &obj.transform, obj.material.build()) {
                 world.add(baked.intersect);
-                world.lights.push(Light {
+                world.lights.push(Light::Area {
                     // Emission is Solid-only in Phase 1, so `preview_color()`
                     // equals the true emitted colour exactly. If emission ever
                     // becomes a non-Solid texture, feed a representative average
@@ -879,7 +879,10 @@ mod light_tests {
         let scene = cornell_box();
         let world = build_world(&scene);
         assert_eq!(world.lights.len(), 1, "expected exactly one light");
-        assert_eq!(world.lights[0].emit, Color::new(15.0, 15.0, 15.0));
+        let Light::Area { emit, .. } = &world.lights[0] else {
+            panic!("expected an area light");
+        };
+        assert_eq!(*emit, Color::new(15.0, 15.0, 15.0));
     }
 }
 
@@ -992,9 +995,10 @@ mod registration_tests {
         };
         let world = build_world(&scene);
         assert_eq!(world.lights.len(), 1);
-        let pdf = world.lights[0]
-            .geom
-            .pdf_value(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0));
+        let Light::Area { geom, .. } = &world.lights[0] else {
+            panic!("expected an area light");
+        };
+        let pdf = geom.pdf_value(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0));
         assert!(
             (pdf - 0.5).abs() < 1e-5,
             "baked non-uniform-scaled quad pdf={pdf}, expected 0.5"

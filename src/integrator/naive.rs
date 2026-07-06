@@ -106,7 +106,7 @@ mod tests {
         let light = ceiling_light();
         w.add(light.clone());
         // Registered for NEE so Mis can shadow-sample it; Naive ignores lights.
-        w.lights.push(Light { geom: light, emit: Color::new(5.0, 5.0, 5.0) });
+        w.lights.push(Light::Area { geom: light, emit: Color::new(5.0, 5.0, 5.0) });
         w
     }
 

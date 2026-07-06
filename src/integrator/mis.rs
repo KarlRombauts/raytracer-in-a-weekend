@@ -223,7 +223,7 @@ mod mixture_tests {
         let light = ceiling_light();
         world.add(light.clone());
         if register_light {
-            world.lights.push(Light { geom: light, emit: Color::new(5.0, 5.0, 5.0) });
+            world.lights.push(Light::Area { geom: light, emit: Color::new(5.0, 5.0, 5.0) });
         }
         // Look straight down at the floor centre.
         let ray = Ray::new(Point3::new(0.0, 1.0, 0.0), Vec3::new(0.0, -1.0, 0.0));
@@ -295,7 +295,7 @@ mod mis_tests {
         let l = small_light();
         world.add(l.clone());
         if register_light {
-            world.lights.push(Light { geom: l, emit: Color::new(40.0, 40.0, 40.0) });
+            world.lights.push(Light::Area { geom: l, emit: Color::new(40.0, 40.0, 40.0) });
         }
         let ray = Ray::new(Point3::new(0.0, 1.0, 0.0), Vec3::new(0.0, -1.0, 0.0));
         let mut rng = SmallRng::seed_from_u64(7);
