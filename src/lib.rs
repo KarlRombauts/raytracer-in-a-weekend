@@ -17,6 +17,11 @@ pub mod vec3;
 pub mod viewer;
 pub mod world;
 
+/// Shared scaffolding for the BVH benchmark harness (`benches/bvh.rs` and
+/// `examples/bvh_stats.rs`). Native-only — it reads OBJ files from disk.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod bench_support;
+
 /// Deterministic BVH traversal-work counters (node box tests + leaf primitive
 /// tests). Only present under the `bvh-stats` feature; see [`ray::bvh::stats`].
 #[cfg(feature = "bvh-stats")]

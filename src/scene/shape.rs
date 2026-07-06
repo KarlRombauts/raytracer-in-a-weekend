@@ -31,12 +31,10 @@ impl MeshData {
     ///
     /// [`World`]: crate::world::World
     pub fn build(&self) -> (Arc<dyn Intersect>, Arc<RenderMesh>) {
-        let faces_usize: Vec<[usize; 3]> = self
-            .faces
-            .iter()
-            .map(|[i, j, k]| [*i as usize, *j as usize, *k as usize])
-            .collect();
-        let bvh = BVH::build(self.triangles());
+        // Compute the `usize` face indices once and share them between the BVH's
+        // triangles and the preview mesh.
+        let faces_usize = self.faces_usize();
+        let bvh = BVH::build(self.triangles_from(&faces_usize));
         let render = Arc::new(RenderMesh::from_triangles_smooth(&self.verts, &faces_usize));
         (Arc::new(bvh), render)
     }
@@ -46,12 +44,20 @@ impl MeshData {
     /// [`build`](Self::build); exposed so benchmarks can time `BVH::build` on the
     /// triangles in isolation from the rest of assembly.
     pub fn triangles(&self) -> Vec<Triangle> {
-        let faces_usize: Vec<[usize; 3]> = self
-            .faces
+        self.triangles_from(&self.faces_usize())
+    }
+
+    /// The face vertex indices as `usize` — the form the triangle builder and the
+    /// preview mesh both want.
+    fn faces_usize(&self) -> Vec<[usize; 3]> {
+        self.faces
             .iter()
             .map(|[i, j, k]| [*i as usize, *j as usize, *k as usize])
-            .collect();
-        let vn = crate::geometry::vertex_normals(&self.verts, &faces_usize);
+            .collect()
+    }
+
+    fn triangles_from(&self, faces_usize: &[[usize; 3]]) -> Vec<Triangle> {
+        let vn = crate::geometry::vertex_normals(&self.verts, faces_usize);
         // Only honour UVs when they line up with the faces; a mismatch (or none)
         // falls back to the smooth-only triangle (barycentric UV).
         let has_uv = self.uvs.len() == faces_usize.len();

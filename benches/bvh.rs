@@ -14,81 +14,23 @@
 //! box/primitive counts come from `cargo run --example bvh_stats --features
 //! bvh-stats`.
 
-use std::fs;
 use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
+use raytracer_in_a_weekend::bench_support::{load_mesh, orientation_rays, orientations, MESHES};
 use raytracer_in_a_weekend::camera::Camera;
 use raytracer_in_a_weekend::color::Color;
-use raytracer_in_a_weekend::geometry::{ObjData, Sphere};
+use raytracer_in_a_weekend::geometry::{Quad, Sphere};
 use raytracer_in_a_weekend::integrator::{build_integrator, Sky};
 use raytracer_in_a_weekend::interval::Interval;
 use raytracer_in_a_weekend::material::Lambertian;
-use raytracer_in_a_weekend::geometry::Quad;
-use raytracer_in_a_weekend::ray::{Intersect, Ray, AABB, BVH};
+use raytracer_in_a_weekend::ray::{Intersect, Ray, BVH};
 use raytracer_in_a_weekend::sampling::SampleId;
-use raytracer_in_a_weekend::scene::MeshData;
 use raytracer_in_a_weekend::vec3::{Point3, Vec3};
 use raytracer_in_a_weekend::world::{Object, World};
-
-/// Meshes benched, smallest first, so the size sweep is visible in the report.
-const MESHES: [&str; 3] = ["teapot", "bunny", "dragon"];
-
-/// Ray-grid resolution per orientation (RES × RES parallel rays).
-const RES: usize = 64;
-
-/// Load an OBJ from `assets/objs/<name>.obj` via a manifest-relative path (benches
-/// run from the crate root, and `ObjData::load` is cwd-relative), as a `MeshData`.
-fn load_mesh(name: &str) -> MeshData {
-    let path = format!("{}/assets/objs/{name}.obj", env!("CARGO_MANIFEST_DIR"));
-    let raw = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
-    let (verts, faces, uvs) = ObjData::parse(&raw).mesh_data();
-    MeshData { verts, faces, uvs }
-}
-
-/// The named camera orientations: the three principal axes (one is face-on down
-/// the mesh's long axis) plus two obliques. Each is a unit view direction.
-fn orientations() -> [(&'static str, Vec3); 5] {
-    let d = |x, y, z| Vec3::new(x, y, z).unit();
-    [
-        ("x", d(1.0, 0.0, 0.0)),
-        ("y", d(0.0, 1.0, 0.0)),
-        ("z", d(0.0, 0.0, 1.0)),
-        ("diag", d(1.0, 1.0, 1.0)),
-        ("oblique", d(1.0, 0.3, 2.0)),
-    ]
-}
-
-/// A `RES × RES` grid of parallel rays travelling along `dir`, spanning the whole
-/// bounding sphere of `bbox` — so the batch is a deterministic mix of hits
-/// (through the silhouette) and misses (the corners), independent of orientation.
-fn orientation_rays(bbox: &AABB, dir: Vec3) -> Vec<Ray> {
-    let center = bbox.center();
-    let radius = (bbox.max_vec() - bbox.min_vec()).length() * 0.5;
-
-    // An orthonormal frame (u, v) spanning the plane perpendicular to `dir`.
-    let up = if dir.x.abs() < 0.9 {
-        Vec3::new(1.0, 0.0, 0.0)
-    } else {
-        Vec3::new(0.0, 1.0, 0.0)
-    };
-    let u = dir.cross(&up).unit();
-    let v = dir.cross(&u);
-
-    let start = center - dir * (radius * 2.0);
-    let mut rays = Vec::with_capacity(RES * RES);
-    for gy in 0..RES {
-        for gx in 0..RES {
-            let su = (gx as f32 / (RES - 1) as f32 - 0.5) * 2.0 * radius;
-            let sv = (gy as f32 / (RES - 1) as f32 - 0.5) * 2.0 * radius;
-            rays.push(Ray::new(start + u * su + v * sv, dir));
-        }
-    }
-    rays
-}
 
 fn traverse(bvh: &dyn Intersect, rays: &[Ray]) -> usize {
     let ti = Interval::new(0.001, f32::INFINITY);
