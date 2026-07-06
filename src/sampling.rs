@@ -195,6 +195,45 @@ impl Distribution1D {
     }
 }
 
+/// A piecewise-constant 2D distribution over a `width × height` grid of weights
+/// (row-major). Sampled as a marginal over rows (which row) then a conditional
+/// within that row (which column) — the standard construction (PBRT §13.10) that
+/// turns weighted 2D sampling into two 1D inversions. Reports the joint pdf over
+/// the unit square [0, 1)².
+pub struct Distribution2D {
+    /// One conditional distribution over columns per row.
+    conditional: Vec<Distribution1D>,
+    /// Marginal over rows, weighted by each row's integral.
+    marginal: Distribution1D,
+}
+
+impl Distribution2D {
+    pub fn new(func: &[f32], width: usize, height: usize) -> Self {
+        let conditional: Vec<Distribution1D> = (0..height)
+            .map(|v| Distribution1D::new(&func[v * width..v * width + width]))
+            .collect();
+        // Each row's total weight (its integral) is the marginal weight for that row.
+        let marginal_weights: Vec<f32> = conditional.iter().map(|c| c.integral()).collect();
+        let marginal = Distribution1D::new(&marginal_weights);
+        Distribution2D { conditional, marginal }
+    }
+
+    /// Sample `(u, v)` in [0, 1)² from two uniforms; returns `((u, v), pdf)` where
+    /// `pdf` is the joint density over the unit square.
+    pub fn sample_continuous(&self, u0: f32, u1: f32) -> ((f32, f32), f32) {
+        let (v, pdf_v, row) = self.marginal.sample_continuous(u1);
+        let (u, pdf_u, _) = self.conditional[row].sample_continuous(u0);
+        ((u, v), pdf_u * pdf_v)
+    }
+
+    /// Joint pdf over the unit square at `(u, v)`.
+    pub fn pdf(&self, u: f32, v: f32) -> f32 {
+        let h = self.conditional.len();
+        let row = ((v * h as f32) as usize).min(h - 1);
+        self.conditional[row].pdf(u) * self.marginal.pdf(v)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,6 +328,50 @@ mod tests {
         let c = stratified_offset(0, 1, 5);
         assert!(a != b, "pixels (0,0) and (1,0) collide: {a:?}");
         assert!(a != c, "pixels (0,0) and (0,1) collide: {a:?}");
+    }
+
+    #[test]
+    fn distribution2d_samples_into_the_bright_cell() {
+        use rand::rngs::SmallRng;
+        use rand::{Rng, SeedableRng};
+        // 4×4 grid, only column 2 / row 1 nonzero. Every sample must land there.
+        let (w, h) = (4usize, 4usize);
+        let mut f = vec![0.0f32; w * h];
+        f[w + 2] = 1.0; // row 1, col 2
+        let d = Distribution2D::new(&f, w, h);
+        let mut rng = SmallRng::seed_from_u64(3);
+        for _ in 0..1000 {
+            let ((u, v), pdf) = d.sample_continuous(rng.random(), rng.random());
+            assert!((0.5..0.75).contains(&u), "u={u} (want column 2/4)");
+            assert!((0.25..0.5).contains(&v), "v={v} (want row 1/4)");
+            assert!(pdf > 0.0, "pdf should be positive in the bright cell");
+        }
+    }
+
+    #[test]
+    fn distribution2d_joint_pdf_is_one_over_cell_area() {
+        // One nonzero cell out of 16, uniform within → pdf = 1/area = 16 inside,
+        // 0 outside. (Independently: marginal 4 × conditional 4 = 16.)
+        let (w, h) = (4usize, 4usize);
+        let mut f = vec![0.0f32; w * h];
+        f[w + 2] = 1.0;
+        let d = Distribution2D::new(&f, w, h);
+        assert!((d.pdf(0.625, 0.375) - 16.0).abs() < 1e-3, "center pdf={}", d.pdf(0.625, 0.375));
+        assert_eq!(d.pdf(0.1, 0.1), 0.0, "outside the bright cell the pdf is 0");
+    }
+
+    #[test]
+    fn distribution2d_sample_reports_its_own_pdf() {
+        use rand::rngs::SmallRng;
+        use rand::{Rng, SeedableRng};
+        let (w, h) = (3usize, 2usize);
+        let f = [1.0f32, 4.0, 1.0, 2.0, 1.0, 3.0];
+        let d = Distribution2D::new(&f, w, h);
+        let mut rng = SmallRng::seed_from_u64(5);
+        for _ in 0..50 {
+            let ((u, v), pdf) = d.sample_continuous(rng.random(), rng.random());
+            assert!((pdf - d.pdf(u, v)).abs() < 1e-3, "sample pdf {pdf} vs pdf(u,v) {}", d.pdf(u, v));
+        }
     }
 
     #[test]
