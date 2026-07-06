@@ -1,6 +1,12 @@
 # PRD: 32-byte BVH node compaction
 
-Status: ready-for-agent
+Status: done
+
+> **Done and committed** (`53c607e` compaction, `81bc17a` /simplify). BVHFlatNode
+> packed ~44 B → 32 B (drop implicit `left` + dead `depth`; bit-packed `meta`).
+> Proven bit-identical three ways: size test (32 B), render pin unchanged, and
+> byte-identical bvh-stats traversal counts. Timing measured vs the
+> `pre-node-compaction` criterion baseline.
 
 > First optimization off `.scratch/bvh-perf/RESEARCH.md`, chosen because it is the
 > highest impact-per-effort **bit-identical** change (no image change, no re-pin).
