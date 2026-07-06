@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Lesson 2 · How a computer samples from a PDF</title>
+<link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<div class="wrap">
+
+  <p class="kicker">Lesson 02 · Env-map MIS</p>
+  <h1>How a computer samples from a PDF</h1>
+  <p class="dek">You never weight the random number. You reshape the interval it lands in.</p>
+
+  <p>
+    You noticed the gap exactly: a generator hands you a <em>uniform</em> number in
+    [0, 1) — every value equally likely — yet you want a bright texel picked far
+    more often than a dark one. Where does the weighting come from? The trick has a
+    name: <span class="keyword">inverse transform sampling</span> (a.k.a. the
+    inversion method), and once you see it you’ll see it everywhere.
+  </p>
+
+  <div class="insight">
+    <span class="label">The one idea</span>
+    The pdf never multiplies your random draw. Instead it <strong>carves the unit
+    interval [0, 1) into segments whose widths are the probabilities</strong>. Then
+    you drop your uniform draw on that interval and report whichever segment it
+    landed in. Uniform draw + uneven carving = non-uniform samples.
+  </div>
+
+  <h2>The discrete recipe — the one you’ll actually code</h2>
+  <p>
+    Your envmap is a finite set of cells (rows, or texels within a row), each with a
+    weight <em>wᵢ</em> = its brightness. You want cell <em>i</em> chosen with
+    probability <em>pᵢ = wᵢ / Σw</em>. Three steps:
+  </p>
+  <p>
+    <strong>1. Normalise &amp; accumulate.</strong> Build a running cumulative sum
+    <em>C</em>: it starts at 0 and climbs to 1, adding <em>pᵢ</em> at each step. That
+    array of cut-points <em>is</em> the <span class="keyword">CDF</span> (cumulative
+    distribution function). A bright cell adds a big jump.<br/>
+    <strong>2. Draw</strong> one uniform <em>u</em> ∈ [0, 1).<br/>
+    <strong>3. Find the segment.</strong> Return the first cell whose cut-point
+    exceeds <em>u</em> — the smallest <em>i</em> with <em>C[i] &gt; u</em>. Because
+    <em>C</em> is sorted, that’s a <span class="keyword">binary search</span>:
+    O(log N), even for a million texels.
+  </p>
+
+  <h2>A worked example</h2>
+  <p>Four cells with weights <code>w = [1, 6, 1, 2]</code> (total 10), so
+     <code>p = [0.1, 0.6, 0.1, 0.2]</code>. The cumulative cut-points:</p>
+
+  <figure>
+    <svg viewBox="0 0 520 150" role="img" aria-label="The unit interval carved by probability">
+      <!-- the bar -->
+      <g font-family="system-ui" font-size="10">
+        <rect x="20" y="40" width="48"  height="46" fill="var(--sky)" opacity="0.35" stroke="var(--rule)"/>
+        <rect x="68" y="40" width="288" height="46" fill="var(--sun)" stroke="var(--rule)"/>
+        <rect x="356" y="40" width="48" height="46" fill="var(--sky)" opacity="0.35" stroke="var(--rule)"/>
+        <rect x="404" y="40" width="96" height="46" fill="var(--sky)" opacity="0.55" stroke="var(--rule)"/>
+        <!-- cell labels -->
+        <text x="44"  y="67" text-anchor="middle" fill="#333">cell 0</text>
+        <text x="212" y="67" text-anchor="middle" fill="#3a2a10">cell 1  (p = 0.6)</text>
+        <text x="380" y="67" text-anchor="middle" fill="#333">2</text>
+        <text x="452" y="67" text-anchor="middle" fill="#333">cell 3</text>
+        <!-- cut points -->
+        <g fill="var(--muted)" font-size="9">
+          <text x="20"  y="102" text-anchor="middle">0.0</text>
+          <text x="68"  y="102" text-anchor="middle">0.1</text>
+          <text x="356" y="102" text-anchor="middle">0.7</text>
+          <text x="404" y="102" text-anchor="middle">0.8</text>
+          <text x="500" y="102" text-anchor="middle">1.0</text>
+        </g>
+      </g>
+      <!-- the draw u = 0.43 -->
+      <g>
+        <line x1="226" y1="24" x2="226" y2="92" stroke="var(--accent)" stroke-width="2"/>
+        <polygon points="226,24 221,14 231,14" fill="var(--accent)"/>
+        <text x="226" y="128" text-anchor="middle" font-size="10" font-family="system-ui" fill="var(--accent)">u = 0.43  →  lands in cell 1</text>
+      </g>
+    </svg>
+    <figcaption>The pdf is baked into the widths. Cell 1 owns 60% of the line, so a uniform draw lands there ~60% of the time.</figcaption>
+  </figure>
+
+  <p>
+    Draw <code>u = 0.43</code> → it’s in <code>[0.1, 0.7)</code> → <strong>cell 1</strong>.
+    Draw <code>u = 0.95</code> → <code>[0.8, 1.0)</code> → cell 3. The generator stayed
+    perfectly uniform; the <em>carving</em> did the weighting. Run it a million times
+    and cell 1 shows up ~600,000 times — exactly its weight.
+  </p>
+
+  <div class="note">
+    <strong>Don’t forget the pdf itself.</strong> The sampler must also <em>report</em>
+    how likely its pick was — <code>pᵢ = wᵢ / Σw</code> — because MIS needs it later.
+    It’s right there in the same array. Sampling and “what was its pdf?” are two sides
+    of one structure.
+  </div>
+
+  <h2>Why it works (30-second version)</h2>
+  <p>
+    The CDF <em>F</em> is a ramp from 0 to 1. Steep where density is high, flat where
+    it’s low. Sampling is reading the ramp <em>backwards</em>: pick a height
+    <em>u</em> uniformly on the vertical axis, slide across to the ramp, drop to the
+    outcome. A steep step (high probability) spans a tall band of <em>u</em>-values,
+    so it catches your draw often; a flat stretch catches it rarely. That’s the whole
+    mechanism — <code>x = F⁻¹(u)</code>.
+  </p>
+
+  <h2>Two flavours of “invert the CDF”</h2>
+  <p>
+    <strong>Analytic</strong> — when the pdf has a clean formula you can invert with
+    algebra. You already have one: <code>cosine_direction_from_uv</code> in
+    <code>integrator::common</code> turns two uniform numbers into a cosine-weighted
+    bounce. That’s inverse-transform sampling in closed form (Malley’s method).<br/>
+    <strong>Tabulated</strong> — when the “pdf” is just measured data with no formula
+    (your HDR sky), you can’t invert with algebra, so you build the cumulative array
+    and binary-search it. That’s the envmap case — and it’s the <em>only</em> new
+    machinery you need for Lesson 1’s “row, then column.” The row pick is one
+    tabulated inversion over rows; the column pick is another over the chosen row.
+  </p>
+
+  <h2>Check yourself</h2>
+
+  <div class="quiz" data-explain="The random draw stays uniform. The pdf is encoded as the widths of the segments on [0,1] — the CDF's cut-points — so where the draw lands is weighted.">
+    <p class="q">Inverse-transform sampling makes outcomes non-uniform by…</p>
+    <button data-correct>carving the unit interval unevenly</button>
+    <button>multiplying the random draw directly</button>
+    <button>rerunning the generator many times</button>
+  </div>
+
+  <div class="quiz" data-explain="Build the cumulative sum (CDF), draw one uniform u, and binary-search for the first cut-point above u. O(log N) per sample.">
+    <p class="q">Given a cumulative array, you turn one uniform draw into a cell by…</p>
+    <button data-correct>binary-searching for its segment</button>
+    <button>averaging repeated random draws</button>
+    <button>sorting the cells by weight</button>
+  </div>
+
+  <div class="quiz" data-explain="The sampler reports pᵢ = wᵢ / Σw, the cell's normalised weight — the same numbers that built the CDF. MIS needs this pdf later.">
+    <p class="q">After you pick cell i, its pdf is…</p>
+    <button data-correct>its weight over the total</button>
+    <button>one over the cell count</button>
+    <button>the cumulative sum at i</button>
+  </div>
+
+  <h2>Do this next</h2>
+  <p>
+    <strong>Read:</strong>
+    <a href="https://pbr-book.org/3ed-2018/Monte_Carlo_Integration/Sampling_Random_Variables" target="_blank" rel="noopener">PBRT §13.3 — Sampling Random Variables</a>
+    (the inversion method, and the <code>Distribution1D</code> struct — that struct is
+    literally “cumulative array + binary search + report the pdf”). If the 4th-edition
+    phrasing suits you better, the same idea is
+    <a href="https://pbr-book.org/4ed/Monte_Carlo_Integration/Sampling_Using_the_Inversion_Method" target="_blank" rel="noopener">4ed §2.3</a>.
+  </p>
+  <p>
+    <strong>Tiny exercise (5 min, on paper):</strong> weights <code>[3, 1, 4, 2]</code>.
+    Write the cumulative cut-points. Which cell does <code>u = 0.55</code> pick? What’s
+    that cell’s pdf? (Answers: cut-points <code>0.3, 0.4, 0.8, 1.0</code>; u=0.55 → cell 2;
+    pdf = 0.4.) Tell me if it clicks.
+  </p>
+
+  <div class="ask">
+    💬 <strong>Ask me anything.</strong> “What if two cells have equal weight?”,
+    “does binary search introduce bias?”, “show me <code>Distribution1D</code> in Rust” —
+    those are the threads that turn this into something you can write from scratch.
+  </div>
+
+  <div class="footer">
+    <p>
+      <strong>Next → <a href="0003-the-jacobian-stretch-factor.html">Lesson 03</a>:</strong>
+      the Jacobian — why densities change when you remap the image onto the sphere. ·
+      Back to <a href="0001-texels-rows-and-the-envmap-grid.html">Lesson 01</a> ·
+      <a href="../reference/glossary.html">Glossary</a>.
+    </p>
+    <p>Source of record: <a href="https://pbr-book.org/3ed-2018/Monte_Carlo_Integration/Sampling_Random_Variables" target="_blank" rel="noopener">PBRT §13.3</a>. Grounding code: <code>integrator::common::cosine_direction_from_uv</code> (the analytic flavour).</p>
+  </div>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

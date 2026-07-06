@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Reference · Env-map sampling glossary</title>
+<link rel="stylesheet" href="../assets/lesson.css" />
+<style>
+  dl { margin: 1.5rem 0; }
+  dt { font-weight: 600; margin-top: 1.1rem; color: var(--accent); }
+  dd { margin: 0.2rem 0 0; }
+  .grp { font-family: -apple-system, system-ui, sans-serif; text-transform: uppercase; letter-spacing: 0.1em; font-size: 0.68rem; color: var(--muted); margin-top: 2rem; border-top: 1px solid var(--rule); padding-top: 0.8rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="kicker">Reference</p>
+  <h1>Env-map sampling glossary</h1>
+  <p class="dek">The canonical words for this course. Lessons adhere to these.</p>
+
+  <p class="grp">The image</p>
+  <dl>
+    <dt>Texel</dt>
+    <dd>One pixel of the HDR environment map — a linear-light radiance for one patch of sky. “Texture element.” In code: an entry of <code>EnvMap.data</code>.</dd>
+    <dt>Equirectangular</dt>
+    <dd>The map’s layout: horizontal axis = longitude (compass), vertical axis = latitude (up/down). Stretches the poles.</dd>
+    <dt>Row / Column</dt>
+    <dd>A row = all texels at one latitude (a ring of sky at fixed height). A column = one longitude. Row 0 (top) = straight up (+Y) in this tracer.</dd>
+    <dt>Latitude θ (theta) / Longitude φ (phi)</dt>
+    <dd>θ = angle from straight up (0 = up, π = down). φ = compass angle around the vertical. A direction ⇄ (θ, φ) ⇄ (row, column).</dd>
+    <dt>Luminance</dt>
+    <dd>A single “brightness” number distilled from a texel’s RGB (a weighted sum). What we weight sampling by.</dd>
+    <dt>HDR</dt>
+    <dd>High dynamic range: texel values aren’t capped at 1.0, so a sun can be thousands× brighter than sky — the reason naive sampling is noisy.</dd>
+  </dl>
+
+  <p class="grp">Sampling by brightness</p>
+  <dl>
+    <dt>Importance sampling</dt>
+    <dd>Drawing samples where they matter (bright directions) instead of uniformly, then correcting for the bias with a pdf. Cuts variance.</dd>
+    <dt>CDF — cumulative distribution function</dt>
+    <dd>The running total of a pdf, climbing 0 → 1. Its cut-points carve [0, 1) into segments whose widths are the probabilities. Steep = high density.</dd>
+    <dt>Inverse transform sampling (inversion method)</dt>
+    <dd>Turn a uniform draw <em>u</em> into a sample by <code>x = F⁻¹(u)</code> — find which CDF segment <em>u</em> falls in. The pdf shapes the segments, not the draw. (Lesson 2.)</dd>
+    <dt>Distribution1D</dt>
+    <dd>PBRT's 1D sampler: a cumulative array + binary search + a pdf report. The building block <code>Distribution2D</code> stacks (one marginal + N conditionals).</dd>
+    <dt>Marginal distribution</dt>
+    <dd>The “which row” pick: probability of each row ∝ its total (weighted) brightness.</dd>
+    <dt>Conditional distribution</dt>
+    <dd>The “which column, given the row” pick: probability of each texel in the chosen row ∝ its brightness.</dd>
+    <dt>Distribution2D / PiecewiseConstant2D</dt>
+    <dd>PBRT’s structure holding the marginal + per-row conditionals, precomputed once so 2D weighted sampling is two cheap 1D lookups.</dd>
+    <dt>PDF (probability density)</dt>
+    <dd>How likely the sampler was to pick a given direction, per unit solid angle. Needed to un-bias importance sampling <em>and</em> to weight MIS.</dd>
+    <dt>Solid angle</dt>
+    <dd>The “area on the sphere of directions” a patch of sky covers (units: steradians). pdfs for lighting live in this measure.</dd>
+    <dt>Jacobian</dt>
+    <dd>The local <em>area</em> stretch factor of a mapping: output area ÷ input area near a point. For image→sphere it is <code>2π²·sin θ</code>. (Lesson 3.)</dd>
+    <dt>Change of variables (for densities)</dt>
+    <dd>Remapping a density through a mapping: <code>p<sub>out</sub> = p<sub>in</sub> / |Jacobian|</code>. Density divides by the stretch factor — stretch lowers it, squish raises it.</dd>
+    <dt>sin θ (why it appears twice)</dt>
+    <dd>The stretch factor between image area and solid angle is <code>2π²·sin θ</code>. It enters as a <em>weight</em> (× sin θ) when building the distribution, and in the <em>pdf</em> conversion image→direction (÷ sin θ). The two cancel, so you sample directions ∝ brightness. (Lessons 3–4.)</dd>
+  </dl>
+
+  <p class="grp">Using it in the integrator</p>
+  <dl>
+    <dt>NEE — next-event estimation</dt>
+    <dd>Sampling a direction <em>toward a light</em> (here, a bright sky direction) and shadow-testing it, rather than waiting for a bounce to find it.</dd>
+    <dt>MIS — multiple importance sampling</dt>
+    <dd>Combining two strategies (light-sampling + BSDF-sampling) so each covers the other’s weak cases, weighted so the result stays unbiased.</dd>
+    <dt>Power heuristic</dt>
+    <dd>The specific MIS weight this tracer uses (β = 2): <code>a² / (a² + b²)</code> over the two pdfs. Code: <code>integrator::common::power_heuristic</code>.</dd>
+    <dt>Firefly</dt>
+    <dd>A single blown-out bright pixel from a rare high-value sample — the symptom env-map importance sampling removes.</dd>
+  </dl>
+
+  <div class="footer">
+    <p>Back to <a href="../lessons/0001-texels-rows-and-the-envmap-grid.html">Lesson 01</a>. Terms follow <a href="https://pbr-book.org/3ed-2018/Light_Sources/Infinite_Area_Lights" target="_blank" rel="noopener">PBRT §12.6</a>.</p>
+  </div>
+</div>
+</body>
+</html>

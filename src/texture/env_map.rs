@@ -7,7 +7,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::color::Color;
+use crate::color::{luminance, Color};
+use crate::sampling::Distribution2D;
 use crate::vec3::Vec3;
 
 pub struct EnvMap {
@@ -17,6 +18,10 @@ pub struct EnvMap {
     data: Vec<[f32; 3]>,
     /// Yaw applied to the lookup direction (radians), to spin the sky.
     rotation: f32,
+    /// Importance-sampling distribution over the texels, weighted by
+    /// luminance × sin θ so directions are sampled in proportion to sky radiance
+    /// (the sin θ cancels the equirectangular Jacobian). Built once at load.
+    distribution: Distribution2D,
 }
 
 impl EnvMap {
@@ -33,12 +38,25 @@ impl EnvMap {
         let img = image::open(path)?.into_rgb32f();
         let (w, h) = img.dimensions();
         let data = img.pixels().map(|p| [p[0], p[1], p[2]]).collect();
-        Ok(EnvMap {
-            width: w as usize,
-            height: h as usize,
-            data,
-            rotation: 0.0,
-        })
+        Ok(EnvMap::from_pixels(w as usize, h as usize, data))
+    }
+
+    /// Build an env map from raw linear-light pixels (row-major, top row = +Y),
+    /// computing the importance-sampling distribution. Each texel's sampling
+    /// weight is its luminance × sin θ, where θ is its latitude — the sin θ both
+    /// corrects the equirectangular pole stretch and (after the pdf's ÷ sin θ)
+    /// leaves the sky sampled in proportion to radiance.
+    pub fn from_pixels(width: usize, height: usize, data: Vec<[f32; 3]>) -> Self {
+        let mut func = vec![0.0f32; width * height];
+        for y in 0..height {
+            let sin_theta = (std::f32::consts::PI * (y as f32 + 0.5) / height as f32).sin();
+            for x in 0..width {
+                let p = data[y * width + x];
+                func[y * width + x] = luminance(Color::new(p[0], p[1], p[2])) * sin_theta;
+            }
+        }
+        let distribution = Distribution2D::new(&func, width, height);
+        EnvMap { width, height, data, rotation: 0.0, distribution }
     }
 
     fn texel(&self, x: usize, y: usize) -> Color {
@@ -76,6 +94,56 @@ impl EnvMap {
         let top = self.texel(x0i, y0i) * (1.0 - tx) + self.texel(x1i, y0i) * tx;
         let bot = self.texel(x0i, y1i) * (1.0 - tx) + self.texel(x1i, y1i) * tx;
         top * (1.0 - ty) + bot * ty
+    }
+
+    /// (u, v) image coordinates of a world direction — the same equirectangular
+    /// mapping `sample` uses (yaw-rotated longitude, latitude), factored out so
+    /// importance sampling and radiance lookup share one convention.
+    fn dir_to_uv(&self, dir: &Vec3) -> (f32, f32) {
+        use std::f32::consts::PI;
+        let d = dir.unit();
+        let (s, c) = self.rotation.sin_cos();
+        let dx = c * d.x + s * d.z;
+        let dz = -s * d.x + c * d.z;
+        let u = 0.5 + dz.atan2(dx) / (2.0 * PI);
+        let v = d.y.clamp(-1.0, 1.0).acos() / PI;
+        (u, v)
+    }
+
+    /// Importance-sample a direction toward the sky from two uniforms in [0, 1),
+    /// returning the (unit) world direction and its **solid-angle** pdf. Directions
+    /// are drawn in proportion to sky radiance; the pdf is the image-space density
+    /// divided by the equirectangular Jacobian `2π²·sin θ`.
+    pub fn sample_direction(&self, u0: f32, u1: f32) -> (Vec3, f32) {
+        use std::f32::consts::PI;
+        let ((u, v), map_pdf) = self.distribution.sample_continuous(u0, u1);
+        let theta = PI * v;
+        let sin_theta = theta.sin();
+        if sin_theta <= 0.0 {
+            return (Vec3::new(0.0, 1.0, 0.0), 0.0); // degenerate pole
+        }
+        // Direction in the yaw-rotated frame, then un-rotate to world.
+        let a = 2.0 * PI * (u - 0.5); // atan2(dz, dx) in the rotated frame
+        let (dx, dz) = (sin_theta * a.cos(), sin_theta * a.sin());
+        let dy = theta.cos();
+        let (s, c) = self.rotation.sin_cos();
+        let wx = c * dx - s * dz;
+        let wz = s * dx + c * dz;
+        let dir = Vec3::new(wx, dy, wz);
+        let pdf = map_pdf / (2.0 * PI * PI * sin_theta);
+        (dir, pdf)
+    }
+
+    /// Solid-angle pdf of importance-sampling `dir` toward the sky — the inverse
+    /// of [`sample_direction`], for MIS weighting.
+    pub fn direction_pdf(&self, dir: &Vec3) -> f32 {
+        use std::f32::consts::PI;
+        let sin_theta = (1.0 - dir.unit().y.clamp(-1.0, 1.0).powi(2)).max(0.0).sqrt();
+        if sin_theta <= 0.0 {
+            return 0.0;
+        }
+        let (u, v) = self.dir_to_uv(dir);
+        self.distribution.pdf(u, v) / (2.0 * PI * PI * sin_theta)
     }
 }
 
@@ -134,7 +202,7 @@ mod tests {
     use super::*;
 
     fn flat(width: usize, height: usize, fill: [f32; 3]) -> EnvMap {
-        EnvMap { width, height, data: vec![fill; width * height], rotation: 0.0 }
+        EnvMap::from_pixels(width, height, vec![fill; width * height])
     }
 
     #[test]
@@ -161,8 +229,76 @@ mod tests {
             data[x] = [1.0, 1.0, 1.0]; // top row (v≈0)
             data[w + x] = [0.0, 0.0, 0.0]; // bottom row (v≈1)
         }
-        let m = EnvMap { width: w, height: h, data, rotation: 0.0 };
+        let m = EnvMap::from_pixels(w, h, data);
         assert!(m.sample(&Vec3::new(0.0, 1.0, 0.0)).y > 0.9, "straight up should be bright");
         assert!(m.sample(&Vec3::new(0.0, -1.0, 0.0)).y < 0.1, "straight down should be dark");
+    }
+
+    // A uniform direction on the sphere (for Monte-Carlo integration checks).
+    fn random_unit(rng: &mut rand::rngs::SmallRng) -> Vec3 {
+        use rand::Rng;
+        let z = rng.random::<f32>() * 2.0 - 1.0;
+        let phi = rng.random::<f32>() * std::f32::consts::TAU;
+        let r = (1.0 - z * z).max(0.0).sqrt();
+        Vec3::new(r * phi.cos(), z, r * phi.sin())
+    }
+
+    #[test]
+    fn importance_sampling_concentrates_on_the_bright_texel() {
+        use rand::rngs::SmallRng;
+        use rand::{Rng, SeedableRng};
+        // Dim everywhere except one bright texel. Sampled directions should point
+        // at it — verified by looking the direction back up: it reads bright.
+        let (w, h) = (8usize, 4usize);
+        let mut data = vec![[0.01f32; 3]; w * h];
+        data[w + 6] = [100.0, 100.0, 100.0]; // row 1, col 6
+        let env = EnvMap::from_pixels(w, h, data);
+        let mut rng = SmallRng::seed_from_u64(7);
+        let mut bright = 0;
+        for _ in 0..2000 {
+            let (dir, pdf) = env.sample_direction(rng.random(), rng.random());
+            assert!(pdf > 0.0, "sampled pdf must be positive");
+            if env.sample(&dir).x > 1.0 {
+                bright += 1;
+            }
+        }
+        assert!(bright as f32 / 2000.0 > 0.9, "most samples should hit the bright texel, got {bright}/2000");
+    }
+
+    #[test]
+    fn direction_pdf_integrates_to_one_over_the_sphere() {
+        use rand::rngs::SmallRng;
+        use rand::SeedableRng;
+        // Estimate ∫ pdf dω by uniform sphere sampling: mean(pdf)·4π ≈ 1. Catches a
+        // wrong Jacobian constant (the 2π²·sinθ factor).
+        let (w, h) = (8usize, 4usize);
+        let mut data = vec![[0.2f32; 3]; w * h];
+        data[w + 6] = [50.0, 50.0, 50.0];
+        let env = EnvMap::from_pixels(w, h, data);
+        let mut rng = SmallRng::seed_from_u64(9);
+        let n = 200_000;
+        let mut sum = 0.0f64;
+        for _ in 0..n {
+            let d = random_unit(&mut rng);
+            sum += env.direction_pdf(&d) as f64;
+        }
+        let integral = (sum / n as f64) * 4.0 * std::f64::consts::PI;
+        assert!((integral - 1.0).abs() < 0.05, "∫pdf dω = {integral}");
+    }
+
+    #[test]
+    fn sample_direction_reports_the_same_pdf_as_direction_pdf() {
+        use rand::rngs::SmallRng;
+        use rand::{Rng, SeedableRng};
+        let (w, h) = (6usize, 3usize);
+        let mut data = vec![[0.1f32; 3]; w * h];
+        data[w + 3] = [20.0, 20.0, 20.0];
+        let env = EnvMap::from_pixels(w, h, data);
+        let mut rng = SmallRng::seed_from_u64(11);
+        for _ in 0..200 {
+            let (dir, pdf) = env.sample_direction(rng.random(), rng.random());
+            let p2 = env.direction_pdf(&dir);
+            assert!((pdf - p2).abs() <= 0.02 * pdf.max(1e-3), "sample pdf {pdf} vs direction_pdf {p2}");
+        }
     }
 }

@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Lesson 1 · The environment map is a grid</title>
+<link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<div class="wrap">
+
+  <p class="kicker">Lesson 01 · Env-map MIS</p>
+  <h1>The environment map is a grid</h1>
+  <p class="dek">Texels, rows, and what it means to “pick a bright direction.”</p>
+
+  <p>
+    Your goal is to make a bright HDR sky <em>light</em> your scene without noise.
+    Today’s single win: stop seeing the sky as a lookup function and start seeing
+    it as a <span class="keyword">grid of cells you can pick from</span>. Every
+    idea later — pdfs, the sin&thinsp;θ weight, MIS — sits on top of this picture.
+  </p>
+
+  <h2>A texel is one pixel of the sky image</h2>
+  <p>
+    <span class="keyword">Texel</span> = “texture element” = one pixel of the HDR.
+    In your code (<code>src/texture/env_map.rs</code>) the whole sky is just a flat
+    array of them:
+  </p>
+  <p><code>data: Vec&lt;[f32; 3]&gt;</code> — <code>width × height</code> texels, row-major.</code></p>
+  <p>
+    <code>texel(x, y)</code> reads one cell: <code>data[y * width + x]</code>. Each
+    holds a <em>linear-light radiance</em> — and because it’s HDR, a texel’s value
+    can be far above 1.0 (the sun might be 10,000; the sky, 0.5). That huge range
+    is exactly why sampling matters.
+  </p>
+
+  <div class="note">
+    A texel is <strong>not</strong> a light, a ray, or a direction. It’s a stored
+    number — a measurement of how much light arrives from one little patch of sky.
+    Turning texels into directions is the next step.
+  </div>
+
+  <h2>A row is a ring of sky at one height</h2>
+  <p>
+    The image is <span class="keyword">equirectangular</span>: <em>x</em> (a column)
+    is the compass direction (longitude), <em>y</em> (a row) is how far up or down
+    you look (latitude). Your <code>sample(dir)</code> makes this precise:
+  </p>
+  <p>
+    <code>u = 0.5 + atan2(dz, dx) / 2π</code> &nbsp;→ column &nbsp;·&nbsp;
+    <code>v = acos(dir.y) / π</code> &nbsp;→ row.
+  </p>
+  <p>
+    So <strong>row 0 (top) is straight up (+Y)</strong>, the middle row is the
+    horizon, and the bottom row is straight down. One row = every direction at a
+    fixed height — a horizontal ring around you.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 520 260" role="img" aria-label="Equirectangular map as a grid">
+      <!-- map rectangle -->
+      <rect x="70" y="20" width="380" height="190" fill="var(--sky)" opacity="0.18" stroke="var(--rule)"/>
+      <!-- grid -->
+      <g stroke="var(--rule)" stroke-width="1">
+        <line x1="70" y1="20" x2="70" y2="210"/>
+        <line x1="146" y1="20" x2="146" y2="210"/>
+        <line x1="222" y1="20" x2="222" y2="210"/>
+        <line x1="298" y1="20" x2="298" y2="210"/>
+        <line x1="374" y1="20" x2="374" y2="210"/>
+        <line x1="450" y1="20" x2="450" y2="210"/>
+        <line x1="70" y1="20"  x2="450" y2="20"/>
+        <line x1="70" y1="58"  x2="450" y2="58"/>
+        <line x1="70" y1="96"  x2="450" y2="96"/>
+        <line x1="70" y1="134" x2="450" y2="134"/>
+        <line x1="70" y1="172" x2="450" y2="172"/>
+        <line x1="70" y1="210" x2="450" y2="210"/>
+      </g>
+      <!-- the sun texel -->
+      <rect x="298" y="58" width="76" height="38" fill="var(--sun)"/>
+      <rect x="298" y="58" width="76" height="38" fill="none" stroke="var(--accent)" stroke-width="2"/>
+      <text x="336" y="82" text-anchor="middle" font-size="10" font-family="system-ui" fill="#3a2a10">sun</text>
+      <!-- highlighted row -->
+      <rect x="70" y="58" width="380" height="38" fill="var(--accent)" opacity="0.08"/>
+      <!-- axis labels -->
+      <text x="60" y="30"  text-anchor="end" font-size="11" font-family="system-ui" fill="var(--muted)">up +Y</text>
+      <text x="60" y="120" text-anchor="end" font-size="11" font-family="system-ui" fill="var(--muted)">horizon</text>
+      <text x="60" y="208" text-anchor="end" font-size="11" font-family="system-ui" fill="var(--muted)">down</text>
+      <text x="260" y="232" text-anchor="middle" font-size="11" font-family="system-ui" fill="var(--muted)">columns = compass direction (u: 0 → 1)</text>
+      <text x="336" y="110" text-anchor="middle" font-size="9.5" font-family="system-ui" fill="var(--accent)">one bright texel</text>
+    </svg>
+    <figcaption>The HDR sky as a grid. Rows are latitude bands; the sun is a handful of very bright texels in one row.</figcaption>
+  </figure>
+
+  <h2>Importance sampling = pick a texel by its brightness</h2>
+  <p>
+    Right now your tracer only finds the sun by <em>accident</em>: it bounces a ray
+    off a diffuse surface in a random direction and hopes it lands on those few
+    bright texels. Almost always it misses → the surface looks too dark on most
+    samples and blindingly bright on the rare hit. That flicker is a
+    <span class="keyword">firefly</span>.
+  </p>
+  <div class="insight">
+    <span class="label">The core idea</span>
+    Instead of picking a direction and hoping, <strong>pick a texel with
+    probability proportional to how bright it is</strong>, then aim a ray straight
+    at that texel’s direction. Bright texels (the sun) get chosen often; dark sky
+    rarely. Same picture, far less noise.
+  </div>
+
+  <h2>Picking a bright cell: row first, then column</h2>
+  <p>
+    How do you pick one cell from a 2D grid, weighted by brightness? You split it
+    into two 1D picks:
+  </p>
+  <p>
+    <strong>1. Pick a row</strong> with probability proportional to that row’s
+    <em>total</em> brightness. (A row containing the sun is very likely.) This is
+    the <span class="keyword">marginal</span> distribution.<br/>
+    <strong>2. Within that row, pick a column</strong> by the texels’ brightness.
+    This is the <span class="keyword">conditional</span> distribution.
+  </p>
+  <p>
+    Row-then-column, marginal-then-conditional — that pair <em>is</em> what PBRT’s
+    <code>Distribution2D</code> stores and samples. Nothing more mysterious than
+    “which shelf, then which book on it.”
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 520 150" role="img" aria-label="Two-step sampling: marginal then conditional">
+      <!-- marginal: rows as bars -->
+      <text x="20" y="16" font-size="11" font-family="system-ui" fill="var(--muted)">1 · pick a ROW by total brightness</text>
+      <g font-family="system-ui" font-size="9">
+        <rect x="20" y="26" width="40"  height="14" fill="var(--sky)" opacity="0.4"/>
+        <rect x="20" y="44" width="150" height="14" fill="var(--sun)"/>
+        <rect x="20" y="62" width="30"  height="14" fill="var(--sky)" opacity="0.4"/>
+        <rect x="20" y="80" width="22"  height="14" fill="var(--sky)" opacity="0.4"/>
+        <text x="178" y="55" fill="var(--accent)">← the sun’s row wins</text>
+      </g>
+      <!-- arrow -->
+      <text x="300" y="58" font-size="20" fill="var(--muted)">→</text>
+      <!-- conditional: cells in the chosen row -->
+      <text x="330" y="16" font-size="11" font-family="system-ui" fill="var(--muted)">2 · pick a COLUMN in that row</text>
+      <g stroke="var(--rule)">
+        <rect x="330" y="40" width="24" height="24" fill="var(--sky)" opacity="0.3"/>
+        <rect x="354" y="40" width="24" height="24" fill="var(--sky)" opacity="0.3"/>
+        <rect x="378" y="40" width="24" height="24" fill="var(--sun)"/>
+        <rect x="402" y="40" width="24" height="24" fill="var(--sky)" opacity="0.3"/>
+        <rect x="426" y="40" width="24" height="24" fill="var(--sky)" opacity="0.3"/>
+      </g>
+      <text x="390" y="82" text-anchor="middle" font-size="9" font-family="system-ui" fill="var(--accent)">bright cell chosen</text>
+    </svg>
+    <figcaption>Two cheap 1D picks stand in for one weighted 2D pick.</figcaption>
+  </figure>
+
+  <h2>One caveat you’ll need soon: the poles are squished</h2>
+  <p>
+    An equirectangular map <em>stretches</em> the top and bottom rows. A texel near
+    “straight up” represents a tiny pinch of real sky; a texel near the horizon
+    represents a wide swath. So brightness alone isn’t the right weight — a texel’s
+    sampling weight is <strong>luminance × sin&thinsp;θ</strong>, where θ is its
+    latitude angle (for your layout, row <em>y</em> has
+    <code>θ = π·(y + 0.5)/height</code>). Without the <code>sin θ</code> you’d
+    over-pick the poles.
+  </p>
+  <div class="note">
+    Don’t worry about deriving <code>sin θ</code> yet — just file it away: “weight
+    = brightness × sin θ.” The <em>why</em> (it’s a change-of-variables Jacobian
+    between the image and the sphere) is Lesson 2, and it’s the same factor that
+    turns your sample into a correct pdf for MIS.
+  </div>
+
+  <h2>Check yourself</h2>
+
+  <div class="quiz" data-explain="A texel is one stored pixel of the HDR image — a radiance measurement for one patch of sky. It only becomes a direction after the equirectangular mapping.">
+    <p class="q">In this renderer, a texel is…</p>
+    <button data-correct>one pixel of the map</button>
+    <button>one ray leaving a surface</button>
+    <button>one bounce of a path</button>
+    <button>one light in the scene</button>
+  </div>
+
+  <div class="quiz" data-explain="Weighted 2D sampling splits into a marginal (which row) then a conditional (which column in that row) — PBRT's Distribution2D.">
+    <p class="q">To pick a bright cell by weight, you first pick a…</p>
+    <button data-correct>row, then column</button>
+    <button>column, then row</button>
+    <button>ray, then texel</button>
+  </div>
+
+  <div class="quiz" data-explain="Poles are stretched in equirectangular maps, so a pole texel covers little real sky. Scaling by sin θ down-weights them so you don't over-sample straight up/down.">
+    <p class="q">Why weight a texel by sin θ as well as brightness?</p>
+    <button data-correct>pole texels cover less sky</button>
+    <button>the sun is always overhead</button>
+    <button>rows store more color data</button>
+  </div>
+
+  <h2>Do this next</h2>
+  <p>
+    <strong>Read the primary source:</strong>
+    <a href="https://pbr-book.org/3ed-2018/Light_Sources/Infinite_Area_Lights" target="_blank" rel="noopener">PBRT §12.6 — Infinite Area Lights</a>.
+    Read only up to where it builds the distribution from the image (the
+    <code>sinTheta</code> weighting). You’ll recognise every word: texels, rows,
+    marginal, conditional, sin θ. Don’t chase the pdf math yet — that’s Lesson 2.
+  </p>
+  <p>
+    Then, in your own tree, open <code>src/texture/env_map.rs</code> and find the
+    two lines that compute <code>u</code> and <code>v</code> in <code>sample()</code>.
+    Convince yourself which one is the row and which is the column.
+  </p>
+
+  <div class="ask">
+    💬 <strong>I’m your teacher — ask me anything.</strong> “Why atan2?”,
+    “what’s luminance exactly?”, “show me a row in the actual data” — any nagging
+    thread is worth pulling. That back-and-forth is where it sticks.
+  </div>
+
+  <div class="footer">
+    <p>
+      <strong>Next → <a href="0002-sampling-from-a-pdf-inversion.html">Lesson 02</a>:</strong>
+      how a computer actually samples from a pdf — the inversion method behind
+      “row, then column.” ·
+      Glossary: <a href="../reference/glossary.html">env-map sampling terms</a>.
+    </p>
+    <p>Source of record for this lesson: <a href="https://pbr-book.org/3ed-2018/Light_Sources/Infinite_Area_Lights" target="_blank" rel="noopener">PBRT §12.6</a>. Grounding code: <code>src/texture/env_map.rs</code>.</p>
+  </div>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

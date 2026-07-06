@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Lesson 3 · The Jacobian is a stretch factor</title>
+<link rel="stylesheet" href="../assets/lesson.css" />
+</head>
+<body>
+<div class="wrap">
+
+  <p class="kicker">Lesson 03 · Env-map MIS</p>
+  <h1>The Jacobian is a stretch factor</h1>
+  <p class="dek">When a mapping stretches space, densities change. That’s the whole idea.</p>
+
+  <p>
+    You flagged the right gap. “Jacobian” sounds like heavy calculus, but the piece
+    you need is one sentence: <strong>a Jacobian is how much a mapping stretches or
+    squishes area near a point</strong> — and densities react to that stretch. No
+    matrices required for the intuition. Let’s build it up.
+  </p>
+
+  <h2>1D first: a derivative is a stretch factor</h2>
+  <p>
+    Take <code>y = f(x)</code>. Step a tiny <code>dx</code> and you move
+    <code>dy = f′(x)·dx</code>. So <code>f′(x)</code> is the local
+    <span class="keyword">stretch factor</span>: output-length per input-length. If
+    <code>f′ = 3</code> near some <code>x</code>, that spot gets stretched 3×.
+  </p>
+
+  <h2>Now add density — the key move</h2>
+  <p>
+    A <span class="keyword">density</span> is “stuff per length” (or per area): dots
+    per cm, probability per unit, radiance per steradian. Picture a strip of rubber
+    with dots painted at even spacing. Stretch a section to 3× its length: the same
+    dots now cover 3× the space, so the dots-per-length there drops to <strong>⅓</strong>.
+  </p>
+  <div class="insight">
+    <span class="label">The rule you need</span>
+    Under a mapping, <strong>density divides by the stretch factor</strong>. Stretch
+    a region (bigger) → density falls. Squish it (smaller) → density concentrates,
+    density rises. In 2D the “stretch factor” is the <strong>area</strong> stretch —
+    and <em>that number is the Jacobian</em>.
+  </div>
+
+  <h2>2D: the Jacobian is the area stretch</h2>
+  <p>
+    A mapping from a 2D input (like your image’s <code>(u, v)</code>) to a 2D output
+    (like directions on the sphere) turns a tiny input square into a tiny output
+    patch — maybe bigger, maybe smaller, maybe sheared. The <span class="keyword">Jacobian</span>
+    is the ratio of those areas: <em>output area ÷ input area</em>. If it’s 2, patches
+    double; if ⅓, they shrink to a third.
+  </p>
+  <p class="note">
+    A friendly sanity-check you may have seen: polar coordinates. A little patch at
+    radius <em>r</em> has sides <code>dr</code> and <code>r·dθ</code>, so its area is
+    <code>r·dr·dθ</code>. The Jacobian is <strong>r</strong> — patches far from the
+    centre are bigger. Same idea, familiar setting.
+  </p>
+
+  <h2>Your actual mapping: the sky is a stretched map</h2>
+  <p>
+    Here’s why this <em>is</em> your problem, not a detour. The equirectangular image
+    is a flat map of a globe — and flat maps stretch. On a world map, Greenland looks
+    as big as Africa; on the globe it’s tiny. Going <strong>image → globe</strong>,
+    the poles <em>shrink</em>.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 520 210" role="img" aria-label="Flat image grid mapping to a globe, poles shrinking">
+      <!-- flat grid -->
+      <text x="105" y="20" text-anchor="middle" font-size="11" font-family="system-ui" fill="var(--muted)">flat image (u, v)</text>
+      <g stroke="var(--rule)" stroke-width="1" fill="none">
+        <rect x="30" y="30" width="150" height="150" fill="var(--sky)" fill-opacity="0.12"/>
+        <line x1="30" y1="60" x2="180" y2="60"/><line x1="30" y1="90" x2="180" y2="90"/>
+        <line x1="30" y1="120" x2="180" y2="120"/><line x1="30" y1="150" x2="180" y2="150"/>
+        <line x1="60" y1="30" x2="60" y2="180"/><line x1="90" y1="30" x2="90" y2="180"/>
+        <line x1="120" y1="30" x2="120" y2="180"/><line x1="150" y1="30" x2="150" y2="180"/>
+      </g>
+      <!-- one top cell highlighted -->
+      <rect x="60" y="30" width="30" height="30" fill="var(--accent)" opacity="0.4"/>
+      <text x="105" y="200" text-anchor="middle" font-size="9" font-family="system-ui" fill="var(--muted)">every cell same size</text>
+      <!-- arrow -->
+      <text x="245" y="112" font-size="22" fill="var(--muted)">→</text>
+      <!-- globe with latitude bands pinching at poles -->
+      <text x="400" y="20" text-anchor="middle" font-size="11" font-family="system-ui" fill="var(--muted)">globe (directions)</text>
+      <g fill="none" stroke="var(--rule)">
+        <circle cx="400" cy="105" r="72" fill="var(--sky)" fill-opacity="0.12"/>
+        <ellipse cx="400" cy="60"  rx="42" ry="8"/>
+        <ellipse cx="400" cy="85"  rx="66" ry="12"/>
+        <ellipse cx="400" cy="105" rx="72" ry="13"/>
+        <ellipse cx="400" cy="125" rx="66" ry="12"/>
+        <ellipse cx="400" cy="150" rx="42" ry="8"/>
+      </g>
+      <!-- shrunken pole cell -->
+      <path d="M 372 40 A 42 8 0 0 1 400 36 L 400 44 A 30 6 0 0 0 379 48 Z" fill="var(--accent)" opacity="0.5"/>
+      <text x="400" y="34" text-anchor="middle" font-size="8.5" font-family="system-ui" fill="var(--accent)">pole cell: tiny</text>
+      <text x="400" y="112" text-anchor="middle" font-size="8.5" font-family="system-ui" fill="var(--muted)">equator cell: big</text>
+    </svg>
+    <figcaption>Equal cells on the flat image become unequal patches of sky — vanishingly small near the poles.</figcaption>
+  </figure>
+
+  <p>
+    An entire <em>top row</em> of the image — many texels across — all map to nearly
+    the <strong>same direction</strong> (straight up). So a unit of image area near the
+    pole covers only a sliver of actual sky. That shrink factor — the amount of real
+    solid angle per unit of image area — works out to
+  </p>
+  <p style="text-align:center; font-size:1.15rem; margin:1.2rem 0;">
+    Jacobian <code>= 2π²·sin θ</code>
+  </p>
+  <p>
+    …which goes to <strong>zero at the poles</strong> (<code>sin 0 = 0</code>) and is
+    largest at the horizon. You don’t need to derive it today — just read it as “the
+    sky-area a texel is worth,” tiny at the poles.
+  </p>
+
+  <div class="insight">
+    <span class="label">What you can now say</span>
+    To turn a probability density on the flat image into one on the sphere of
+    directions, <strong>divide by <code>2π²·sin θ</code></strong>. That single division
+    is “applying the Jacobian.” Everything else in the sky-pdf is bookkeeping around it.
+  </div>
+
+  <h2>Where this is heading (Lesson 4)</h2>
+  <p>
+    Next lesson we cash it in: take a sampled <code>(u, v)</code> from Lesson 2, turn
+    it into a world direction, and divide its image-pdf by <code>2π²·sin θ</code> to
+    get the <em>solid-angle</em> pdf MIS needs. And you’ll see the payoff — the
+    <code>sin θ</code> you <em>multiply in</em> as a weight (Lesson 1) cancels the
+    <code>sin θ</code> you <em>divide by</em> here, leaving you sampling directions in
+    proportion to their brightness. That cancellation is the satisfying click.
+  </p>
+
+  <h2>Check yourself</h2>
+
+  <div class="quiz" data-explain="A Jacobian is the local area-stretch factor of a mapping: output area ÷ input area near a point.">
+    <p class="q">A Jacobian measures how a mapping changes…</p>
+    <button data-correct>area near a point</button>
+    <button>speed along a path</button>
+    <button>angle between two lines</button>
+  </div>
+
+  <div class="quiz" data-explain="Density divides by the stretch factor. Stretch a region to 3× its area and the same stuff is spread over 3× the space, so density falls to one third.">
+    <p class="q">If a mapping stretches a region to 3× its area, a density there becomes…</p>
+    <button data-correct>one third as large</button>
+    <button>three times as large</button>
+    <button>exactly the same size</button>
+  </div>
+
+  <div class="quiz" data-explain="A whole top row of the image collapses to almost one direction (straight up), so a unit of image area near the pole covers only a sliver of solid angle — the stretch factor 2π²sinθ shrinks to zero there.">
+    <p class="q">The image→direction stretch is small at the poles because…</p>
+    <button data-correct>a top row is one direction</button>
+    <button>the sun sits near overhead</button>
+    <button>rows store more color there</button>
+  </div>
+
+  <h2>Do this next</h2>
+  <p>
+    <strong>Read:</strong>
+    <a href="https://pbr-book.org/3ed-2018/Monte_Carlo_Integration/Transforming_between_Distributions" target="_blank" rel="noopener">PBRT §13.5 — Transforming between Distributions</a>.
+    It states exactly the rule from this lesson —
+    <code>p<sub>y</sub>(y) = p<sub>x</sub>(x) / |J|</code> — in the rendering context,
+    and works the multi-dimensional case you’ll use. Read the 1D part and the “multiple
+    dimensions” part; skip the specific spherical example (that’s Lesson 4).
+  </p>
+  <p>
+    <strong>Optional gentler read</strong> (probability-flavoured):
+    <a href="https://towardsdatascience.com/keeping-probabilities-honest-the-jacobian-adjustment/" target="_blank" rel="noopener">“Keeping Probabilities Honest: The Jacobian Adjustment.”</a>
+  </p>
+
+  <div class="ask">
+    💬 <strong>Ask me anything.</strong> “Why is it the <em>determinant</em> in the
+    matrix version?”, “what does sheared vs stretched mean for the area?”, “re-derive
+    the polar <code>r</code> for me” — any of those is fair game and worth a message.
+  </div>
+
+  <div class="footer">
+    <p>
+      <strong>Next → Lesson 04:</strong> sampled <code>(u,v)</code> → world direction
+      + solid-angle pdf, and the <code>sin θ</code> cancellation. ·
+      Back to <a href="0002-sampling-from-a-pdf-inversion.html">Lesson 02</a> ·
+      <a href="../reference/glossary.html">Glossary</a>.
+    </p>
+    <p>Source of record: <a href="https://pbr-book.org/3ed-2018/Monte_Carlo_Integration/Transforming_between_Distributions" target="_blank" rel="noopener">PBRT §13.5</a>.</p>
+  </div>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>
