@@ -3,7 +3,6 @@ use crate::integrator::Sky;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::{AreaLight, GeoHit, HitRecord, Intersect, Ray, AABB};
-use crate::texture::env_map::EnvMap;
 use crate::vec3::{Point3, Vec3};
 use rand::rngs::SmallRng;
 use rand::Rng;
@@ -15,35 +14,40 @@ use std::sync::Arc;
 /// the shading [`HitRecord`]. Mirrors the document's `ObjectSpec { shape,
 /// material, transform }`, so reusing a mesh means sharing its `geometry` handle
 /// across objects with different materials — no per-object geometry rebuild.
+///
+/// An emissive object that can be sampled exactly also carries its `light`
+/// handle, so it is the *single* registration for both its geometry and its
+/// next-event-estimation role — the World derives its light set from the objects
+/// that have one, with no parallel light list.
 pub struct Object {
     pub geometry: Arc<dyn Intersect>,
     pub material: Arc<dyn Material>,
-}
-
-/// A light the integrator can sample directly (next-event estimation): either an
-/// emissive surface (an [`AreaLight`] plus its constant emission) or the
-/// environment map, sampled by direction. Both answer "a direction toward me and
-/// its solid-angle pdf" — the env light's pdf is position-independent (it is
-/// infinitely far away), so it ignores the shading origin.
-pub enum Light {
-    Area { geom: Arc<dyn AreaLight>, emit: Color },
-    Env(Arc<EnvMap>),
+    /// `Some` when this object is a next-event-estimation light — a directly
+    /// sampleable emitter, the same underlying primitive as `geometry`. `None`
+    /// for ordinary surfaces and for emitters we can't sample exactly (ellipsoid
+    /// / box / mesh — they still glow when hit, just aren't shadow-ray sampled).
+    pub light: Option<Arc<dyn AreaLight>>,
 }
 
 /// The built, acceleration-backed runtime structure the path tracer walks: the
-/// scene's geometry plus the scene-global state the integrator needs — the set
-/// of directly-sampleable [`Light`]s and the [`Sky`] seen on a miss. Produced
-/// from a `Scene` by `build_world`.
+/// scene's geometry plus the scene-global state the integrator needs — the
+/// directly-sampleable lights and the [`Sky`] seen on a miss. Produced from a
+/// `Scene` by `build_world`.
 ///
-/// Distinct from [`IntersectGroup`](crate::group::IntersectGroup), which is a
-/// plain list of hittables used *inside* objects (boxes, meshes); the World is
-/// the top level and is not itself an `Intersect`.
+/// Lights have one source of truth: an emissive [`Object`]'s own `light` handle
+/// (tracked by index in `lights`), plus the environment map when `sky` is one.
+/// Distinct from [`IntersectGroup`](crate::group::IntersectGroup), a plain list
+/// of hittables used *inside* objects; the World is the top level and is not
+/// itself an `Intersect`.
 pub struct World {
     pub objects: Vec<Object>,
-    pub lights: Vec<Light>,
+    /// Indices into `objects` of the sampleable emitters, in registration order —
+    /// the discrete set next-event estimation chooses among (alongside the env
+    /// light, when `sky` is an environment map). Derived as objects are added.
+    lights: Vec<usize>,
     /// The radiance a ray sees when it hits nothing. Owned by the World so its
     /// miss-shading and its light-sampling (when it's an environment map) share
-    /// one source of truth.
+    /// one source of truth — the env map lives here, not in a second light list.
     pub sky: Sky,
     bbox: AABB,
 }
@@ -60,6 +64,11 @@ impl World {
 
     pub fn add(&mut self, object: Object) -> &mut Self {
         self.bbox = AABB::from_boxes(&self.bbox, object.geometry.bounding_box());
+        // A sampleable emitter registers itself as a light — one place, derived
+        // from the object, no parallel list to keep in sync.
+        if object.light.is_some() {
+            self.lights.push(self.objects.len());
+        }
         self.objects.push(object);
         self
     }
@@ -93,27 +102,47 @@ impl World {
         self.sky.radiance(dir)
     }
 
+    /// How many directly-sampleable lights there are: the emissive objects plus
+    /// the environment map (when `sky` is one).
+    pub fn light_count(&self) -> usize {
+        self.lights.len() + matches!(self.sky, Sky::Env(_)) as usize
+    }
+
+    /// The objects registered as sampleable area lights, in registration order.
+    pub fn area_light_objects(&self) -> impl Iterator<Item = &Object> {
+        self.lights.iter().map(|&i| &self.objects[i])
+    }
+
+    /// The area-light handle of the `k`th registered emitter. Every index in
+    /// `self.lights` points at an object with `light: Some`, so this can't fail.
+    fn area_light(&self, k: usize) -> &Arc<dyn AreaLight> {
+        self.objects[self.lights[k]]
+            .light
+            .as_ref()
+            .expect("lights indexes only sampleable emitters")
+    }
+
     /// Average solid-angle PDF of sampling `dir` (from `origin`) toward any
-    /// registered light. 0 when there are no lights.
+    /// registered light. 0 when there are no lights. The env light (if any) is
+    /// the last light in the set.
     pub fn light_pdf(&self, origin: Point3, dir: Vec3) -> f32 {
-        if self.lights.is_empty() {
+        let n = self.light_count();
+        if n == 0 {
             return 0.0;
         }
-        let sum: f32 = self
-            .lights
-            .iter()
-            .map(|l| match l {
-                Light::Area { geom, .. } => geom.pdf_value(origin, dir),
-                Light::Env(env) => env.direction_pdf(&dir),
-            })
+        let mut sum: f32 = (0..self.lights.len())
+            .map(|k| self.area_light(k).pdf_value(origin, dir))
             .sum();
-        sum / self.lights.len() as f32
+        if let Sky::Env(env) = &self.sky {
+            sum += env.direction_pdf(&dir);
+        }
+        sum / n as f32
     }
 
     /// A (unnormalized) direction from `origin` toward a registered light: `rng`
     /// chooses which light (discrete), and the canonical uniforms `(u, v)` sample
     /// a point on its surface — so the surface sample can be stratified by the
-    /// caller. `None` when there are no lights.
+    /// caller. `None` when there are no lights. The env light is the last slot.
     pub fn sample_light_dir(
         &self,
         origin: Point3,
@@ -121,15 +150,20 @@ impl World {
         v: f32,
         rng: &mut SmallRng,
     ) -> Option<Vec3> {
-        if self.lights.is_empty() {
+        let n = self.light_count();
+        if n == 0 {
             return None;
         }
-        let i = rng.random_range(0..self.lights.len());
-        Some(match &self.lights[i] {
-            Light::Area { geom, .. } => geom.sample_dir(origin, u, v),
-            // (u, v) are the two canonical uniforms; the env sampler's own pdf is
-            // recomputed by `light_pdf` (the marginal over all lights).
-            Light::Env(env) => env.sample_direction(u, v).0,
+        let i = rng.random_range(0..n);
+        Some(if i < self.lights.len() {
+            self.area_light(i).sample_dir(origin, u, v)
+        } else {
+            // The env light: (u, v) are the two canonical uniforms; the env
+            // sampler's own pdf is recomputed by `light_pdf` (the marginal).
+            match &self.sky {
+                Sky::Env(env) => env.sample_direction(u, v).0,
+                Sky::Flat(_) => unreachable!("env light slot without an env sky"),
+            }
         })
     }
 }
@@ -139,19 +173,25 @@ mod light_mixture_tests {
     use super::*;
     use crate::color::Color;
     use crate::geometry::Quad;
+    use crate::material::DiffuseLight;
     use crate::vec3::{Point3, Vec3};
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
     use std::sync::Arc;
 
-    // Overhead quad light on the y=2 plane, area 4 (same as the analytic
-    // pdf_value setup: pdf_value((0,0,0),(0,2,0)) == 1.0).
-    fn overhead_light() -> Arc<dyn AreaLight> {
-        Arc::new(Quad::new(
+    // An overhead quad light on the y=2 plane, area 4 (pdf_value((0,0,0),(0,2,0))
+    // == 1.0), registered as an Object that owns its area-light role.
+    fn light_object() -> Object {
+        let quad = Arc::new(Quad::new(
             Point3::new(-1.0, 2.0, -1.0),
             Vec3::new(2.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 2.0),
-        ))
+        ));
+        Object {
+            geometry: quad.clone(),
+            material: Arc::new(DiffuseLight::from_color(Color::new(1.0, 1.0, 1.0))),
+            light: Some(quad),
+        }
     }
 
     #[test]
@@ -163,7 +203,7 @@ mod light_mixture_tests {
     #[test]
     fn light_pdf_averages_single_light() {
         let mut w = World::new();
-        w.lights.push(Light::Area { geom: overhead_light(), emit: Color::new(1.0, 1.0, 1.0) });
+        w.add(light_object());
         // One light => average == that light's pdf_value; analytic value is 1.0.
         let p = w.light_pdf(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0));
         assert!((p - 1.0).abs() < 1e-5, "p={p}");
@@ -179,7 +219,7 @@ mod light_mixture_tests {
     #[test]
     fn sample_light_dir_points_toward_the_light() {
         let mut w = World::new();
-        w.lights.push(Light::Area { geom: overhead_light(), emit: Color::new(1.0, 1.0, 1.0) });
+        w.add(light_object());
         let mut rng = SmallRng::seed_from_u64(2);
         for _ in 0..100 {
             let (u, v) = (rng.random::<f32>(), rng.random::<f32>());
@@ -197,7 +237,7 @@ mod light_mixture_tests {
         data[ew + 6] = [80.0, 80.0, 80.0];
         let env = Arc::new(EnvMap::from_pixels(ew, eh, data));
         let mut w = World::new();
-        w.lights.push(Light::Env(env.clone()));
+        w.sky = Sky::Env(env.clone());
         let origin = Point3::new(0.0, 0.0, 0.0);
 
         // A single env light => the World's light_pdf is exactly the env's pdf.
@@ -241,6 +281,7 @@ mod material_ownership_tests {
                 Vec3::new(0.0, 0.0, 2.0),
             )),
             material: Arc::new(DiffuseLight::from_color(c)),
+            light: None,
         }
     }
 
@@ -286,10 +327,12 @@ mod material_ownership_tests {
         let red = Object {
             geometry: geometry.clone(),
             material: Arc::new(DiffuseLight::from_color(Color::new(3.0, 0.0, 0.0))),
+            light: None,
         };
         let green = Object {
             geometry: geometry.clone(),
             material: Arc::new(DiffuseLight::from_color(Color::new(0.0, 7.0, 0.0))),
+            light: None,
         };
         // Same allocation — the geometry was not rebuilt for the second object.
         assert!(Arc::ptr_eq(&red.geometry, &green.geometry));

@@ -68,7 +68,7 @@ impl Integrator for Naive {
 mod tests {
     use super::*;
     use crate::geometry::Quad;
-    use crate::world::{Light, Object, World};
+    use crate::world::{Object, World};
     use crate::integrator::Mis;
     use crate::material::{DiffuseLight, Lambertian};
     use crate::ray::Ray;
@@ -85,6 +85,7 @@ mod tests {
                 Vec3::new(0.0, 0.0, 10.0),
             )),
             material: Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0))),
+            light: None,
         }
     }
 
@@ -100,12 +101,12 @@ mod tests {
         let mut w = World::new();
         w.add(floor());
         let light = ceiling_light();
+        // Registered for NEE (Mis shadow-samples it; Naive ignores lights).
         w.add(Object {
             geometry: light.clone(),
             material: Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0))),
+            light: Some(light),
         });
-        // Registered for NEE so Mis can shadow-sample it; Naive ignores lights.
-        w.lights.push(Light::Area { geom: light, emit: Color::new(5.0, 5.0, 5.0) });
         w
     }
 

@@ -4,7 +4,7 @@ use crate::geometry::Sphere;
 use crate::integrator::Sky;
 use crate::ray::{AreaLight, Intersect};
 use crate::texture::env_map::load_cached;
-use crate::world::{Light, Object, World};
+use crate::world::{Object, World};
 
 use super::{placed_quad, MaterialSpec, Placement, Scene, Shape, Transform};
 
@@ -56,29 +56,24 @@ fn bake_area_light(shape: &Shape, transform: &Transform) -> Option<BakedLight> {
 
 /// Assemble the renderable world from the scene description. Cheap enough to
 /// call on every edit (Mesh handles are shared, not rebuilt). Emissive objects
-/// are also registered in `world.lights` for direct light sampling.
+/// that can be sampled exactly also carry their `light` handle, so the World
+/// registers them once for both roles.
 pub fn build_world(scene: &Scene) -> World {
     let mut world = World::new();
     for obj in &scene.objects {
         if obj.hidden {
             continue;
         }
-        if let MaterialSpec::DiffuseLight { emit } = &obj.material {
+        if let MaterialSpec::DiffuseLight { .. } = &obj.material {
             // Bake the transform into an exactly-sampleable primitive. On success
-            // the one baked surface is both the world geometry (wrapped in an
-            // Object with the emissive material) and the NEE light.
+            // the one baked surface is registered *once*, as an Object that is
+            // both the world geometry and — via its `light` handle — the
+            // next-event-estimation light.
             if let Some(baked) = bake_area_light(&obj.shape, &obj.transform) {
                 world.add(Object {
                     geometry: baked.intersect,
                     material: obj.material.build(),
-                });
-                world.lights.push(Light::Area {
-                    // Emission is Solid-only in Phase 1, so `preview_color()`
-                    // equals the true emitted colour exactly. If emission ever
-                    // becomes a non-Solid texture, feed a representative average
-                    // here — revisit then.
-                    geom: baked.light,
-                    emit: emit.preview_color(),
+                    light: Some(baked.light),
                 });
                 continue;
             }
@@ -94,18 +89,16 @@ pub fn build_world(scene: &Scene) -> World {
         world.add(Object {
             geometry: obj.build(),
             material: obj.material.build(),
+            light: None,
         });
     }
 
     // The sky: an HDR environment map if the camera names one and it loads, else
-    // the flat background. An environment map is also registered as a samplable
-    // light — importance-sampled — so MIS finds its bright directions cleanly.
+    // the flat background. When it's an env map it is *also* a directionally
+    // sampled light — the World derives that from `sky`, so it lives here only.
     let cfg = &scene.camera;
     match cfg.sky.as_deref().and_then(load_cached) {
-        Some(env) => {
-            world.sky = Sky::Env(env.clone());
-            world.lights.push(Light::Env(env));
-        }
+        Some(env) => world.sky = Sky::Env(env),
         None => world.sky = Sky::Flat(cfg.background),
     }
 
@@ -145,27 +138,29 @@ mod visibility_tests {
         scene.objects[1].hidden = true;
         let partial = build_world(&scene);
         // One fewer light registered when an emitter is hidden.
-        assert_eq!(full.lights.len(), 2);
-        assert_eq!(partial.lights.len(), 1);
+        assert_eq!(full.light_count(), 2);
+        assert_eq!(partial.light_count(), 1);
     }
 }
 
 #[cfg(test)]
 mod light_tests {
     use crate::color::Color;
-    use crate::world::Light;
     use crate::scene::build_world;
     use crate::scenes::cornell_box;
+    use crate::vec3::Point3;
 
     #[test]
     fn cornell_box_collects_one_light() {
         let scene = cornell_box();
         let world = build_world(&scene);
-        assert_eq!(world.lights.len(), 1, "expected exactly one light");
-        let Light::Area { emit, .. } = &world.lights[0] else {
-            panic!("expected an area light");
-        };
-        assert_eq!(*emit, Color::new(15.0, 15.0, 15.0));
+        assert_eq!(world.light_count(), 1, "expected exactly one light");
+        // The one registered light is an object whose material emits 15.
+        let light = world.area_light_objects().next().expect("one area light");
+        assert_eq!(
+            light.material.emitted(0.0, 0.0, Point3::ZERO),
+            Color::new(15.0, 15.0, 15.0)
+        );
     }
 }
 
@@ -173,7 +168,6 @@ mod light_tests {
 mod registration_tests {
     use crate::camera::CameraConfig;
     use crate::color::Color;
-    use crate::world::Light;
     use crate::scene::{build_world, MaterialSpec, ObjectSpec, Scene, Shape, TextureSpec, Transform};
     use crate::vec3::{Point3, Vec3};
 
@@ -211,9 +205,40 @@ mod registration_tests {
         let world = build_world(&scene);
         // Both the quad and the sphere have area()>0, so both register as
         // importance-sampled lights — the sphere via cone (solid-angle) sampling.
-        assert_eq!(world.lights.len(), 2, "quad and sphere both register");
+        assert_eq!(world.light_count(), 2, "quad and sphere both register");
         // Both objects still live in the world geometry too.
         assert_eq!(world.objects.len(), 2, "both objects remain in the world");
+    }
+
+    #[test]
+    fn an_emitter_is_a_single_object_that_owns_its_light() {
+        // One source of truth: the emitter is one Object in the world — not
+        // duplicated into a parallel light list — and its next-event-estimation
+        // role is carried by that same object's `light` handle.
+        let quad_light = ObjectSpec {
+            name: "quad".to_string(),
+            shape: Shape::Quad {
+                q: Point3::new(0.0, 5.0, 0.0),
+                u: Vec3::new(1.0, 0.0, 0.0),
+                v: Vec3::new(0.0, 0.0, 1.0),
+            },
+            material: MaterialSpec::DiffuseLight {
+                emit: TextureSpec::solid(Color::new(5.0, 5.0, 5.0)),
+            },
+            transform: Transform::identity(),
+            hidden: false,
+        };
+        let scene = Scene {
+            camera: CameraConfig::builder().build(),
+            objects: vec![quad_light],
+        };
+        let world = build_world(&scene);
+        assert_eq!(world.objects.len(), 1, "one object, not duplicated across lists");
+        assert_eq!(world.light_count(), 1, "and it is registered as a light");
+        assert!(
+            world.objects[0].light.is_some(),
+            "the object itself owns its area-light handle"
+        );
     }
 
     #[test]
@@ -245,7 +270,7 @@ mod registration_tests {
         };
         let world = build_world(&scene);
         assert_eq!(
-            world.lights.len(),
+            world.light_count(),
             1,
             "a transformed quad emitter must still register for NEE"
         );
@@ -280,10 +305,9 @@ mod registration_tests {
             objects: vec![quad_light],
         };
         let world = build_world(&scene);
-        assert_eq!(world.lights.len(), 1);
-        let Light::Area { geom, .. } = &world.lights[0] else {
-            panic!("expected an area light");
-        };
+        assert_eq!(world.light_count(), 1);
+        let light = world.area_light_objects().next().expect("one area light");
+        let geom = light.light.as_ref().expect("sampleable emitter");
         let pdf = geom.pdf_value(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0));
         assert!(
             (pdf - 0.5).abs() < 1e-5,
@@ -316,7 +340,7 @@ mod registration_tests {
             objects: vec![sphere(Vec3::new(2.0, 2.0, 2.0))],
         };
         let w = build_world(&uniform);
-        assert_eq!(w.lights.len(), 1, "uniform-scaled sphere registers");
+        assert_eq!(w.light_count(), 1, "uniform-scaled sphere registers");
         assert_eq!(w.objects.len(), 1);
 
         // Non-uniform scale is an ellipsoid ⇒ deliberate BSDF-only fallback.
@@ -325,7 +349,7 @@ mod registration_tests {
             objects: vec![sphere(Vec3::new(2.0, 1.0, 1.0))],
         };
         let w = build_world(&ellipsoid);
-        assert_eq!(w.lights.len(), 0, "non-uniform sphere falls back to BSDF-only");
+        assert_eq!(w.light_count(), 0, "non-uniform sphere falls back to BSDF-only");
         assert_eq!(w.objects.len(), 1, "the ellipsoid still lives in the world");
     }
 }

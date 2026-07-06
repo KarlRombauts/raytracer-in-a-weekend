@@ -146,6 +146,7 @@ mod tests {
                 Vec3::new(0.0, 0.0, 10.0),
             )),
             material: Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0))),
+            light: None,
         }
     }
 
@@ -195,9 +196,9 @@ mod tests {
 mod mixture_tests {
     use super::*;
     use crate::geometry::Quad;
-    use crate::world::{Light, Object, World};
+    use crate::world::{Object, World};
     use crate::material::{DiffuseLight, Lambertian};
-    use crate::ray::Ray;
+    use crate::ray::{AreaLight, Ray};
     use crate::vec3::{Point3, Vec3};
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
@@ -215,6 +216,7 @@ mod mixture_tests {
                 Vec3::new(0.0, 0.0, 10.0),
             )),
             material: Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0))),
+            light: None,
         }
     }
 
@@ -233,13 +235,13 @@ mod mixture_tests {
         let mut world = World::new();
         world.add(floor());
         let light = ceiling_light();
+        // Registered for NEE only when `register_light`; otherwise it still glows
+        // (its material) but isn't shadow-sampled — pure-GI.
         world.add(Object {
             geometry: light.clone(),
             material: Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0))),
+            light: register_light.then(|| light.clone() as Arc<dyn AreaLight>),
         });
-        if register_light {
-            world.lights.push(Light::Area { geom: light, emit: Color::new(5.0, 5.0, 5.0) });
-        }
         // Look straight down at the floor centre.
         let ray = Ray::new(Point3::new(0.0, 1.0, 0.0), Vec3::new(0.0, -1.0, 0.0));
         let mut rng = SmallRng::seed_from_u64(7);
@@ -268,9 +270,9 @@ mod mixture_tests {
 mod mis_tests {
     use super::*;
     use crate::geometry::Quad;
-    use crate::world::{Light, Object, World};
+    use crate::world::{Object, World};
     use crate::material::{DiffuseLight, Lambertian};
-    use crate::ray::Ray;
+    use crate::ray::{AreaLight, Ray};
     use crate::vec3::{Point3, Vec3};
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
@@ -288,6 +290,7 @@ mod mis_tests {
                 Vec3::new(0.0, 0.0, 10.0),
             )),
             material: Arc::new(Lambertian::from_color(Color::new(0.7, 0.7, 0.7))),
+            light: None,
         }
     }
 
@@ -310,10 +313,8 @@ mod mis_tests {
         world.add(Object {
             geometry: l.clone(),
             material: Arc::new(DiffuseLight::from_color(Color::new(40.0, 40.0, 40.0))),
+            light: register_light.then(|| l.clone() as Arc<dyn AreaLight>),
         });
-        if register_light {
-            world.lights.push(Light::Area { geom: l, emit: Color::new(40.0, 40.0, 40.0) });
-        }
         let ray = Ray::new(Point3::new(0.0, 1.0, 0.0), Vec3::new(0.0, -1.0, 0.0));
         let mut rng = SmallRng::seed_from_u64(7);
         let mut sum = 0.0;
@@ -348,7 +349,7 @@ mod mis_tests {
 mod env_mis_tests {
     use super::*;
     use crate::geometry::Quad;
-    use crate::world::{Light, Object, World};
+    use crate::world::{Object, World};
     use crate::integrator::{Naive, Sky};
     use crate::material::Lambertian;
     use crate::ray::Ray;
@@ -374,9 +375,9 @@ mod env_mis_tests {
         world.add(Object {
             geometry: floor,
             material: Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0))),
+            light: None,
         });
-        world.sky = Sky::Env(env.clone());
-        world.lights.push(Light::Env(env));
+        world.sky = Sky::Env(env);
         world
     }
 
@@ -429,9 +430,9 @@ mod env_mis_tests {
         world.add(Object {
             geometry: floor,
             material: Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0))),
+            light: None,
         });
-        world.sky = Sky::Env(env.clone());
-        world.lights.push(Light::Env(env));
+        world.sky = Sky::Env(env);
         world
     }
 
