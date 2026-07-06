@@ -36,11 +36,26 @@ impl MeshData {
             .iter()
             .map(|[i, j, k]| [*i as usize, *j as usize, *k as usize])
             .collect();
+        let bvh = BVH::build(self.triangles());
+        let render = Arc::new(RenderMesh::from_triangles_smooth(&self.verts, &faces_usize));
+        (Arc::new(bvh), render)
+    }
+
+    /// The mesh's triangles with smooth vertex normals (and UVs when they line up
+    /// with the faces) — the primitives the BVH is built over. Used internally by
+    /// [`build`](Self::build); exposed so benchmarks can time `BVH::build` on the
+    /// triangles in isolation from the rest of assembly.
+    pub fn triangles(&self) -> Vec<Triangle> {
+        let faces_usize: Vec<[usize; 3]> = self
+            .faces
+            .iter()
+            .map(|[i, j, k]| [*i as usize, *j as usize, *k as usize])
+            .collect();
         let vn = crate::geometry::vertex_normals(&self.verts, &faces_usize);
         // Only honour UVs when they line up with the faces; a mismatch (or none)
         // falls back to the smooth-only triangle (barycentric UV).
         let has_uv = self.uvs.len() == faces_usize.len();
-        let triangles: Vec<Triangle> = faces_usize
+        faces_usize
             .iter()
             .enumerate()
             .map(|(t, [i, j, k])| {
@@ -65,10 +80,7 @@ impl MeshData {
                     )
                 }
             })
-            .collect();
-        let bvh = BVH::build(triangles);
-        let render = Arc::new(RenderMesh::from_triangles_smooth(&self.verts, &faces_usize));
-        (Arc::new(bvh), render)
+            .collect()
     }
 }
 

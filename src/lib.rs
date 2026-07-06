@@ -17,6 +17,11 @@ pub mod vec3;
 pub mod viewer;
 pub mod world;
 
+/// Deterministic BVH traversal-work counters (node box tests + leaf primitive
+/// tests). Only present under the `bvh-stats` feature; see [`ray::bvh::stats`].
+#[cfg(feature = "bvh-stats")]
+pub use ray::bvh::stats as bvh_stats;
+
 /// Native entry: open the interactive viewer on the default scene.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_default() {
