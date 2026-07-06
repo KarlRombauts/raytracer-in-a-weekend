@@ -6,8 +6,7 @@ use crate::world::World;
 use crate::integrator::common::{cosine_direction_from_uv, russian_roulette};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
-use crate::material::Material;
-use crate::ray::{Intersect, Ray};
+use crate::ray::Ray;
 use crate::sampling::SampleId;
 
 /// Naive path tracer: BSDF sampling only. Emission is taken whenever a ray lands
@@ -69,32 +68,31 @@ impl Integrator for Naive {
 mod tests {
     use super::*;
     use crate::geometry::Quad;
-    use crate::world::{Light, World};
+    use crate::world::{Light, Object, World};
     use crate::integrator::Mis;
     use crate::material::{DiffuseLight, Lambertian};
-    use crate::ray::{Intersect, Ray};
+    use crate::ray::Ray;
     use crate::vec3::{Point3, Vec3};
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
     use std::sync::Arc;
 
-    fn floor() -> Arc<dyn Intersect> {
-        let mat = Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0)));
-        Arc::new(Quad::new(
-            Point3::new(-5.0, 0.0, -5.0),
-            Vec3::new(10.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 10.0),
-            mat,
-        ))
+    fn floor() -> Object {
+        Object {
+            geometry: Arc::new(Quad::new(
+                Point3::new(-5.0, 0.0, -5.0),
+                Vec3::new(10.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 10.0),
+            )),
+            material: Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0))),
+        }
     }
 
     fn ceiling_light() -> Arc<Quad> {
-        let mat = Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0)));
         Arc::new(Quad::new(
             Point3::new(-5.0, 2.0, -5.0),
             Vec3::new(10.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 10.0),
-            mat,
         ))
     }
 
@@ -102,7 +100,10 @@ mod tests {
         let mut w = World::new();
         w.add(floor());
         let light = ceiling_light();
-        w.add(light.clone());
+        w.add(Object {
+            geometry: light.clone(),
+            material: Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0))),
+        });
         // Registered for NEE so Mis can shadow-sample it; Naive ignores lights.
         w.lights.push(Light::Area { geom: light, emit: Color::new(5.0, 5.0, 5.0) });
         w

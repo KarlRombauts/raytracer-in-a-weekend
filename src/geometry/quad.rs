@@ -1,9 +1,6 @@
-use std::sync::Arc;
-
 use crate::{
     interval::Interval,
-    material::{material, Material},
-    ray::{surface_pdf_value, AreaLight, HitRecord, Intersect, Ray, AABB},
+    ray::{surface_pdf_value, AreaLight, GeoHit, Intersect, Ray, AABB},
     vec3::{Point3, Vec3},
 };
 
@@ -15,12 +12,11 @@ pub struct Quad {
     w: Vec3,
     centroid: Vec3,
     normal: Vec3,
-    material: Arc<dyn Material>,
     bbox: AABB,
 }
 
 impl Quad {
-    pub fn new(q: Point3, u: Vec3, v: Vec3, material: Arc<dyn Material>) -> Self {
+    pub fn new(q: Point3, u: Vec3, v: Vec3) -> Self {
         let n = u.cross(&v);
         let normal = n.unit();
         let d = normal.dot(&q);
@@ -33,7 +29,6 @@ impl Quad {
             w: n / n.dot(&n),
             centroid: q + (u + v) * 0.5,
             normal,
-            material,
             bbox: AABB::EMPTY,
         };
         quad.set_bounding_box();
@@ -57,11 +52,7 @@ impl Intersect for Quad {
         return self.centroid;
     }
 
-    fn intersect(
-        &self,
-        ray: &Ray,
-        ray_t: &crate::interval::Interval,
-    ) -> Option<crate::ray::HitRecord<'_>> {
+    fn intersect(&self, ray: &Ray, ray_t: &crate::interval::Interval) -> Option<GeoHit> {
         let denom = self.normal.dot(&ray.direction);
 
         // No hit if the ray is parallel to the plane
@@ -85,7 +76,7 @@ impl Intersect for Quad {
             return None;
         }
 
-        let mut hit_record = HitRecord::new(t, p, Vec3::ZERO, self.material.as_ref());
+        let mut hit_record = GeoHit::new(t, p, Vec3::ZERO);
         hit_record.set_face_normal(ray, &self.normal);
         hit_record.u = alpha;
         hit_record.v = beta;
@@ -120,19 +111,14 @@ impl AreaLight for Quad {
 #[cfg(test)]
 mod area_pdf_tests {
     use super::*;
-    use crate::color::Color;
-    use crate::material::Lambertian;
     use crate::vec3::{Point3, Vec3};
-    use std::sync::Arc;
 
     // Overhead light on the y = 2 plane, spanning x,z in [-1,1]; area = 4.
     fn overhead_quad() -> Quad {
-        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
         Quad::new(
             Point3::new(-1.0, 2.0, -1.0),
             Vec3::new(2.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 2.0),
-            mat,
         )
     }
 
@@ -160,21 +146,16 @@ mod area_pdf_tests {
 #[cfg(test)]
 mod sample_tests {
     use super::*;
-    use crate::color::Color;
-    use crate::material::Lambertian;
     use crate::vec3::{Point3, Vec3};
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
-    use std::sync::Arc;
 
     #[test]
     fn sampled_point_lies_on_quad() {
-        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
         let q = Quad::new(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(2.0, 0.0, 0.0),
             Vec3::new(0.0, 3.0, 0.0),
-            mat,
         );
         let mut rng = SmallRng::seed_from_u64(1);
         let mut xs: Vec<f32> = Vec::with_capacity(500);

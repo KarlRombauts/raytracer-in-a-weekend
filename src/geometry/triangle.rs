@@ -1,9 +1,5 @@
-use std::sync::Arc;
-
 use crate::{
-    interval::Interval,
-    material::{material, Material},
-    ray::{surface_pdf_value, AreaLight, HitRecord, Intersect, Ray, AABB},
+    ray::{surface_pdf_value, AreaLight, GeoHit, Intersect, Ray, AABB},
     vec3::{Point3, Vec3},
 };
 
@@ -25,13 +21,12 @@ pub struct Triangle {
     /// barycentric interpolation, so an image texture maps across the mesh's own
     /// UV layout. Absent → the hit reports raw barycentrics (the prior behaviour).
     uvs: Option<[[f32; 2]; 3]>,
-    material: Arc<dyn Material>,
     bbox: AABB,
 }
 
 impl Triangle {
-    pub fn from_points(p1: &Vec3, p2: &Vec3, p3: &Vec3, material: Arc<dyn Material>) -> Self {
-        Self::build(p1, p2, p3, None, None, material)
+    pub fn from_points(p1: &Vec3, p2: &Vec3, p3: &Vec3) -> Self {
+        Self::build(p1, p2, p3, None, None)
     }
 
     /// Like [`from_points`](Self::from_points) but with per-vertex shading normals
@@ -45,9 +40,8 @@ impl Triangle {
         n1: &Vec3,
         n2: &Vec3,
         n3: &Vec3,
-        material: Arc<dyn Material>,
     ) -> Self {
-        Self::build(p1, p2, p3, Some([*n1, *n2, *n3]), None, material)
+        Self::build(p1, p2, p3, Some([*n1, *n2, *n3]), None)
     }
 
     /// Like [`from_points_smooth`](Self::from_points_smooth) but also carrying
@@ -62,9 +56,8 @@ impl Triangle {
         n2: &Vec3,
         n3: &Vec3,
         uvs: [[f32; 2]; 3],
-        material: Arc<dyn Material>,
     ) -> Self {
-        Self::build(p1, p2, p3, Some([*n1, *n2, *n3]), Some(uvs), material)
+        Self::build(p1, p2, p3, Some([*n1, *n2, *n3]), Some(uvs))
     }
 
     fn build(
@@ -73,7 +66,6 @@ impl Triangle {
         p3: &Vec3,
         vnormals: Option<[Vec3; 3]>,
         uvs: Option<[[f32; 2]; 3]>,
-        material: Arc<dyn Material>,
     ) -> Self {
         let u = *p2 - *p1;
         let v = *p3 - *p1;
@@ -92,14 +84,13 @@ impl Triangle {
             normal,
             vnormals,
             uvs,
-            material,
             bbox: AABB::EMPTY,
         };
         triangle.set_bounding_box();
         triangle
     }
 
-    pub fn new(q: Point3, u: Vec3, v: Vec3, material: Arc<dyn Material>) -> Self {
+    pub fn new(q: Point3, u: Vec3, v: Vec3) -> Self {
         let n = u.cross(&v);
         let normal = n.unit();
         let d = normal.dot(&q);
@@ -116,7 +107,6 @@ impl Triangle {
             normal,
             vnormals: None,
             uvs: None,
-            material,
             bbox: AABB::EMPTY,
         };
         triangle.set_bounding_box();
@@ -155,11 +145,7 @@ impl Intersect for Triangle {
         self.centroid
     }
 
-    fn intersect(
-        &self,
-        ray: &Ray,
-        ray_t: &crate::interval::Interval,
-    ) -> Option<crate::ray::HitRecord<'_>> {
+    fn intersect(&self, ray: &Ray, ray_t: &crate::interval::Interval) -> Option<GeoHit> {
         let denom = self.normal.dot(&ray.direction);
 
         // No hit if the ray is parallel to the plane
@@ -183,7 +169,7 @@ impl Intersect for Triangle {
             return None;
         }
 
-        let mut hit_record = HitRecord::new(t, p, Vec3::ZERO, self.material.as_ref());
+        let mut hit_record = GeoHit::new(t, p, Vec3::ZERO);
         // Front-face and orientation come from the geometric (flat) normal.
         hit_record.set_face_normal(ray, &self.normal);
         // Smooth shading: replace the shading normal with the barycentric blend of
@@ -249,17 +235,13 @@ impl AreaLight for Triangle {
 #[cfg(test)]
 mod smooth_normal_tests {
     use super::*;
-    use crate::color::Color;
     use crate::interval::Interval;
-    use crate::material::Lambertian;
     use crate::ray::Ray;
     use crate::vec3::Point3;
-    use std::sync::Arc;
 
     // Triangle in the z=0 plane (flat normal +z), but with per-vertex normals that
     // tilt outward — so the shading normal must vary across the face.
     fn tri() -> Triangle {
-        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
         Triangle::from_points_smooth(
             &Point3::new(0.0, 0.0, 0.0),
             &Point3::new(1.0, 0.0, 0.0),
@@ -267,7 +249,6 @@ mod smooth_normal_tests {
             &Vec3::new(-1.0, -1.0, 1.0).unit(), // n at p1
             &Vec3::new(1.0, 0.0, 1.0).unit(),   // n at p2
             &Vec3::new(0.0, 1.0, 1.0).unit(),   // n at p3
-            mat,
         )
     }
 
@@ -295,7 +276,6 @@ mod smooth_normal_tests {
     /// (α,β)=(0.25,0.5) maps to (u,v)=(0.25,0.5).
     #[test]
     fn uv_interpolates_across_the_face() {
-        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
         let n = Vec3::new(0.0, 0.0, 1.0);
         let tri = Triangle::from_points_smooth_uv(
             &Point3::new(0.0, 0.0, 0.0),
@@ -305,7 +285,6 @@ mod smooth_normal_tests {
             &n,
             &n,
             [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
-            mat,
         );
         let ray = Ray::new(Point3::new(0.25, 0.5, 1.0), Vec3::new(0.0, 0.0, -1.0));
         let hit = tri.intersect(&ray, &Interval::new(0.001, f32::INFINITY)).unwrap();
@@ -316,12 +295,10 @@ mod smooth_normal_tests {
     /// Without UVs the hit still reports raw barycentrics (the prior behaviour).
     #[test]
     fn no_uv_reports_barycentrics() {
-        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
         let tri = Triangle::new(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
-            mat,
         );
         let ray = Ray::new(Point3::new(0.25, 0.5, 1.0), Vec3::new(0.0, 0.0, -1.0));
         let hit = tri.intersect(&ray, &Interval::new(0.001, f32::INFINITY)).unwrap();
@@ -342,19 +319,14 @@ mod smooth_normal_tests {
 #[cfg(test)]
 mod area_tests {
     use super::*;
-    use crate::color::Color;
-    use crate::material::Lambertian;
     use crate::vec3::{Point3, Vec3};
-    use std::sync::Arc;
 
     #[test]
     fn area_is_half_cross_product() {
-        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
         let tri = Triangle::new(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(2.0, 0.0, 0.0),
             Vec3::new(0.0, 3.0, 0.0),
-            mat,
         );
         // |u x v| = |(2,0,0) x (0,3,0)| = 6; triangle area = 3.
         assert!((tri.area() - 3.0).abs() < 1e-5);
@@ -368,14 +340,12 @@ mod area_tests {
     #[test]
     fn bounding_box_encloses_only_the_three_vertices() {
         use crate::ray::Intersect;
-        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
         // Vertices (0,0,0), (1,0,0), (1,1,0). The phantom 4th corner is
         // p2+p3-p1 = (2,1,0), whose x=2 lies outside the true bbox [0,1].
         let tri = Triangle::new(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(1.0, 1.0, 0.0),
-            mat,
         );
         let bb = tri.bounding_box();
         let (mn, mx) = (bb.min_vec(), bb.max_vec());
@@ -390,13 +360,11 @@ mod area_tests {
     // non-intersecting triangle instead of panicking.
     #[test]
     fn degenerate_triangle_does_not_panic() {
-        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
         // Three collinear points along x (same y, same z).
         let tri = Triangle::new(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(2.0, 0.0, 0.0),
-            mat,
         );
         assert!(tri.area() < 1e-6, "degenerate triangle should have ~zero area");
         // A ray that would hit the line must simply miss (no panic, no hit).
@@ -414,23 +382,18 @@ mod area_tests {
 #[cfg(test)]
 mod sample_tests {
     use super::*;
-    use crate::color::Color;
-    use crate::material::Lambertian;
     use crate::vec3::{Point3, Vec3};
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
-    use std::sync::Arc;
 
     #[test]
     fn sampled_point_is_inside_triangle() {
         // Vertices q=(0,0,0), q+u=(1,0,0), q+v=(0,1,0): a sample (x,y,0) must
         // satisfy the barycentric bounds x>=0, y>=0, x+y<=1.
-        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
         let tri = Triangle::new(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
-            mat,
         );
         let mut rng = SmallRng::seed_from_u64(2);
         let mut xs: Vec<f32> = Vec::with_capacity(500);

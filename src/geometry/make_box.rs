@@ -3,11 +3,10 @@ use std::sync::Arc;
 use crate::{
     geometry::Quad,
     group::IntersectGroup,
-    material::Material,
     vec3::{Point3, Vec3},
 };
 
-pub fn make_box(a: Point3, b: Point3, mat: Arc<dyn Material>) -> IntersectGroup {
+pub fn make_box(a: Point3, b: Point3) -> IntersectGroup {
     // Returns the 3D box (six sides) that contains the two opposite vertices a & b.
 
     let mut sides = IntersectGroup::new();
@@ -21,47 +20,17 @@ pub fn make_box(a: Point3, b: Point3, mat: Arc<dyn Material>) -> IntersectGroup 
     let dz = Vec3::new(0.0, 0.0, max.z - min.z);
 
     // front
-    sides.add(Arc::new(Quad::new(
-        Point3::new(min.x, min.y, max.z),
-        dx,
-        dy,
-        Arc::clone(&mat),
-    )));
+    sides.add(Arc::new(Quad::new(Point3::new(min.x, min.y, max.z), dx, dy)));
     // right
-    sides.add(Arc::new(Quad::new(
-        Point3::new(max.x, min.y, max.z),
-        -dz,
-        dy,
-        Arc::clone(&mat),
-    )));
+    sides.add(Arc::new(Quad::new(Point3::new(max.x, min.y, max.z), -dz, dy)));
     // back
-    sides.add(Arc::new(Quad::new(
-        Point3::new(max.x, min.y, min.z),
-        -dx,
-        dy,
-        Arc::clone(&mat),
-    )));
+    sides.add(Arc::new(Quad::new(Point3::new(max.x, min.y, min.z), -dx, dy)));
     // left
-    sides.add(Arc::new(Quad::new(
-        Point3::new(min.x, min.y, min.z),
-        dz,
-        dy,
-        Arc::clone(&mat),
-    )));
+    sides.add(Arc::new(Quad::new(Point3::new(min.x, min.y, min.z), dz, dy)));
     // top
-    sides.add(Arc::new(Quad::new(
-        Point3::new(min.x, max.y, max.z),
-        dx,
-        -dz,
-        Arc::clone(&mat),
-    )));
+    sides.add(Arc::new(Quad::new(Point3::new(min.x, max.y, max.z), dx, -dz)));
     // bottom
-    sides.add(Arc::new(Quad::new(
-        Point3::new(min.x, min.y, min.z),
-        dx,
-        dz,
-        Arc::clone(&mat),
-    )));
+    sides.add(Arc::new(Quad::new(Point3::new(min.x, min.y, min.z), dx, dz)));
 
     sides
 }

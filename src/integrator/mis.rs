@@ -6,8 +6,7 @@ use crate::world::World;
 use crate::integrator::common::{cosine_direction_from_uv, power_heuristic, russian_roulette};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
-use crate::material::Material;
-use crate::ray::{Intersect, Ray};
+use crate::ray::Ray;
 use crate::sampling::SampleId;
 
 /// Path tracer with next-event estimation and multiple importance sampling
@@ -131,22 +130,23 @@ impl Integrator for Mis {
 mod tests {
     use super::*;
     use crate::geometry::Quad;
-    use crate::world::World;
     use crate::material::DiffuseLight;
     use crate::ray::Ray;
     use crate::vec3::{Point3, Vec3};
+    use crate::world::{Object, World};
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
     use std::sync::Arc;
 
-    fn ceiling_light() -> Arc<Quad> {
-        let mat = Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0)));
-        Arc::new(Quad::new(
-            Point3::new(-5.0, 2.0, -5.0),
-            Vec3::new(10.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 10.0),
-            mat,
-        ))
+    fn ceiling_light() -> Object {
+        Object {
+            geometry: Arc::new(Quad::new(
+                Point3::new(-5.0, 2.0, -5.0),
+                Vec3::new(10.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 10.0),
+            )),
+            material: Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0))),
+        }
     }
 
     fn sample() -> SampleId {
@@ -195,9 +195,9 @@ mod tests {
 mod mixture_tests {
     use super::*;
     use crate::geometry::Quad;
-    use crate::world::{Light, World};
+    use crate::world::{Light, Object, World};
     use crate::material::{DiffuseLight, Lambertian};
-    use crate::ray::{Intersect, Ray};
+    use crate::ray::Ray;
     use crate::vec3::{Point3, Vec3};
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
@@ -207,25 +207,24 @@ mod mixture_tests {
         Mis { max_depth: 10 }
     }
 
-    fn floor() -> Arc<dyn Intersect> {
-        let mat = Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0)));
-        Arc::new(Quad::new(
-            Point3::new(-5.0, 0.0, -5.0),
-            Vec3::new(10.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 10.0),
-            mat,
-        ))
+    fn floor() -> Object {
+        Object {
+            geometry: Arc::new(Quad::new(
+                Point3::new(-5.0, 0.0, -5.0),
+                Vec3::new(10.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 10.0),
+            )),
+            material: Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0))),
+        }
     }
 
     // Large overhead emitter (covers a big solid angle so pure-GI sampling
     // converges with feasible sample counts).
     fn ceiling_light() -> Arc<Quad> {
-        let mat = Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0)));
         Arc::new(Quad::new(
             Point3::new(-5.0, 2.0, -5.0),
             Vec3::new(10.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 10.0),
-            mat,
         ))
     }
 
@@ -234,7 +233,10 @@ mod mixture_tests {
         let mut world = World::new();
         world.add(floor());
         let light = ceiling_light();
-        world.add(light.clone());
+        world.add(Object {
+            geometry: light.clone(),
+            material: Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0))),
+        });
         if register_light {
             world.lights.push(Light::Area { geom: light, emit: Color::new(5.0, 5.0, 5.0) });
         }
@@ -266,9 +268,9 @@ mod mixture_tests {
 mod mis_tests {
     use super::*;
     use crate::geometry::Quad;
-    use crate::world::{Light, World};
+    use crate::world::{Light, Object, World};
     use crate::material::{DiffuseLight, Lambertian};
-    use crate::ray::{Intersect, Ray};
+    use crate::ray::Ray;
     use crate::vec3::{Point3, Vec3};
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
@@ -278,25 +280,24 @@ mod mis_tests {
         Mis { max_depth: 10 }
     }
 
-    fn floor() -> Arc<dyn Intersect> {
-        let mat = Arc::new(Lambertian::from_color(Color::new(0.7, 0.7, 0.7)));
-        Arc::new(Quad::new(
-            Point3::new(-5.0, 0.0, -5.0),
-            Vec3::new(10.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 10.0),
-            mat,
-        ))
+    fn floor() -> Object {
+        Object {
+            geometry: Arc::new(Quad::new(
+                Point3::new(-5.0, 0.0, -5.0),
+                Vec3::new(10.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 10.0),
+            )),
+            material: Arc::new(Lambertian::from_color(Color::new(0.7, 0.7, 0.7))),
+        }
     }
 
     // Small, bright overhead light: pure GI rarely hits it (high variance);
     // NEE samples it every bounce (low variance).
     fn small_light() -> Arc<Quad> {
-        let mat = Arc::new(DiffuseLight::from_color(Color::new(40.0, 40.0, 40.0)));
         Arc::new(Quad::new(
             Point3::new(-0.5, 4.0, -0.5),
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
-            mat,
         ))
     }
 
@@ -306,7 +307,10 @@ mod mis_tests {
         let mut world = World::new();
         world.add(floor());
         let l = small_light();
-        world.add(l.clone());
+        world.add(Object {
+            geometry: l.clone(),
+            material: Arc::new(DiffuseLight::from_color(Color::new(40.0, 40.0, 40.0))),
+        });
         if register_light {
             world.lights.push(Light::Area { geom: l, emit: Color::new(40.0, 40.0, 40.0) });
         }
@@ -344,10 +348,10 @@ mod mis_tests {
 mod env_mis_tests {
     use super::*;
     use crate::geometry::Quad;
-    use crate::world::{Light, World};
+    use crate::world::{Light, Object, World};
     use crate::integrator::{Naive, Sky};
     use crate::material::Lambertian;
-    use crate::ray::{Intersect, Ray};
+    use crate::ray::Ray;
     use crate::texture::env_map::EnvMap;
     use crate::vec3::{Point3, Vec3};
     use rand::rngs::SmallRng;
@@ -355,11 +359,10 @@ mod env_mis_tests {
     use std::sync::Arc;
 
     fn sunny_world() -> World {
-        let floor: Arc<dyn Intersect> = Arc::new(Quad::new(
+        let floor = Arc::new(Quad::new(
             Point3::new(-50.0, 0.0, -50.0),
             Vec3::new(100.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 100.0),
-            Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0))),
         ));
         // One bright texel high in the sky (row 1 of 8 ≈ near straight up); dim
         // elsewhere. The sun subtends a tiny solid angle.
@@ -368,7 +371,10 @@ mod env_mis_tests {
         data[w + 8] = [200.0, 200.0, 200.0];
         let env = Arc::new(EnvMap::from_pixels(w, h, data));
         let mut world = World::new();
-        world.add(floor);
+        world.add(Object {
+            geometry: floor,
+            material: Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0))),
+        });
         world.sky = Sky::Env(env.clone());
         world.lights.push(Light::Env(env));
         world
@@ -406,11 +412,10 @@ mod env_mis_tests {
     // so Naive converges too, and a tight mean match proves env-MIS is unbiased
     // (correct weights, no double-counting of the sky).
     fn bright_dome_world() -> World {
-        let floor: Arc<dyn Intersect> = Arc::new(Quad::new(
+        let floor = Arc::new(Quad::new(
             Point3::new(-50.0, 0.0, -50.0),
             Vec3::new(100.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 100.0),
-            Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0))),
         ));
         let (w, h) = (8usize, 8usize);
         let mut data = vec![[0.0f32; 3]; w * h];
@@ -421,7 +426,10 @@ mod env_mis_tests {
         }
         let env = Arc::new(EnvMap::from_pixels(w, h, data));
         let mut world = World::new();
-        world.add(floor);
+        world.add(Object {
+            geometry: floor,
+            material: Arc::new(Lambertian::from_color(Color::new(1.0, 1.0, 1.0))),
+        });
         world.sky = Sky::Env(env.clone());
         world.lights.push(Light::Env(env));
         world

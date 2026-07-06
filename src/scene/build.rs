@@ -2,10 +2,9 @@ use std::sync::Arc;
 
 use crate::geometry::Sphere;
 use crate::integrator::Sky;
-use crate::material::Material;
 use crate::ray::{AreaLight, Intersect};
 use crate::texture::env_map::load_cached;
-use crate::world::{Light, World};
+use crate::world::{Light, Object, World};
 
 use super::{placed_quad, MaterialSpec, Placement, Scene, Shape, Transform};
 
@@ -33,13 +32,9 @@ fn bake<T: AreaLight + 'static>(prim: T) -> BakedLight {
 /// estimation. Returns `None` for geometry we can't sample exactly — a
 /// non-uniformly scaled sphere (an ellipsoid), a Box, or a Mesh — which then
 /// deliberately falls back to BSDF-only illumination.
-fn bake_area_light(
-    shape: &Shape,
-    transform: &Transform,
-    material: Arc<dyn Material>,
-) -> Option<BakedLight> {
+fn bake_area_light(shape: &Shape, transform: &Transform) -> Option<BakedLight> {
     match shape {
-        Shape::Quad { q, u, v } => Some(bake(placed_quad(*q, *u, *v, transform, material))),
+        Shape::Quad { q, u, v } => Some(bake(placed_quad(*q, *u, *v, transform))),
         Shape::Sphere { center, radius } => {
             // A sphere stays a sphere only under uniform scale; a non-uniform
             // scale makes an ellipsoid we can't sample as a Sphere. Rotation
@@ -51,7 +46,7 @@ fn bake_area_light(
                 return None;
             }
             let world_center = Placement::new(transform, *center).point(*center);
-            Some(bake(Sphere::stationary(world_center, *radius * s.x, material)))
+            Some(bake(Sphere::stationary(world_center, *radius * s.x)))
         }
         // Box (6 quads) and Mesh (a BVH of triangles) need group/area-weighted
         // sampling — out of scope for now, they stay BSDF-only.
@@ -70,9 +65,13 @@ pub fn build_world(scene: &Scene) -> World {
         }
         if let MaterialSpec::DiffuseLight { emit } = &obj.material {
             // Bake the transform into an exactly-sampleable primitive. On success
-            // the one baked surface is both the world geometry and the NEE light.
-            if let Some(baked) = bake_area_light(&obj.shape, &obj.transform, obj.material.build()) {
-                world.add(baked.intersect);
+            // the one baked surface is both the world geometry (wrapped in an
+            // Object with the emissive material) and the NEE light.
+            if let Some(baked) = bake_area_light(&obj.shape, &obj.transform) {
+                world.add(Object {
+                    geometry: baked.intersect,
+                    material: obj.material.build(),
+                });
                 world.lights.push(Light::Area {
                     // Emission is Solid-only in Phase 1, so `preview_color()`
                     // equals the true emitted colour exactly. If emission ever
@@ -92,7 +91,10 @@ pub fn build_world(scene: &Scene) -> World {
                 obj.name
             );
         }
-        world.add(obj.build());
+        world.add(Object {
+            geometry: obj.build(),
+            material: obj.material.build(),
+        });
     }
 
     // The sky: an HDR environment map if the camera names one and it loads, else

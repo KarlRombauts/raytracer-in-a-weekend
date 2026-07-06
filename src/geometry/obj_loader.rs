@@ -1,8 +1,6 @@
 use crate::{
-    color::Color,
     geometry::Triangle,
     group::IntersectGroup,
-    material::{self, Lambertian, Material},
     ray::Intersect,
     vec3::Vec3,
 };
@@ -135,7 +133,7 @@ impl ObjData {
         (self.verts.clone(), faces, uvs)
     }
 
-    pub fn into_mesh(self, material: Arc<dyn Material>) -> IntersectGroup {
+    pub fn into_mesh(self) -> IntersectGroup {
         let mut group = IntersectGroup::new();
 
         println!("Loaded {} faces", self.faces.len());
@@ -148,7 +146,6 @@ impl ObjData {
                 &vn[i],
                 &vn[j],
                 &vn[k],
-                material.clone(),
             )) as Arc<dyn Intersect>;
             group.add(tri);
         });
@@ -156,7 +153,7 @@ impl ObjData {
         group
     }
 
-    pub fn into_triangles(self, material: Arc<dyn Material>) -> Vec<Triangle> {
+    pub fn into_triangles(self) -> Vec<Triangle> {
         let mut triangles = Vec::new();
 
         println!("Loaded {} faces", self.faces.len());
@@ -169,7 +166,6 @@ impl ObjData {
                 &vn[i],
                 &vn[j],
                 &vn[k],
-                material.clone(),
             );
             triangles.push(tri);
         });

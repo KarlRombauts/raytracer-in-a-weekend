@@ -1,8 +1,6 @@
 use std::f32;
-use std::sync::Arc;
 
 use crate::interval::Interval;
-use crate::material::Material;
 use crate::ray::*;
 use crate::vec3::{Point3, Vec3};
 
@@ -31,27 +29,20 @@ fn onb(axis: Vec3) -> (Vec3, Vec3, Vec3) {
 pub struct Sphere {
     pub center: Ray,
     pub radius: f32,
-    material: Arc<dyn Material>,
     bbox: AABB,
 }
 
 impl Sphere {
-    pub fn stationary(center: Point3, radius: f32, material: Arc<dyn Material>) -> Self {
+    pub fn stationary(center: Point3, radius: f32) -> Self {
         let rvec = Vec3::new(radius, radius, radius);
         Sphere {
             center: Ray::new(center, Vec3::ZERO), //: Ray::new(center, Vec3::ZERO),
             radius,
-            material,
             bbox: AABB::from_points(center - rvec, center + rvec),
         }
     }
 
-    pub fn moving(
-        center1: Point3,
-        center2: Point3,
-        radius: f32,
-        material: Arc<dyn Material>,
-    ) -> Self {
+    pub fn moving(center1: Point3, center2: Point3, radius: f32) -> Self {
         let rvec = Vec3::new(radius, radius, radius);
         let box1 = AABB::from_points(center1 - rvec, center1 + rvec);
         let box2 = AABB::from_points(center2 - rvec, center2 + rvec);
@@ -60,7 +51,6 @@ impl Sphere {
         Sphere {
             center: Ray::new(center1, center2 - center1), //: Ray::new(center, Vec3::ZERO),
             radius,
-            material,
             bbox,
         }
     }
@@ -84,7 +74,7 @@ impl Intersect for Sphere {
         self.bbox.center()
     }
 
-    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>> {
+    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<GeoHit> {
         let current_center = self.center.at(ray.time);
         let oc = ray.origin - current_center;
         let a = ray.direction.length_squared();
@@ -108,7 +98,7 @@ impl Intersect for Sphere {
 
         let p = ray.at(root);
         let outward_normal = (p - current_center).unit();
-        let mut hit_record = HitRecord::new(root, p, outward_normal, self.material.as_ref());
+        let mut hit_record = GeoHit::new(root, p, outward_normal);
         (hit_record.u, hit_record.v) = self.get_spherical_uv(&outward_normal);
         hit_record.set_face_normal(ray, &outward_normal);
         Some(hit_record)
@@ -174,19 +164,15 @@ impl AreaLight for Sphere {
 #[cfg(test)]
 mod sample_tests {
     use super::*;
-    use crate::color::Color;
-    use crate::material::Lambertian;
     use crate::vec3::Point3;
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
-    use std::sync::Arc;
 
     #[test]
     fn sampled_point_is_on_sphere_surface() {
-        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
         let center = Point3::new(1.0, 2.0, 3.0);
         let radius = 5.0;
-        let s = Sphere::stationary(center, radius, mat);
+        let s = Sphere::stationary(center, radius);
         let mut rng = SmallRng::seed_from_u64(3);
         for _ in 0..500 {
             let p = s.sample_point(rng.random::<f32>(), rng.random::<f32>());
@@ -199,17 +185,13 @@ mod sample_tests {
 #[cfg(test)]
 mod cone_light_tests {
     use super::*;
-    use crate::color::Color;
-    use crate::material::Lambertian;
     use crate::vec3::{Point3, Vec3};
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
     use std::f32::consts::PI;
-    use std::sync::Arc;
 
     fn sphere(center: Point3, radius: f32) -> Sphere {
-        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
-        Sphere::stationary(center, radius, mat)
+        Sphere::stationary(center, radius)
     }
 
     #[test]

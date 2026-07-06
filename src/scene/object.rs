@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use crate::color::Color;
 use crate::geometry::transform::{apply, rotation_matrix};
 use crate::geometry::{ObjData, Quad, Rotate, Scale, Translate};
-use crate::material::Material;
 use crate::ray::Intersect;
 use crate::vec3::{Point3, Vec3};
 
@@ -109,19 +108,14 @@ impl ObjectSpec {
     /// This is the pivot `build` rotates and scales about, and the point the GL
     /// preview centres on — so it's where the transform gizmo should sit.
     ///
-    /// The bounding box is material-independent, so this builds with a throwaway
-    /// solid material instead of the object's own. Building the real one decodes
-    /// any image texture, and `pivot` runs *every frame* while the gizmo drags —
-    /// re-decoding a texture per frame is what made dragging textured objects
-    /// crawl.
+    /// Cheap: the geometry is material-agnostic, so this builds no material and
+    /// decodes no textures — `pivot` runs *every frame* while the gizmo drags.
     pub(crate) fn pivot(&self) -> Vec3 {
-        let cheap = MaterialSpec::Lambertian {
-            albedo: TextureSpec::solid(Color::new(0.5, 0.5, 0.5)),
-        }
-        .build();
-        self.shape.build(cheap).bounding_box().center()
+        self.shape.build().bounding_box().center()
     }
 
+    /// Build the object's material-agnostic world-space geometry (its transform
+    /// baked/decorated in). The material is bound separately by `build_world`.
     pub(crate) fn build(&self) -> Arc<dyn Intersect> {
         // A quad is transform-aware: bake the transform straight into a concrete
         // world-space quad, the same representation used for light sampling — one
@@ -130,11 +124,11 @@ impl ObjectSpec {
         // texture's rotation (it stores no orientation), and Box/Mesh can't
         // collapse to a single primitive.
         if let Shape::Quad { q, u, v } = &self.shape {
-            return Arc::new(placed_quad(*q, *u, *v, &self.transform, self.material.build()));
+            return Arc::new(placed_quad(*q, *u, *v, &self.transform));
         }
 
         let t = &self.transform;
-        let mut object = self.shape.build(self.material.build());
+        let mut object = self.shape.build();
 
         // Apply scale and rotation about the object's own centre so editing
         // feels in-place, rather than swinging it around the world origin.
@@ -197,16 +191,15 @@ impl Placement {
 /// this is exact for both intersection and light sampling — including under
 /// non-uniform scale (area = |u'×v'|) — and preserves UVs, since an affine map
 /// keeps the fractional position along each edge.
-pub(crate) fn placed_quad(q: Point3, u: Vec3, v: Vec3, transform: &Transform, material: Arc<dyn Material>) -> Quad {
+pub(crate) fn placed_quad(q: Point3, u: Vec3, v: Vec3, transform: &Transform) -> Quad {
     let pl = Placement::new(transform, q + (u + v) * 0.5);
-    Quad::new(pl.point(q), pl.vector(u), pl.vector(v), material)
+    Quad::new(pl.point(q), pl.vector(u), pl.vector(v))
 }
 
 #[cfg(test)]
 mod bake_equivalence_tests {
     use super::*;
     use crate::interval::Interval;
-    use crate::material::Lambertian;
     use crate::ray::Ray;
 
     /// A baked quad must intersect *identically* to the old decorator stack —
@@ -215,9 +208,6 @@ mod bake_equivalence_tests {
     /// path through `placed_quad`.
     #[test]
     fn baked_quad_matches_the_decorator_stack() {
-        let mat = || -> Arc<dyn Material> {
-            Arc::new(Lambertian::from_color(Color::new(0.2, 0.4, 0.6)))
-        };
         let q = Point3::new(-1.0, 0.0, -1.0);
         let u = Vec3::new(2.0, 0.0, 0.0);
         let v = Vec3::new(0.0, 0.0, 2.0);
@@ -228,12 +218,12 @@ mod bake_equivalence_tests {
         };
 
         // New path: baked concrete quad.
-        let baked: Arc<dyn Intersect> = Arc::new(placed_quad(q, u, v, &transform, mat()));
+        let baked: Arc<dyn Intersect> = Arc::new(placed_quad(q, u, v, &transform));
 
         // Old path: the decorator stack, built by hand exactly as the previous
         // `build()` did (rotate/scale about the base centre, then translate).
         let c = q + (u + v) * 0.5;
-        let base: Arc<dyn Intersect> = Arc::new(Quad::new(q, u, v, mat()));
+        let base: Arc<dyn Intersect> = Arc::new(Quad::new(q, u, v));
         let mut deco = Arc::new(Translate::new(base, -c)) as Arc<dyn Intersect>;
         deco = Arc::new(Scale::new(deco, transform.scale));
         deco = Arc::new(Rotate::new(deco, transform.rotate));

@@ -1,9 +1,9 @@
 use crate::interval::Interval;
-use crate::vec3::{Point3, Vec3};
+use crate::vec3::Vec3;
 use core::f32;
 use std::fmt;
 
-use crate::ray::{HitRecord, Intersect, Ray, AABB};
+use crate::ray::{GeoHit, Intersect, Ray, AABB};
 
 /// Number of buckets used per axis when evaluating split-plane candidates with
 /// binned SAH. 12 is the usual sweet spot: enough resolution to find good
@@ -200,7 +200,7 @@ impl<T: Intersect> BVH<T> {
     }
 
     #[inline(always)]
-    fn intersectBVH(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>> {
+    fn intersectBVH(&self, ray: &Ray, ray_t: &Interval) -> Option<GeoHit> {
         // Fixed-size stack (avoid Vec overhead)
         const STACK_SIZE: usize = 64;
         let mut stack: [usize; STACK_SIZE] = [0; STACK_SIZE];
@@ -209,7 +209,7 @@ impl<T: Intersect> BVH<T> {
         stack[top] = 0;
         top += 1;
 
-        let mut closest_hit: Option<HitRecord> = None;
+        let mut closest_hit: Option<GeoHit> = None;
         // Track current maximum t for interval
         let mut curr_max = ray_t.max;
         let min_t = ray_t.min;
@@ -479,7 +479,7 @@ impl<T: Intersect> Intersect for BVH<T> {
         return &self.nodes[0].aabb;
     }
 
-    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>> {
+    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<GeoHit> {
         return self.intersectBVH(ray, ray_t);
     }
 }
@@ -515,13 +515,8 @@ impl fmt::Display for BVHStats {
 #[cfg(test)]
 mod sample_tests {
     use super::*;
-    use crate::color::Color;
     use crate::geometry::Triangle;
-    use crate::material::Lambertian;
     use crate::vec3::Point3;
-    use rand::rngs::SmallRng;
-    use rand::{Rng, SeedableRng};
-    use std::sync::Arc;
 
     #[test]
     fn bvh_hits_interior_of_a_flat_axis_aligned_face() {
@@ -531,7 +526,6 @@ mod sample_tests {
         // A tessellated, axis-aligned, perfectly flat face (the z = 0 plane),
         // exactly like one side of an imported cube. Every triangle here is
         // coplanar, so interior BVH nodes get a zero-thickness bounding box.
-        let mat = Arc::new(Lambertian::from_color(Color::new(0.0, 0.0, 0.0)));
         let n = 16; // grid resolution
         let mut tris = Vec::new();
         for gy in 0..n {
@@ -539,8 +533,8 @@ mod sample_tests {
                 let (x0, y0) = (gx as f32, gy as f32);
                 let (x1, y1) = (x0 + 1.0, y0 + 1.0);
                 let p = |x: f32, y: f32| Point3::new(x, y, 0.0);
-                tris.push(Triangle::from_points(&p(x0, y0), &p(x1, y0), &p(x1, y1), mat.clone()));
-                tris.push(Triangle::from_points(&p(x0, y0), &p(x1, y1), &p(x0, y1), mat.clone()));
+                tris.push(Triangle::from_points(&p(x0, y0), &p(x1, y0), &p(x1, y1)));
+                tris.push(Triangle::from_points(&p(x0, y0), &p(x1, y1), &p(x0, y1)));
             }
         }
         let bvh = BVH::build(tris);

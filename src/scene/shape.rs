@@ -2,13 +2,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::color::Color;
-use crate::geometry::{MaterialOverride, Quad, RenderMesh, Sphere, Triangle, make_box};
-use crate::material::Material;
+use crate::geometry::{Quad, RenderMesh, Sphere, Triangle, make_box};
 use crate::ray::{Intersect, BVH};
 use crate::vec3::{Point3, Vec3};
-
-use super::{MaterialSpec, TextureSpec};
 
 /// The portable description of a triangle mesh: positions, triangle indices, and
 /// optional per-triangle UVs. Everything else (per-triangle geometry, BVH,
@@ -28,15 +24,13 @@ pub struct MeshData {
 
 impl MeshData {
     /// Build the runtime intersect handle (BVH) and the preview mesh from the
-    /// stored arrays. The triangles bake a placeholder material; the object's
-    /// real material is applied cheaply at world-build time by wrapping this
-    /// BVH in a [`MaterialOverride`] (see `Shape::build`), so editing a mesh's
-    /// material never rebuilds the (material-independent) BVH.
+    /// stored arrays. The geometry is material-agnostic — a [`World`]'s object
+    /// binds the material at the hit — so editing a mesh's material never
+    /// rebuilds the (material-independent) BVH, and the same handle can be shared
+    /// across objects with different materials.
+    ///
+    /// [`World`]: crate::world::World
     pub fn build(&self) -> (Arc<dyn Intersect>, Arc<RenderMesh>) {
-        let material = MaterialSpec::Lambertian {
-            albedo: TextureSpec::solid(Color::new(0.73, 0.73, 0.73)),
-        }
-        .build();
         let faces_usize: Vec<[usize; 3]> = self
             .faces
             .iter()
@@ -59,7 +53,6 @@ impl MeshData {
                         &vn[*j],
                         &vn[*k],
                         self.uvs[t],
-                        material.clone(),
                     )
                 } else {
                     Triangle::from_points_smooth(
@@ -69,7 +62,6 @@ impl MeshData {
                         &vn[*i],
                         &vn[*j],
                         &vn[*k],
-                        material.clone(),
                     )
                 }
             })
@@ -106,16 +98,17 @@ pub enum Shape {
 }
 
 impl Shape {
-    pub(crate) fn build(&self, material: Arc<dyn Material>) -> Arc<dyn Intersect> {
+    /// Build the material-agnostic runtime geometry for this shape. The object's
+    /// material is bound separately, at the hit, by the [`World`](crate::world::World).
+    pub(crate) fn build(&self) -> Arc<dyn Intersect> {
         match self {
-            Shape::Sphere { center, radius } => {
-                Arc::new(Sphere::stationary(*center, *radius, material))
-            }
-            Shape::Quad { q, u, v } => Arc::new(Quad::new(*q, *u, *v, material)),
-            Shape::Box { a, b } => Arc::new(make_box(*a, *b, material)),
-            // Wrap the prebuilt (material-agnostic) BVH so the object's material
-            // is applied at hit time — no per-edit BVH rebuild.
-            Shape::Mesh { object, .. } => Arc::new(MaterialOverride::new(object.clone(), material)),
+            Shape::Sphere { center, radius } => Arc::new(Sphere::stationary(*center, *radius)),
+            Shape::Quad { q, u, v } => Arc::new(Quad::new(*q, *u, *v)),
+            Shape::Box { a, b } => Arc::new(make_box(*a, *b)),
+            // The prebuilt, material-agnostic mesh BVH is shared directly — no
+            // per-object rebuild, and reusable across objects with different
+            // materials.
+            Shape::Mesh { object, .. } => object.clone(),
         }
     }
 
@@ -238,7 +231,8 @@ mod render_mesh_tests {
 mod mesh_serde_tests {
     use super::*;
     use crate::camera::CameraConfig;
-    use crate::scene::{build_world, ObjectSpec, Scene, Transform};
+    use crate::color::Color;
+    use crate::scene::{build_world, MaterialSpec, ObjectSpec, Scene, TextureSpec, Transform};
 
     fn tiny_mesh_scene() -> Scene {
         // A single triangle mesh + a sphere, so we cover both Mesh and a primitive.

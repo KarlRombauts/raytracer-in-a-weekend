@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::interval::Interval;
-use crate::ray::{HitRecord, Intersect, Ray, AABB};
+use crate::ray::{GeoHit, Intersect, Ray, AABB};
 use crate::vec3::Vec3;
 
 /// Translates a wrapped object by `offset`. Implemented by moving the ray in
@@ -25,7 +25,7 @@ impl Translate {
 }
 
 impl Intersect for Translate {
-    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>> {
+    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<GeoHit> {
         let moved = Ray::new_t(ray.origin - self.offset, ray.direction, ray.time);
         let mut hit = self.object.intersect(&moved, ray_t)?;
         hit.p += self.offset;
@@ -68,7 +68,7 @@ impl Scale {
 }
 
 impl Intersect for Scale {
-    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>> {
+    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<GeoHit> {
         let scaled = Ray::new_t(ray.origin * self.inv, ray.direction * self.inv, ray.time);
         let mut hit = self.object.intersect(&scaled, ray_t)?;
         hit.p = hit.p * self.scale;
@@ -132,7 +132,7 @@ impl Rotate {
 }
 
 impl Intersect for Rotate {
-    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>> {
+    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<GeoHit> {
         // World -> object using the inverse rotation.
         let rotated = Ray::new_t(
             apply(&self.inv, ray.origin),

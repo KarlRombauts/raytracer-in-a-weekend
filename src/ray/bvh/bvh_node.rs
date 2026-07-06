@@ -3,7 +3,7 @@ use std::{cmp::Ordering, sync::Arc};
 use crate::{
     group::IntersectGroup,
     interval::Interval,
-    ray::{HitRecord, Intersect, Ray, AABB},
+    ray::{GeoHit, Intersect, Ray, AABB},
     vec3::Vec3,
 };
 
@@ -103,7 +103,7 @@ impl Intersect for BVHNode {
     }
 
     #[inline(always)]
-    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>> {
+    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<GeoHit> {
         // 1) First do the trivial reject on this node’s box:
         if !self.bbox.intersect(ray, ray_t) {
             return None;

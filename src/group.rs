@@ -49,8 +49,8 @@ impl Intersect for IntersectGroup {
         &self.bbox
     }
 
-    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>> {
-        let mut closest_hit: Option<HitRecord> = None;
+    fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<GeoHit> {
+        let mut closest_hit: Option<GeoHit> = None;
         let mut closest_t = ray_t.max;
 
         for object in &self.objects {
