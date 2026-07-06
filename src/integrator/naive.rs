@@ -2,7 +2,7 @@ use core::f32;
 use rand::prelude::*;
 
 use crate::color::Color;
-use crate::group::IntersectGroup;
+use crate::world::World;
 use crate::integrator::common::{cosine_direction_from_uv, russian_roulette};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
@@ -18,7 +18,7 @@ pub struct Naive {
 }
 
 impl Integrator for Naive {
-    fn radiance(&self, ray: &Ray, world: &IntersectGroup, sample: SampleId, rng: &mut SmallRng) -> Color {
+    fn radiance(&self, ray: &Ray, world: &World, sample: SampleId, rng: &mut SmallRng) -> Color {
         let interval = Interval::new(0.001, f32::INFINITY);
         let mut color = Color::ZERO;
         let mut throughput = Color::ones();
@@ -69,7 +69,7 @@ impl Integrator for Naive {
 mod tests {
     use super::*;
     use crate::geometry::Quad;
-    use crate::group::{IntersectGroup, Light};
+    use crate::world::{Light, World};
     use crate::integrator::Mis;
     use crate::material::{DiffuseLight, Lambertian};
     use crate::ray::{Intersect, Ray};
@@ -98,8 +98,8 @@ mod tests {
         ))
     }
 
-    fn lit_world() -> IntersectGroup {
-        let mut w = IntersectGroup::new();
+    fn lit_world() -> World {
+        let mut w = World::new();
         w.add(floor());
         let light = ceiling_light();
         w.add(light.clone());
@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn empty_world_returns_the_flat_sky() {
         let naive = Naive { max_depth: 10 };
-        let mut world = IntersectGroup::new();
+        let mut world = World::new();
         world.sky = crate::integrator::Sky::Flat(Color::new(0.2, 0.4, 0.6));
         let ray = Ray::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0));
         let mut rng = SmallRng::seed_from_u64(1);

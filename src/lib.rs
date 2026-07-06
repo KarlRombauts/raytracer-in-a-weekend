@@ -15,6 +15,7 @@ pub mod scenes;
 pub mod texture;
 pub mod vec3;
 pub mod viewer;
+pub mod world;
 
 /// Native entry: open the interactive viewer on the default scene.
 #[cfg(not(target_arch = "wasm32"))]

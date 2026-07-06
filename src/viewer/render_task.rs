@@ -6,7 +6,7 @@ use web_time::Instant;
 use eframe::egui;
 
 use crate::camera::Camera;
-use crate::group::IntersectGroup;
+use crate::world::World;
 use crate::integrator::{build_integrator, Integrator};
 use crate::render::ProgressiveRenderer;
 use crate::scene::{build_world, Scene};
@@ -30,7 +30,7 @@ struct ActiveRender {
     renderer: ProgressiveRenderer,
     camera: Camera,
     integrator: Box<dyn Integrator>,
-    world: IntersectGroup,
+    world: World,
     target: u32,
     scale: u32,
     start: Instant,

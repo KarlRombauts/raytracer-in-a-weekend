@@ -3,7 +3,7 @@
 //! A **Scene** is the editable, serializable document — a camera plus a set of
 //! objects. Its plain-data *spec* types (textures, materials, shapes, objects)
 //! each know how to `build()` themselves into runtime machinery. The **World**
-//! (a `group::IntersectGroup`) is the acceleration-backed runtime structure the
+//! ([`crate::world::World`]) is the acceleration-backed runtime structure the
 //! path tracer walks; [`build_world`] is the single seam that assembles one from
 //! a Scene.
 //!

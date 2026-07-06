@@ -11,7 +11,7 @@ use rand::rngs::SmallRng;
 
 use crate::camera::config::{CameraConfig, IntegratorKind};
 use crate::color::Color;
-use crate::group::IntersectGroup;
+use crate::world::World;
 use crate::ray::Ray;
 use crate::sampling::SampleId;
 
@@ -21,7 +21,7 @@ use crate::sampling::SampleId;
 /// its miss-radiance and its importance-sampled light) is owned by the World, not
 /// the integrator — so both integrators see one source of truth.
 pub trait Integrator: Send + Sync {
-    fn radiance(&self, ray: &Ray, world: &IntersectGroup, sample: SampleId, rng: &mut SmallRng) -> Color;
+    fn radiance(&self, ray: &Ray, world: &World, sample: SampleId, rng: &mut SmallRng) -> Color;
 }
 
 /// Construct the selected integrator from the camera config.

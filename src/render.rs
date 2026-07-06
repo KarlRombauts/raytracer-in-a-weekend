@@ -4,7 +4,7 @@ use rayon::prelude::*;
 
 use crate::camera::Camera;
 use crate::color::{clamp_luminance, luminance, Color};
-use crate::group::IntersectGroup;
+use crate::world::World;
 use crate::integrator::Integrator;
 use crate::sampling::SampleId;
 
@@ -166,7 +166,7 @@ impl ProgressiveRenderer {
 
     /// Draw one more sample for every pixel that hasn't yet converged, in
     /// parallel. Converged pixels are skipped, so passes get cheaper over time.
-    pub fn add_pass(&mut self, camera: &Camera, integrator: &dyn Integrator, world: &IntersectGroup) {
+    pub fn add_pass(&mut self, camera: &Camera, integrator: &dyn Integrator, world: &World) {
         let width = self.width;
         let (rel, floor, warmup) = (self.rel, self.floor, self.warmup);
         let firefly = self.firefly_clamp;
@@ -198,7 +198,7 @@ impl ProgressiveRenderer {
     pub fn render_to_png(
         camera: &Camera,
         integrator: &dyn Integrator,
-        world: &IntersectGroup,
+        world: &World,
         firefly_clamp: f32,
         samples: u32,
     ) -> Vec<u8> {
@@ -449,7 +449,7 @@ mod adaptive_tests {
         let integrator = crate::integrator::build_integrator(&config);
         let camera = Camera::from(config);
         // The sky now lives in the World, not the integrator.
-        let mut world = IntersectGroup::new();
+        let mut world = World::new();
         world.sky = crate::integrator::Sky::Flat(bg);
         let mut r = ProgressiveRenderer::new(8, 8, f32::INFINITY);
 
@@ -500,7 +500,7 @@ mod tests {
         let config = CameraConfig::builder().image_width(8).aspect_ratio(1.0).build();
         let integrator = crate::integrator::build_integrator(&config);
         let camera = Camera::from(config);
-        let world = IntersectGroup::new();
+        let world = World::new();
         let bytes = ProgressiveRenderer::render_to_png(&camera, integrator.as_ref(), &world, f32::INFINITY, 4);
         assert_eq!(&bytes[..8], &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
         let img = image::load_from_memory(&bytes).expect("valid PNG");

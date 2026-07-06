@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use crate::geometry::Sphere;
-use crate::group::{IntersectGroup, Light};
 use crate::integrator::Sky;
 use crate::material::Material;
 use crate::ray::{AreaLight, Intersect};
 use crate::texture::env_map::load_cached;
+use crate::world::{Light, World};
 
 use super::{placed_quad, MaterialSpec, Placement, Scene, Shape, Transform};
 
@@ -62,8 +62,8 @@ fn bake_area_light(
 /// Assemble the renderable world from the scene description. Cheap enough to
 /// call on every edit (Mesh handles are shared, not rebuilt). Emissive objects
 /// are also registered in `world.lights` for direct light sampling.
-pub fn build_world(scene: &Scene) -> IntersectGroup {
-    let mut world = IntersectGroup::new();
+pub fn build_world(scene: &Scene) -> World {
+    let mut world = World::new();
     for obj in &scene.objects {
         if obj.hidden {
             continue;
@@ -151,7 +151,7 @@ mod visibility_tests {
 #[cfg(test)]
 mod light_tests {
     use crate::color::Color;
-    use crate::group::Light;
+    use crate::world::Light;
     use crate::scene::build_world;
     use crate::scenes::cornell_box;
 
@@ -171,7 +171,7 @@ mod light_tests {
 mod registration_tests {
     use crate::camera::CameraConfig;
     use crate::color::Color;
-    use crate::group::Light;
+    use crate::world::Light;
     use crate::scene::{build_world, MaterialSpec, ObjectSpec, Scene, Shape, TextureSpec, Transform};
     use crate::vec3::{Point3, Vec3};
 

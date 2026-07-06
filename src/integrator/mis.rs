@@ -2,7 +2,7 @@ use core::f32;
 use rand::prelude::*;
 
 use crate::color::Color;
-use crate::group::IntersectGroup;
+use crate::world::World;
 use crate::integrator::common::{cosine_direction_from_uv, power_heuristic, russian_roulette};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
@@ -18,7 +18,7 @@ pub struct Mis {
 }
 
 impl Integrator for Mis {
-    fn radiance(&self, ray: &Ray, world: &IntersectGroup, sample: SampleId, rng: &mut SmallRng) -> Color {
+    fn radiance(&self, ray: &Ray, world: &World, sample: SampleId, rng: &mut SmallRng) -> Color {
         let interval = Interval::new(0.001, f32::INFINITY);
         let mut color = Color::ZERO;
         let mut throughput = Color::ones();
@@ -131,7 +131,7 @@ impl Integrator for Mis {
 mod tests {
     use super::*;
     use crate::geometry::Quad;
-    use crate::group::IntersectGroup;
+    use crate::world::World;
     use crate::material::DiffuseLight;
     use crate::ray::Ray;
     use crate::vec3::{Point3, Vec3};
@@ -157,7 +157,7 @@ mod tests {
     fn empty_world_returns_the_flat_sky() {
         // A camera ray (throughput 1) that hits nothing returns the sky exactly.
         let mis = Mis { max_depth: 10 };
-        let mut world = IntersectGroup::new();
+        let mut world = World::new();
         world.sky = crate::integrator::Sky::Flat(Color::new(0.2, 0.4, 0.6));
         let ray = Ray::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0));
         let mut rng = SmallRng::seed_from_u64(1);
@@ -169,7 +169,7 @@ mod tests {
         // First hit is the emitter: emission is taken at full weight (camera ray),
         // scatter returns None, the path ends — a deterministic result.
         let mis = Mis { max_depth: 10 };
-        let mut world = IntersectGroup::new();
+        let mut world = World::new();
         world.add(ceiling_light());
         let ray = Ray::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
         let mut rng = SmallRng::seed_from_u64(1);
@@ -181,7 +181,7 @@ mod tests {
     fn max_depth_zero_traces_nothing() {
         // With no bounces the loop never runs, so not even the sky is gathered.
         let mis = Mis { max_depth: 0 };
-        let world = IntersectGroup::new();
+        let world = World::new();
         let ray = Ray::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0));
         let mut rng = SmallRng::seed_from_u64(1);
         assert_eq!(mis.radiance(&ray, &world, sample(), &mut rng), Color::ZERO);
@@ -195,7 +195,7 @@ mod tests {
 mod mixture_tests {
     use super::*;
     use crate::geometry::Quad;
-    use crate::group::{IntersectGroup, Light};
+    use crate::world::{Light, World};
     use crate::material::{DiffuseLight, Lambertian};
     use crate::ray::{Intersect, Ray};
     use crate::vec3::{Point3, Vec3};
@@ -231,7 +231,7 @@ mod mixture_tests {
 
     fn avg_floor_color(register_light: bool) -> f32 {
         let integ = integ();
-        let mut world = IntersectGroup::new();
+        let mut world = World::new();
         world.add(floor());
         let light = ceiling_light();
         world.add(light.clone());
@@ -266,7 +266,7 @@ mod mixture_tests {
 mod mis_tests {
     use super::*;
     use crate::geometry::Quad;
-    use crate::group::{IntersectGroup, Light};
+    use crate::world::{Light, World};
     use crate::material::{DiffuseLight, Lambertian};
     use crate::ray::{Intersect, Ray};
     use crate::vec3::{Point3, Vec3};
@@ -303,7 +303,7 @@ mod mis_tests {
     // Returns (mean, variance) of the .x channel over `n` samples.
     fn stats(register_light: bool, n: u32) -> (f32, f32) {
         let integ = integ();
-        let mut world = IntersectGroup::new();
+        let mut world = World::new();
         world.add(floor());
         let l = small_light();
         world.add(l.clone());
@@ -344,7 +344,7 @@ mod mis_tests {
 mod env_mis_tests {
     use super::*;
     use crate::geometry::Quad;
-    use crate::group::{IntersectGroup, Light};
+    use crate::world::{Light, World};
     use crate::integrator::{Naive, Sky};
     use crate::material::Lambertian;
     use crate::ray::{Intersect, Ray};
@@ -354,7 +354,7 @@ mod env_mis_tests {
     use rand::SeedableRng;
     use std::sync::Arc;
 
-    fn sunny_world() -> IntersectGroup {
+    fn sunny_world() -> World {
         let floor: Arc<dyn Intersect> = Arc::new(Quad::new(
             Point3::new(-50.0, 0.0, -50.0),
             Vec3::new(100.0, 0.0, 0.0),
@@ -367,7 +367,7 @@ mod env_mis_tests {
         let mut data = vec![[0.05f32; 3]; w * h];
         data[w + 8] = [200.0, 200.0, 200.0];
         let env = Arc::new(EnvMap::from_pixels(w, h, data));
-        let mut world = IntersectGroup::new();
+        let mut world = World::new();
         world.add(floor);
         world.sky = Sky::Env(env.clone());
         world.lights.push(Light::Env(env));
@@ -405,7 +405,7 @@ mod env_mis_tests {
     // A large bright sky region — the whole upper hemisphere (rows 0..4 of 8) —
     // so Naive converges too, and a tight mean match proves env-MIS is unbiased
     // (correct weights, no double-counting of the sky).
-    fn bright_dome_world() -> IntersectGroup {
+    fn bright_dome_world() -> World {
         let floor: Arc<dyn Intersect> = Arc::new(Quad::new(
             Point3::new(-50.0, 0.0, -50.0),
             Vec3::new(100.0, 0.0, 0.0),
@@ -420,7 +420,7 @@ mod env_mis_tests {
             }
         }
         let env = Arc::new(EnvMap::from_pixels(w, h, data));
-        let mut world = IntersectGroup::new();
+        let mut world = World::new();
         world.add(floor);
         world.sky = Sky::Env(env.clone());
         world.lights.push(Light::Env(env));
