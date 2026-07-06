@@ -1,7 +1,6 @@
 use crate::interval::Interval;
 use crate::vec3::Vec3;
 use core::f32;
-use std::fmt;
 
 use crate::ray::{GeoHit, Intersect, Ray, AABB};
 
@@ -91,63 +90,77 @@ enum BuildNode {
         first: u32,
         count: u32,
         bounds: Bounds,
-        depth: u8,
     },
     Inner {
         left: Box<BuildNode>,
         right: Box<BuildNode>,
         bounds: Bounds,
         axis: u8,
-        depth: u8,
     },
 }
 
+/// Leaf flag — the top bit of [`BVHFlatNode::meta`]. Set on leaves (whose low
+/// bits hold the primitive count), clear on interior nodes (whose low bits hold
+/// the split axis). Primitive counts and axes are tiny, so they never reach it.
+const LEAF_BIT: u32 = 1 << 31;
+
+/// A flattened BVH node, packed to 32 bytes so two fit in a 64-byte cache line.
+///
+/// The left child of an interior node is always the next node in the array
+/// (`idx + 1`): [`flatten`] emits the whole left subtree immediately after the
+/// parent, so the left index is redundant and derived, not stored. Only the right
+/// child (interior) or first-primitive index (leaf) needs a slot — `offset`.
+/// `meta` packs the leaf flag with either the split axis or the primitive count.
 pub struct BVHFlatNode {
-    pub left: u32,
-    pub right: u32,
-    pub aabb: AABB,
-    pub first_primitive: u32,
-    pub primitive_count: u32,
-    pub split_axis: u8,
-    pub depth: u8,
+    aabb: AABB,
+    /// Interior: right-child index. Leaf: first-primitive index.
+    offset: u32,
+    /// Bit 31 = leaf. Interior: low bits = split axis (0/1/2). Leaf: low 31 bits =
+    /// primitive count.
+    meta: u32,
 }
 
 impl BVHFlatNode {
-    pub fn is_leaf(&self) -> bool {
-        self.left == 0 && self.right == 0
+    /// An interior node with the given bounds, right-child index, and split axis
+    /// (0/1/2). Its left child is implicit — the next node in the array.
+    fn interior(aabb: AABB, right: u32, axis: u8) -> Self {
+        BVHFlatNode { aabb, offset: right, meta: axis as u32 }
     }
 
-    pub fn get_primative_bounds(&self) -> (usize, usize) {
-        let start = self.first_primitive as usize;
-        let end = (self.first_primitive + self.primitive_count) as usize;
-        (start, end)
+    /// A leaf over `count` primitives starting at `first`.
+    fn leaf(aabb: AABB, first: u32, count: u32) -> Self {
+        debug_assert!(count < LEAF_BIT, "leaf primitive count too large to pack");
+        BVHFlatNode { aabb, offset: first, meta: LEAF_BIT | count }
     }
 
-    pub fn get_split_axis(&self) -> (u32, f32) {
-        let extent = self.aabb.max_vec() - self.aabb.min_vec();
-        let mut axis = 0;
-        if extent.y > extent.x {
-            axis = 1;
-        }
-        if extent.z > extent[axis] {
-            axis = 2;
-        }
-        let split_pos: f32 = self.aabb.min_vec()[axis] + extent[axis] * 0.5;
-        return (axis, split_pos);
+    fn is_leaf(&self) -> bool {
+        self.meta & LEAF_BIT != 0
+    }
+
+    /// Right-child index (interior nodes only; the left child is `idx + 1`).
+    fn right_child(&self) -> usize {
+        self.offset as usize
+    }
+
+    /// Split axis 0/1/2 (interior nodes only).
+    fn split_axis(&self) -> u32 {
+        self.meta & !LEAF_BIT
+    }
+
+    /// The `[start, end)` primitive range (leaf nodes only).
+    fn leaf_range(&self) -> (usize, usize) {
+        let start = self.offset as usize;
+        let count = (self.meta & !LEAF_BIT) as usize;
+        (start, start + count)
     }
 }
 
 impl Default for BVHFlatNode {
     fn default() -> Self {
-        BVHFlatNode {
-            left: 0,
-            right: 0,
-            depth: 0,
-            aabb: AABB::EMPTY,
-            first_primitive: 0,
-            primitive_count: 0,
-            split_axis: 0,
-        }
+        // An empty leaf: the single node of an empty BVH (tests its empty AABB,
+        // iterates no primitives, misses cleanly), and a safe placeholder for a
+        // slot `flatten` is about to overwrite.
+        BVHFlatNode::leaf(AABB::EMPTY, 0, 0)
     }
 }
 
@@ -170,33 +183,13 @@ impl<T: Intersect> BVH<T> {
         //    task owns a disjoint slice, so no synchronisation is needed.
         let root = build_node(&mut primitives, 0, 0);
 
-        // 2. Flatten into the contiguous node array the traversal walks. A leaf
-        //    is encoded as `left == right == 0` (index 0 is the root, so it can
-        //    never be a real child), exactly as before.
+        // 2. Flatten into the contiguous node array the traversal walks. Each
+        //    interior node's left child is the next node in the array, so only the
+        //    right child index is stored (see `flatten` / `BVHFlatNode`).
         let mut nodes = Vec::with_capacity(2 * primitives.len().max(1));
         flatten(&root, &mut nodes);
 
         BVH { primitives, nodes }
-    }
-
-    pub fn get_stats(&self) -> BVHStats {
-        let leaves = self.nodes.iter().filter(|x| x.is_leaf());
-        let depths = leaves.clone().map(|x| x.depth as u32);
-        let prim_counts = leaves.clone().map(|x| x.primitive_count);
-        let leaf_count = leaves.clone().count();
-
-        BVHStats {
-            total_prim_count: self.primitives.len() as u32,
-            node_count: self.nodes.len() as u32,
-            leaf_count: leaf_count as u32,
-            max_depth: depths.clone().max().unwrap(),
-            min_depth: depths.clone().min().unwrap(),
-            avg_depth: depths.clone().sum::<u32>() as f32 / leaf_count as f32,
-
-            max_prim_count: prim_counts.clone().max().unwrap(),
-            min_prim_count: prim_counts.clone().min().unwrap(),
-            avg_prim_count: prim_counts.clone().sum::<u32>() as f32 / leaf_count as f32,
-        }
     }
 
     /// Closest hit along `ray` within `ray_t`, together with the primitive that
@@ -220,7 +213,8 @@ impl<T: Intersect> BVH<T> {
 
         while top > 0 {
             top -= 1;
-            let node = &nodes[stack[top]];
+            let node_idx = stack[top];
+            let node = &nodes[node_idx];
             #[cfg(feature = "bvh-stats")]
             super::stats::count_box();
             if !node.aabb.intersect(ray, &Interval { min: min_t, max: curr_max }) {
@@ -228,7 +222,7 @@ impl<T: Intersect> BVH<T> {
             }
 
             if node.is_leaf() {
-                let (start, end) = node.get_primative_bounds();
+                let (start, end) = node.leaf_range();
                 for prim in &prims[start..end] {
                     #[cfg(feature = "bvh-stats")]
                     super::stats::count_primitive();
@@ -238,27 +232,22 @@ impl<T: Intersect> BVH<T> {
                     }
                 }
             } else {
-                let axis = node.split_axis as usize;
-                let left = node.left as usize;
-                let right = node.right as usize;
-                if dirs[axis as u32] >= 0.0 {
-                    if right != 0 {
-                        stack[top] = right;
-                        top += 1;
-                    }
-                    if left != 0 {
-                        stack[top] = left;
-                        top += 1;
-                    }
+                // Interior nodes always have both children: the left is the next
+                // node (idx + 1), the right is stored. Push the farther child first
+                // so the nearer is popped and tested first (front-to-back).
+                let axis = node.split_axis();
+                let left = node_idx + 1;
+                let right = node.right_child();
+                if dirs[axis] >= 0.0 {
+                    stack[top] = right;
+                    top += 1;
+                    stack[top] = left;
+                    top += 1;
                 } else {
-                    if left != 0 {
-                        stack[top] = left;
-                        top += 1;
-                    }
-                    if right != 0 {
-                        stack[top] = right;
-                        top += 1;
-                    }
+                    stack[top] = left;
+                    top += 1;
+                    stack[top] = right;
+                    top += 1;
                 }
             }
         }
@@ -286,7 +275,6 @@ fn build_node<T: Intersect>(prims: &mut [T], offset: u32, depth: u8) -> BuildNod
         first: offset,
         count,
         bounds,
-        depth,
     };
 
     if count <= 2 || depth >= MAX_DEPTH {
@@ -331,7 +319,6 @@ fn build_node<T: Intersect>(prims: &mut [T], offset: u32, depth: u8) -> BuildNod
         right: Box::new(right),
         bounds: node_bounds,
         axis: axis as u8,
-        depth,
     }
 }
 
@@ -418,40 +405,16 @@ fn flatten(node: &BuildNode, nodes: &mut Vec<BVHFlatNode>) -> u32 {
     nodes.push(BVHFlatNode::default()); // reserve this slot
 
     match node {
-        BuildNode::Leaf {
-            first,
-            count,
-            bounds,
-            depth,
-        } => {
-            nodes[idx] = BVHFlatNode {
-                left: 0,
-                right: 0,
-                aabb: bounds.to_aabb(),
-                first_primitive: *first,
-                primitive_count: *count,
-                split_axis: 0,
-                depth: *depth,
-            };
+        BuildNode::Leaf { first, count, bounds } => {
+            nodes[idx] = BVHFlatNode::leaf(bounds.to_aabb(), *first, *count);
         }
-        BuildNode::Inner {
-            left,
-            right,
-            bounds,
-            axis,
-            depth,
-        } => {
+        BuildNode::Inner { left, right, bounds, axis } => {
+            // Emit the left subtree first, so the left child is always `idx + 1`
+            // and needn't be stored; then the right subtree, whose root index is.
             let l = flatten(left, nodes);
+            debug_assert_eq!(l, idx as u32 + 1, "left child must be the next node");
             let r = flatten(right, nodes);
-            nodes[idx] = BVHFlatNode {
-                left: l,
-                right: r,
-                aabb: bounds.to_aabb(),
-                first_primitive: 0,
-                primitive_count: 0,
-                split_axis: *axis,
-                depth: *depth,
-            };
+            nodes[idx] = BVHFlatNode::interior(bounds.to_aabb(), r, *axis);
         }
     }
 
@@ -474,39 +437,19 @@ impl<T: Intersect> Intersect for BVH<T> {
     }
 }
 
-pub struct BVHStats {
-    total_prim_count: u32,
-    node_count: u32,
-    leaf_count: u32,
-    max_depth: u32,
-    min_depth: u32,
-    avg_depth: f32,
-    max_prim_count: u32,
-    min_prim_count: u32,
-    avg_prim_count: f32,
-}
-
-impl fmt::Display for BVHStats {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Triangles: {}", self.total_prim_count)?;
-        writeln!(f, "Node Count: {}", self.node_count)?;
-        writeln!(f, "Leaf Count: {}", self.leaf_count)?;
-        writeln!(f, "Leaf Depth:")?;
-        writeln!(f, "  - Min: {}", self.min_depth)?;
-        writeln!(f, "  - Max: {}", self.max_depth)?;
-        writeln!(f, "  - Mean: {:.3}", self.avg_depth)?;
-        writeln!(f, "Leaf Tris:")?;
-        writeln!(f, "  - Min: {}", self.min_prim_count)?;
-        writeln!(f, "  - Max: {}", self.max_prim_count)?;
-        writeln!(f, "  - Mean: {:.3}", self.avg_prim_count)
-    }
-}
-
 #[cfg(test)]
 mod sample_tests {
     use super::*;
     use crate::geometry::Triangle;
     use crate::vec3::Point3;
+
+    #[test]
+    fn flat_node_is_two_per_cache_line() {
+        // 32 bytes so two nodes fit in one 64-byte cache line — the point of the
+        // compaction. The AABB is 24 bytes; the child/primitive/axis/leaf data
+        // packs into the remaining 8.
+        assert_eq!(std::mem::size_of::<BVHFlatNode>(), 32);
+    }
 
     #[test]
     fn bvh_hits_interior_of_a_flat_axis_aligned_face() {
