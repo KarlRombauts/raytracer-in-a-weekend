@@ -51,6 +51,19 @@ across five helpers in the same file; a real module seam concentrates that.
 Candidate 4 is upgraded from "make the World deep" to a concrete goal:
 **make the runtime World hold Blender-style objects that own their material.**
 
+> **Progress (thread ordering: 1 material → 2 lights → 3 top-BVH):**
+> - ✅ **Thread 1 — object-level material ownership.** Done, committed
+>   (`GeoHit`/`HitRecord` split, runtime `Object`, `IntersectGroup`→`World` split,
+>   `MaterialOverride`/placeholder deleted). Reviewed via `/simplify`.
+> - ✅ **Thread 2 — one light source of truth.** Done, committed. An emissive
+>   object owns its `light: Option<Arc<dyn AreaLight>>` handle (single
+>   registration); the env light derives from `sky`; the `Light` enum is deleted.
+>   Render pin stayed bit-identical. **Not yet `/simplify`-reviewed** (was on a
+>   run) — worth a review pass.
+> - ⏭️ **Thread 3 — top-level BVH** over the World's objects (currently a flat
+>   linear loop in `World::intersect`). Independent perf change. Then the
+>   near-term **multi-material import** candidate.
+
 - Today material lives *on the primitive* (`Triangle`/`Sphere`/`Quad` each store
   `Arc<dyn Material>` — the RTOW convention). For meshes this misfires: N
   triangles all store the *same* material with no cheap way to swap it, so
