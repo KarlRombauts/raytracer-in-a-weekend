@@ -1,6 +1,13 @@
 # PRD: BVH benchmark harness
 
-Status: ready-for-agent
+Status: done
+
+> **Done and committed** (`16ac39b` counter core, `0d1240e` benches+example,
+> `767d8e9` /simplify). Test-first `stats` counter behind the zero-cost
+> `bvh-stats` feature; `benches/bvh.rs` (traversal per mesh×orientation, build,
+> top-level, macro render) + `examples/bvh_stats.rs` diagnostic, sharing
+> `src/bench_support.rs`. Render pin bit-identical. Ready to measure the first
+> optimization — 32-byte node compaction (bit-identical per RESEARCH.md).
 
 > A measurement harness that must exist **before** we touch BVH performance, so
 > every optimization (node compaction, traversal culling, wide BVH, any-hit
