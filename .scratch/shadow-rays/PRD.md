@@ -103,12 +103,42 @@ for the env light, ∞. The solid-angle `pdf` reuses the existing `pdf_value`
 machinery. Radiance is the light's emission — currently a constant per emissive
 object (emission is Solid-only), so it can be read from the object's material.
 
-**The marginal pdf stays; the estimator gets standard.** MIS against the BSDF
-still needs the pdf of the whole light-sampling strategy at `wi` — the marginal
-`light_pdf` (`pmf × per-light solid-angle pdf`, summed). That machinery is kept;
-what changes is that radiance comes from the sampled light (not a closest-hit
-read) and the ray is a bounded occlusion test. Same *expectation* as today's
-estimator; different per-sample values → the render changes.
+**CORRECTION (found during Stage-2 implementation): the marginal pdf CANNOT
+stay — it must become per-light everywhere.** The original sketch above ("keep
+the marginal `light_pdf`") is *wrong* and would be **biased**. Worked through:
+
+- Today's estimator (A) samples a *direction* from the light mixture and reads
+  the *closest surface's* emission `L_i(wi)`, weighted by the marginal pdf
+  `P(wi) = Σ_j (1/n)·p_j(wi)`. Unbiased — but it needs `L_i(wi)`, which only a
+  *closest-hit* can give. Occlusion (a boolean) can't feed it.
+- To use occlusion you must switch to estimator (B): pick light `k`, evaluate
+  *its* emission `L_k` times visibility `V_k`. That is unbiased **only** with the
+  *per-light* pdf `(1/n)·p_k(wi)` — because `Σ_k L_k·V_k = L_i` (only the closest
+  light is visible), the `p_k` cancels per term. Pairing per-light *radiance*
+  `L_k·V_k` with the *marginal* pdf gives a weighted average of `L_k`, not `L_i`
+  → **biased**.
+- MIS then requires *partition of unity*: the light-branch weight and the
+  BSDF-branch weight at a given direction must use the **same** light pdf. So the
+  emitter-hit branch and the env-escape branch must *also* switch from the
+  marginal to the per-light pdf of the *specific* light/env that was hit
+  `(1/n)·p_hit(dir)`.
+
+**Consequences (the true Stage-2 scope):**
+1. `sample_li` returns per-light pdf `(1/n)·p_k(wi)`, `dist`, `radiance = L_k`.
+2. **The emitter-hit MIS branch must know *which* light it hit**, to compute
+   `(1/n)·p_that_light(dir)`. So `HitRecord` gains the hit object's area-light
+   handle (`Option<&dyn AreaLight>`), populated by `World::intersect`; an
+   unregistered/BSDF-only emitter reports `None` → light-pdf 0 → full BSDF weight
+   (matches today).
+3. A per-light env-pdf accessor `World::env_pdf(dir) = (1/n)·direction_pdf(dir)`
+   for the env-escape branch.
+4. **All three** MIS branches (NEE, emitter-hit, env-escape) are rewritten
+   consistently on the per-light pdf. The marginal `light_pdf` becomes unused.
+
+This is a genuine estimator reformulation with real bias risk, gated hard by the
+MIS-vs-Naive unbiasedness tests — not the "keep the marginal, swap in occlusion"
+change the sketch implied. Same converged image (both unbiased); the render is
+deliberately re-pinned.
 
 **Stage boundary is a real seam.** Stage 1 ships and is validated on its own
 (bit-identical) before Stage 2 touches the integrator. The deliberate render
