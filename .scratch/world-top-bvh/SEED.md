@@ -1,6 +1,22 @@
 # Resume breadcrumb: thread 3 — top-level BVH over the World
 
-Status: ready-for-agent
+Status: done
+
+**Done and committed** (`8492219` feat + `b084187` /simplify). Two-level TLAS/BLAS
+BVH over objects: `BVH::closest_hit` winner-returning query, `ObjRef` proxy
+(stable scene-order index), immutable `World::new(objects, sky)`, BVH-backed
+`World::intersect`. Guarded by a new BVH-vs-linear equivalence test and the
+unchanged render pin `0x9436e82cbff110f1`. The /simplify pass folded the
+duplicated traversal so `closest_hit` is the BVH's single descent.
+
+All three threads of candidate 4 (object-level material, one light source of
+truth, top-level BVH) are now done. Next up (per
+`.scratch/scene-worldbuilder-split/SEED.md`): the multi-material import
+candidate, then the camera-as-object / render-settings-split editor track.
+
+---
+
+_Original handoff (kept for reference):_
 
 Handoff from a context-limited session. Threads 1 & 2 of candidate 4 are **done
 and committed**; thread 3 is **designed (PRD written) but not implemented**.
