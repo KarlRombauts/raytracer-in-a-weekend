@@ -1,5 +1,7 @@
 # Rust Path Tracer
 
+**▶ Live demo: https://raytracer-253.netlify.app** (runs in the browser via threaded WebAssembly)
+
 A multithreaded path tracer in Rust that grew out of the *Ray Tracing in a Weekend*
 book into a full interactive renderer. It ships an egui-based viewer with orbit
 camera and transform gizmo, a BVH-accelerated core, a range of materials and

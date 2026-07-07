@@ -1,31 +1,24 @@
 # Netlify configuration for the threaded-WebAssembly viewer.
 #
-# The single load-bearing part is the [[headers]] block: this app uses
-# `SharedArrayBuffer` (multithreaded rendering via wasm-bindgen-rayon), which the
-# browser only enables when the page is *cross-origin isolated* — i.e. served with
-# COOP + COEP. GitHub Pages can't set headers, which is why the demo is on Netlify.
+# The load-bearing part is the [[headers]] block: this app uses `SharedArrayBuffer`
+# (multithreaded rendering via wasm-bindgen-rayon), which the browser only enables
+# on a *cross-origin isolated* page — i.e. served with COOP + COEP. GitHub Pages
+# can't set headers, which is why the demo is on Netlify.
 #
 # ── Deploying ────────────────────────────────────────────────────────────────
 # This is a nightly + `-Z build-std` threaded-wasm build, which is awkward to run
-# in Netlify's CI. The reliable path is to build locally and deploy the folder:
+# in Netlify's CI. So the demo is deployed from a locally-built bundle:
 #
-#     just web                      # builds ./dist  (nightly + build-std)
-#     netlify deploy --prod --dir dist
+#     just web                                 # builds ./dist (nightly + build-std)
+#     netlify deploy --prod --dir dist         # uploads the prebuilt dir
 #
-# (netlify.toml is read from the repo root, so the headers below still apply to a
-# --dir deploy.) The [build] command below is a best-effort for connecting the
-# repo to Netlify's continuous deploy; it may need tuning for the build image and
-# the 15-minute free-tier limit (build-std + fat-LTO is heavy).
+# netlify.toml is read from the repo root, so the headers below apply to a --dir
+# deploy. No [build] command here on purpose — otherwise `netlify deploy` runs it
+# locally. (To wire up continuous deploy from git instead, add a build command
+# that installs nightly + rust-src + trunk and runs the build-std trunk build.)
 
 [build]
   publish = "dist"
-  # Pinned to match local: trunk 0.21.14, nightly with rust-src for build-std.
-  command = """
-    curl -sSfL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xzf - -C "$HOME/.cargo/bin" && \
-    rustup toolchain install nightly --profile minimal --component rust-src && \
-    rustup target add --toolchain nightly wasm32-unknown-unknown && \
-    RUSTUP_TOOLCHAIN=nightly CARGO_UNSTABLE_BUILD_STD="panic_abort,std" trunk build --release
-  """
 
 # Cross-origin isolation — required for SharedArrayBuffer / threaded wasm.
 [[headers]]
