@@ -22,6 +22,20 @@ pub const TEXT_DIM: Color32 = Color32::from_rgb(0x6b, 0x70, 0x79);
 pub const ACCENT: Color32 = Color32::from_rgb(0x4d, 0x84, 0xe6);
 pub const SELECTION: Color32 = Color32::from_rgb(0xef, 0x8a, 0x3c);
 
+/// Destructive-action red: glyph/text on hover, and its darker border.
+pub const DANGER: Color32 = Color32::from_rgb(0xd9, 0x70, 0x70);
+pub const DANGER_BORDER: Color32 = Color32::from_rgb(0x7a, 0x3a, 0x3a);
+
+/// The dark "pill" surface — hover fill for icon buttons and the dark pill
+/// button fill (was the repeated `0x22,0x25,0x2a` literal), plus its border.
+pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x22, 0x25, 0x2a);
+pub const BORDER_PILL: Color32 = Color32::from_rgb(0x33, 0x37, 0x3d);
+
+/// A soft red-tinted fill for a hovered destructive control.
+pub fn danger_soft() -> Color32 {
+    Color32::from_rgba_unmultiplied(0xd9, 0x70, 0x70, 28)
+}
+
 pub const AXIS_X: Color32 = Color32::from_rgb(0xc0, 0x59, 0x4f);
 pub const AXIS_Y: Color32 = Color32::from_rgb(0x5a, 0x9e, 0x5a);
 pub const AXIS_Z: Color32 = Color32::from_rgb(0x4f, 0x7f, 0xc0);
