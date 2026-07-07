@@ -146,9 +146,11 @@ pub fn show_outliner(
                 egui::vec2(ui.available_width(), row_h),
                 egui::Sense::hover(),
             );
-            let hovered = ui
-                .interact(row_rect, ui.id().with(("mesh_row_hover", file)), egui::Sense::hover())
-                .hovered();
+            // Geometric hover test: the click interact registered below (on top of
+            // the labels) would otherwise steal `hovered()` from a hover interact
+            // here, so the highlight would never show. Checking the pointer against
+            // the rect directly can't be stolen.
+            let hovered = ui.ctx().pointer_hover_pos().is_some_and(|p| row_rect.contains(p));
             if hovered {
                 ui.painter().rect_filled(
                     row_rect,
