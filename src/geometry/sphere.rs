@@ -159,6 +159,15 @@ impl AreaLight for Sphere {
         let cos_theta_max = (1.0 - r2 / d2).sqrt();
         1.0 / (2.0 * std::f32::consts::PI * (1.0 - cos_theta_max))
     }
+
+    fn sample_toward(&self, origin: Point3, u: f32, v: f32) -> AreaLightSample {
+        let wi = self.sample_dir(origin, u, v);
+        // Distance (ray-parameter) to the near surface along `wi`.
+        let t_light = self
+            .intersect(&Ray::new(origin, wi), &Interval::new(1e-4, f32::INFINITY))
+            .map_or(f32::INFINITY, |h| h.t);
+        AreaLightSample { wi, t_light, pdf: self.pdf_value(origin, wi) }
+    }
 }
 
 #[cfg(test)]

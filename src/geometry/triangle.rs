@@ -1,5 +1,5 @@
 use crate::{
-    ray::{surface_pdf_value, AreaLight, GeoHit, Intersect, Ray, AABB},
+    ray::{surface_pdf_value, surface_sample_toward, AreaLight, AreaLightSample, GeoHit, Intersect, Ray, AABB},
     vec3::{Point3, Vec3},
 };
 
@@ -229,6 +229,10 @@ impl AreaLight for Triangle {
 
     fn pdf_value(&self, origin: Point3, dir: Vec3) -> f32 {
         surface_pdf_value(self, self.area(), origin, dir)
+    }
+
+    fn sample_toward(&self, origin: Point3, u: f32, v: f32) -> AreaLightSample {
+        surface_sample_toward(self.sample_point(u, v), self.normal, self.area(), origin)
     }
 }
 

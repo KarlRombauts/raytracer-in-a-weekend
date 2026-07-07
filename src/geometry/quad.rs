@@ -1,6 +1,6 @@
 use crate::{
     interval::Interval,
-    ray::{surface_pdf_value, AreaLight, GeoHit, Intersect, Ray, AABB},
+    ray::{surface_pdf_value, surface_sample_toward, AreaLight, AreaLightSample, GeoHit, Intersect, Ray, AABB},
     vec3::{Point3, Vec3},
 };
 
@@ -106,6 +106,10 @@ impl AreaLight for Quad {
     fn pdf_value(&self, origin: Point3, dir: Vec3) -> f32 {
         surface_pdf_value(self, self.area(), origin, dir)
     }
+
+    fn sample_toward(&self, origin: Point3, u: f32, v: f32) -> AreaLightSample {
+        surface_sample_toward(self.sample_point(u, v), self.normal, self.area(), origin)
+    }
 }
 
 #[cfg(test)]
@@ -140,6 +144,30 @@ mod area_pdf_tests {
         // Pointing away from the overhead quad never hits it.
         let p = overhead_quad().pdf_value(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, -2.0, 0.0));
         assert_eq!(p, 0.0);
+    }
+
+    #[test]
+    fn sample_toward_agrees_with_pdf_and_lands_on_the_quad() {
+        let q = overhead_quad(); // y = 2 plane, x,z ∈ [-1,1]
+        let origin = Point3::new(0.3, 0.0, -0.2);
+        let s = q.sample_toward(origin, 0.6, 0.4);
+
+        // The sampled point lies on the quad, at ray-parameter t_light along wi.
+        let point = origin + s.wi * s.t_light;
+        assert!((point.y - 2.0).abs() < 1e-5, "point should be on the y=2 plane: {point:?}");
+        assert!(
+            (-1.0..=1.0).contains(&point.x) && (-1.0..=1.0).contains(&point.z),
+            "point should be within the quad bounds: {point:?}"
+        );
+        // The fused kernel's pdf equals the standalone (intersect-based) pdf_value
+        // for the same direction — same solid-angle density, computed two ways.
+        assert!(
+            (s.pdf - q.pdf_value(origin, s.wi)).abs() < 1e-4,
+            "sample_toward pdf {} vs pdf_value {}",
+            s.pdf,
+            q.pdf_value(origin, s.wi)
+        );
+        assert!(s.pdf > 0.0);
     }
 }
 
