@@ -114,12 +114,12 @@ impl Sphere {
     fn area(&self) -> f32 {
         4.0 * std::f32::consts::PI * self.radius * self.radius
     }
-}
 
-impl AreaLight for Sphere {
     /// A direction from `origin` toward this sphere, sampled uniformly over the
     /// solid angle (cone) the sphere subtends — the importance-sampling match for
     /// a sphere light. Falls back to a uniform direction when `origin` is inside.
+    /// Inherent (not part of [`AreaLight`]): only this sphere's own `sample_toward`
+    /// needs the raw direction; the trait exposes the fused sample instead.
     fn sample_dir(&self, origin: Point3, u: f32, v: f32) -> Vec3 {
         let center = self.center.at(0.0);
         let to_center = center - origin;
@@ -136,10 +136,31 @@ impl AreaLight for Sphere {
         (phi.cos() * sin_theta) * ub + (phi.sin() * sin_theta) * vb + cos_theta * w
     }
 
-    /// Solid-angle PDF of cone sampling toward this sphere (see `random_dir`).
+    /// The uniform solid-angle density of a direction that *hits* this sphere from
+    /// `origin`: `1/(4π)` when `origin` is inside (every direction hits), else the
+    /// subtended cone's constant `1/(2π(1 - cosθ_max))`. The caller confirms the
+    /// hit; this only computes the density. Shared by `pdf_value` and the fused
+    /// `sample_toward` so the formula lives in one place.
+    fn cone_pdf(&self, origin: Point3) -> f32 {
+        let center = self.center.at(0.0);
+        let d2 = (center - origin).length_squared();
+        let r2 = self.radius * self.radius;
+        if d2 <= r2 {
+            return 1.0 / (4.0 * std::f32::consts::PI);
+        }
+        let cos_theta_max = (1.0 - r2 / d2).sqrt();
+        1.0 / (2.0 * std::f32::consts::PI * (1.0 - cos_theta_max))
+    }
+}
+
+impl AreaLight for Sphere {
+    /// Solid-angle PDF of cone sampling toward this sphere (see [`sample_dir`]).
     /// Uniform within the cone the sphere subtends from `origin`, so it's a
     /// constant `1 / (2π(1 - cosθ_max))` for any direction that hits the sphere,
-    /// and 0 for directions that miss.
+    /// and 0 for directions that miss. Kept for the emitter-hit MIS branch, whose
+    /// direction is an arbitrary BSDF bounce that must be intersect-tested.
+    ///
+    /// [`sample_dir`]: Sphere::sample_dir
     fn pdf_value(&self, origin: Point3, dir: Vec3) -> f32 {
         let ray = Ray::new(origin, dir);
         if self
@@ -148,25 +169,25 @@ impl AreaLight for Sphere {
         {
             return 0.0;
         }
-        let center = self.center.at(0.0);
-        let d2 = (center - origin).length_squared();
-        let r2 = self.radius * self.radius;
-        if d2 <= r2 {
-            // Origin inside the sphere: every direction hits, distributed
-            // uniformly over the full sphere of directions.
-            return 1.0 / (4.0 * std::f32::consts::PI);
-        }
-        let cos_theta_max = (1.0 - r2 / d2).sqrt();
-        1.0 / (2.0 * std::f32::consts::PI * (1.0 - cos_theta_max))
+        self.cone_pdf(origin)
     }
 
+    /// Fused sample: one intersect yields the shadow-ray distance `t_light` and
+    /// confirms the cone sample hit; the cone pdf is the analytic constant, so no
+    /// second intersect is needed (the retired path called `pdf_value` here,
+    /// doubling the ray/surface tests). A grazing cone sample can miss numerically
+    /// → `pdf = 0`, matching [`pdf_value`](Self::pdf_value)'s miss case, so the
+    /// estimator skips it.
     fn sample_toward(&self, origin: Point3, u: f32, v: f32) -> AreaLightSample {
         let wi = self.sample_dir(origin, u, v);
-        // Distance (ray-parameter) to the near surface along `wi`.
-        let t_light = self
-            .intersect(&Ray::new(origin, wi), &Interval::new(1e-4, f32::INFINITY))
-            .map_or(f32::INFINITY, |h| h.t);
-        AreaLightSample { wi, t_light, pdf: self.pdf_value(origin, wi) }
+        match self.intersect(&Ray::new(origin, wi), &Interval::new(0.001, f32::INFINITY)) {
+            None => AreaLightSample { wi, t_light: f32::INFINITY, pdf: 0.0 },
+            Some(hit) => AreaLightSample {
+                wi,
+                t_light: hit.t,
+                pdf: self.cone_pdf(origin),
+            },
+        }
     }
 }
 
@@ -225,6 +246,27 @@ mod cone_light_tests {
 
         let pdf = s.pdf_value(origin, dir);
         assert!((pdf - expected).abs() < 1e-3, "pdf={} expected={}", pdf, expected);
+    }
+
+    #[test]
+    fn sample_toward_pdf_matches_pdf_value_and_lands_on_the_sphere() {
+        // The fused single-intersect kernel must still agree with the standalone
+        // (intersect-based) pdf_value for the sampled direction — the invariant
+        // NEE's partition of unity relies on — and its t_light must place the point
+        // on the sphere's near surface.
+        let center = Point3::new(0.5, 1.0, 4.0);
+        let r = 1.2;
+        let s = sphere(center, r);
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let mut rng = SmallRng::seed_from_u64(9);
+        for _ in 0..500 {
+            let (u, v) = (rng.random::<f32>(), rng.random::<f32>());
+            let smp = s.sample_toward(origin, u, v);
+            let reference = s.pdf_value(origin, smp.wi);
+            assert!((smp.pdf - reference).abs() < 1e-4, "pdf {} != pdf_value {reference}", smp.pdf);
+            let p = origin + smp.wi * smp.t_light;
+            assert!(((p - center).length() - r).abs() < 1e-2, "point off surface: {p:?}");
+        }
     }
 
     #[test]

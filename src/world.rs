@@ -3,7 +3,6 @@ use crate::integrator::Sky;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::{AreaLight, AreaLightSample, GeoHit, HitRecord, Intersect, Ray, BVH, AABB};
-use crate::texture::env_map::EnvMap;
 use crate::vec3::{Point3, Vec3};
 use rand::rngs::SmallRng;
 use rand::Rng;
@@ -44,36 +43,6 @@ pub struct LightSample {
     pub t_light: f32,
     pub radiance: Color,
     pub pdf: f32,
-}
-
-/// A borrowed view of one directly-sampleable light, derived on the fly from the
-/// World's objects and sky rather than stored in a parallel list: either an
-/// emissive surface (an [`AreaLight`]) or the environment map. Both answer "a
-/// direction toward me and its solid-angle pdf" — the env light's pdf is
-/// position-independent (it is infinitely far away), so it ignores the origin.
-enum LightRef<'a> {
-    Area(&'a dyn AreaLight),
-    Env(&'a EnvMap),
-}
-
-impl LightRef<'_> {
-    /// Solid-angle pdf of sampling `dir` (from `origin`) toward this light.
-    fn pdf_value(&self, origin: Point3, dir: Vec3) -> f32 {
-        match self {
-            LightRef::Area(l) => l.pdf_value(origin, dir),
-            LightRef::Env(env) => env.direction_pdf(&dir),
-        }
-    }
-
-    /// A (unnormalized) direction from `origin` toward this light, using the two
-    /// canonical uniforms `(u, v)`. The env sampler's own pdf is recomputed by
-    /// [`World::light_pdf`] (the marginal over all lights), so it is dropped here.
-    fn sample_dir(&self, origin: Point3, u: f32, v: f32) -> Vec3 {
-        match self {
-            LightRef::Area(l) => l.sample_dir(origin, u, v),
-            LightRef::Env(env) => env.sample_direction(u, v).0,
-        }
-    }
 }
 
 /// A lightweight proxy the top-level BVH is built over: an object's geometry
@@ -209,25 +178,6 @@ impl World {
         self.lights.iter().map(|&i| &self.objects[i])
     }
 
-    /// Every directly-sampleable light as a borrowed [`LightRef`], in the order
-    /// `light_count` counts them: the registered emissive objects first, then the
-    /// environment map when `sky` is one. Derived on the fly — no stored list.
-    fn light_refs(&self) -> impl Iterator<Item = LightRef<'_>> {
-        self.lights
-            .iter()
-            .map(|&i| {
-                let l = self.objects[i]
-                    .light
-                    .as_deref()
-                    .expect("lights indexes only sampleable emitters");
-                LightRef::Area(l)
-            })
-            .chain(match &self.sky {
-                Sky::Env(env) => Some(LightRef::Env(env)),
-                Sky::Flat(_) => None,
-            })
-    }
-
     /// Per-light solid-angle pdf of sampling `dir` (from `origin`) toward the
     /// *specific* light identified by `light` — `(1/n)·p_k(dir)`, or 0 when the
     /// hit carries no sampleable light (a plain surface or a BSDF-only emitter).
@@ -254,26 +204,6 @@ impl World {
             Sky::Env(env) => env.direction_pdf(&dir) / self.light_count() as f32,
             Sky::Flat(_) => 0.0,
         }
-    }
-
-    /// A (unnormalized) direction from `origin` toward a registered light: `rng`
-    /// chooses which light (discrete), and the canonical uniforms `(u, v)` sample
-    /// a point on its surface — so the surface sample can be stratified by the
-    /// caller. `None` when there are no lights.
-    pub fn sample_light_dir(
-        &self,
-        origin: Point3,
-        u: f32,
-        v: f32,
-        rng: &mut SmallRng,
-    ) -> Option<Vec3> {
-        let n = self.light_count();
-        if n == 0 {
-            return None;
-        }
-        let i = rng.random_range(0..n);
-        let light = self.light_refs().nth(i).expect("i < light_count");
-        Some(light.sample_dir(origin, u, v))
     }
 
     /// A full next-event sample of one *chosen* light: `rng` selects a light
@@ -326,14 +256,12 @@ impl World {
 }
 
 #[cfg(test)]
-mod light_mixture_tests {
+mod light_pdf_tests {
     use super::*;
     use crate::color::Color;
     use crate::geometry::Quad;
     use crate::material::DiffuseLight;
     use crate::vec3::{Point3, Vec3};
-    use rand::rngs::SmallRng;
-    use rand::SeedableRng;
     use std::sync::Arc;
 
     // An overhead quad light on the y=2 plane, area 4 (pdf_value((0,0,0),(0,2,0))
@@ -369,49 +297,6 @@ mod light_mixture_tests {
         // analytic value straight up at the area-4 overhead quad is 1.0.
         let p = w.light_pdf(Some(light.as_ref()), Point3::ZERO, Vec3::new(0.0, 2.0, 0.0));
         assert!((p - 1.0).abs() < 1e-5, "p={p}");
-    }
-
-    #[test]
-    fn sample_light_dir_is_none_without_lights() {
-        let w = World::new(vec![], Sky::Flat(Color::ZERO));
-        let mut rng = SmallRng::seed_from_u64(1);
-        assert!(w.sample_light_dir(Point3::new(0.0, 0.0, 0.0), 0.5, 0.5, &mut rng).is_none());
-    }
-
-    #[test]
-    fn sample_light_dir_points_toward_the_light() {
-        let w = World::new(vec![light_object()], Sky::Flat(Color::ZERO));
-        let mut rng = SmallRng::seed_from_u64(2);
-        for _ in 0..100 {
-            let (u, v) = (rng.random::<f32>(), rng.random::<f32>());
-            let d = w.sample_light_dir(Point3::new(0.0, 0.0, 0.0), u, v, &mut rng).unwrap();
-            assert!(d.y > 0.0, "expected upward dir toward overhead light, got {:?}", d);
-        }
-    }
-
-    #[test]
-    fn env_light_participates_in_light_sampling() {
-        use crate::texture::env_map::EnvMap;
-        // A World whose only light is an environment map with one bright texel.
-        let (ew, eh) = (8usize, 4usize);
-        let mut data = vec![[0.05f32; 3]; ew * eh];
-        data[ew + 6] = [80.0, 80.0, 80.0];
-        let env = Arc::new(EnvMap::from_pixels(ew, eh, data));
-        let w = World::new(vec![], Sky::Env(env.clone()));
-        let origin = Point3::new(0.0, 0.0, 0.0);
-
-        // (The env light's per-light pdf is exercised by `env_pdf_tests`.)
-        // Sampling the World's lights points at the bright sky (read the direction
-        // back through the env's radiance lookup).
-        let mut rng = SmallRng::seed_from_u64(4);
-        let mut bright = 0;
-        for _ in 0..1000 {
-            let d = w.sample_light_dir(origin, rng.random(), rng.random(), &mut rng).unwrap();
-            if env.sample(&d).x > 1.0 {
-                bright += 1;
-            }
-        }
-        assert!(bright as f32 / 1000.0 > 0.9, "env light sampling should point at the bright sky, {bright}/1000");
     }
 }
 

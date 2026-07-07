@@ -99,10 +99,6 @@ impl Quad {
 }
 
 impl AreaLight for Quad {
-    fn sample_dir(&self, origin: Point3, u: f32, v: f32) -> Vec3 {
-        self.sample_point(u, v) - origin
-    }
-
     fn pdf_value(&self, origin: Point3, dir: Vec3) -> f32 {
         surface_pdf_value(self, self.area(), origin, dir)
     }

@@ -28,12 +28,6 @@ pub struct AreaLightSample {
 }
 
 pub trait AreaLight: Intersect {
-    /// A (possibly unnormalized) direction from `origin` toward a point on this
-    /// surface, sampled from canonical uniforms `(u, v)` in [0, 1)². Taking
-    /// explicit uniforms (rather than an rng) lets the caller supply *stratified*
-    /// numbers.
-    fn sample_dir(&self, origin: Point3, u: f32, v: f32) -> Vec3;
-
     /// Solid-angle PDF of sampling direction `dir` (from `origin`) toward this
     /// surface. `dir` may be unnormalized. Used for MIS against a BSDF ray that
     /// hit this light from an *arbitrary* direction, so it intersects the surface.
