@@ -2,7 +2,7 @@ use crate::color::Color;
 use crate::integrator::Sky;
 use crate::interval::Interval;
 use crate::material::Material;
-use crate::ray::{AreaLight, GeoHit, HitRecord, Intersect, Ray, BVH, AABB};
+use crate::ray::{AreaLight, AreaLightSample, GeoHit, HitRecord, Intersect, Ray, BVH, AABB};
 use crate::texture::env_map::EnvMap;
 use crate::vec3::{Point3, Vec3};
 use rand::rngs::SmallRng;
@@ -28,6 +28,22 @@ pub struct Object {
     /// for ordinary surfaces and for emitters we can't sample exactly (ellipsoid
     /// / box / mesh — they still glow when hit, just aren't shadow-ray sampled).
     pub light: Option<Arc<dyn AreaLight>>,
+}
+
+/// A complete next-event-estimation sample of a *chosen* light: the direction
+/// `wi` from the shading point toward the sampled light point, the ray-parameter
+/// `t_light` at which that point lies along `wi` (∞ for the environment light, so
+/// the shadow ray is unbounded), the light's emitted `radiance` there, and the
+/// per-light solid-angle `pdf` `(1/n)·p_k(wi)` of this choice. Unlike
+/// [`AreaLightSample`], it carries `radiance` — the World crosses the
+/// geometry/material boundary the geometry can't, reading emission from the
+/// object's material. This is estimator (B): the pdf is the *chosen* light's own
+/// density, not the marginal over all lights.
+pub struct LightSample {
+    pub wi: Vec3,
+    pub t_light: f32,
+    pub radiance: Color,
+    pub pdf: f32,
 }
 
 /// A borrowed view of one directly-sampleable light, derived on the fly from the
@@ -241,6 +257,54 @@ impl World {
         let light = self.light_refs().nth(i).expect("i < light_count");
         Some(light.sample_dir(origin, u, v))
     }
+
+    /// A full next-event sample of one *chosen* light: `rng` selects a light
+    /// uniformly `(1/n)`, the canonical uniforms `(u, v)` sample a point on it,
+    /// and the World reads that point's emission — so the caller gets a direction,
+    /// the distance to bound its shadow ray, the radiance to add if visible, and
+    /// the per-light pdf to weight by. `None` when there are no lights.
+    ///
+    /// This is estimator (B): the returned `pdf` is the *sampled* light's own
+    /// `(1/n)·p_k(wi)`, not the marginal over all lights — pairing per-light
+    /// radiance with the marginal would be biased (see the PRD's correction).
+    pub fn sample_light(
+        &self,
+        origin: Point3,
+        u: f32,
+        v: f32,
+        rng: &mut SmallRng,
+    ) -> Option<LightSample> {
+        let n = self.light_count();
+        if n == 0 {
+            return None;
+        }
+        let i = rng.random_range(0..n);
+        if i < self.lights.len() {
+            // An area light: the geometry kernel gives direction, distance, and
+            // per-surface pdf; the World crosses to the material for radiance at
+            // the sampled point (`origin + wi·t_light`).
+            let obj = &self.objects[self.lights[i]];
+            let light = obj
+                .light
+                .as_deref()
+                .expect("lights indexes only sampleable emitters");
+            let AreaLightSample { wi, t_light, pdf } = light.sample_toward(origin, u, v);
+            let radiance = obj.material.emitted(0.0, 0.0, origin + wi * t_light);
+            Some(LightSample { wi, t_light, radiance, pdf: pdf / n as f32 })
+        } else {
+            // The environment light: infinitely far (`t_light = ∞`, unbounded
+            // shadow ray), its radiance read straight from the sky. The pdf uses
+            // `direction_pdf` — the same density the emitter/env-escape MIS
+            // branches evaluate — so the branches share one light pdf.
+            let Sky::Env(env) = &self.sky else {
+                unreachable!("i >= lights.len() only when the sky is an env light")
+            };
+            let (wi, _) = env.sample_direction(u, v);
+            let radiance = self.sky.radiance(&wi);
+            let pdf = env.direction_pdf(&wi) / n as f32;
+            Some(LightSample { wi, t_light: f32::INFINITY, radiance, pdf })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -330,6 +394,170 @@ mod light_mixture_tests {
             }
         }
         assert!(bright as f32 / 1000.0 > 0.9, "env light sampling should point at the bright sky, {bright}/1000");
+    }
+}
+
+#[cfg(test)]
+mod light_sample_tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::geometry::Quad;
+    use crate::material::DiffuseLight;
+    use crate::texture::env_map::EnvMap;
+    use crate::vec3::{Point3, Vec3};
+    use rand::rngs::SmallRng;
+    use rand::{Rng, SeedableRng};
+    use std::sync::Arc;
+
+    // An overhead quad light on the y=2 plane spanning x,z ∈ [-1,1] (area 4),
+    // emitting a known colour so a sample's radiance is a readable literal.
+    fn colored_light(emit: Color) -> Object {
+        let quad = Arc::new(Quad::new(
+            Point3::new(-1.0, 2.0, -1.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 2.0),
+        ));
+        Object {
+            geometry: quad.clone(),
+            material: Arc::new(DiffuseLight::from_color(emit)),
+            light: Some(quad),
+        }
+    }
+
+    #[test]
+    fn sample_light_is_none_without_lights() {
+        let w = World::new(vec![], Sky::Flat(Color::ZERO));
+        let mut rng = SmallRng::seed_from_u64(1);
+        assert!(w.sample_light(Point3::ZERO, 0.5, 0.5, &mut rng).is_none());
+    }
+
+    #[test]
+    fn area_light_sample_carries_the_emitters_radiance() {
+        // The World crosses the geometry/material boundary: radiance is the
+        // sampled light's own emission (the literal we constructed it with).
+        let emit = Color::new(3.0, 5.0, 7.0);
+        let w = World::new(vec![colored_light(emit)], Sky::Flat(Color::ZERO));
+        let mut rng = SmallRng::seed_from_u64(2);
+        for _ in 0..50 {
+            let (u, v) = (rng.random::<f32>(), rng.random::<f32>());
+            let s = w.sample_light(Point3::ZERO, u, v, &mut rng).unwrap();
+            assert_eq!(s.radiance, emit, "radiance must be the emitter's emission");
+        }
+    }
+
+    #[test]
+    fn area_light_sample_point_lands_on_the_light() {
+        // origin + wi·t_light is the sampled point; it must lie on the y=2 plane,
+        // inside the quad's x,z ∈ [-1,1] extent.
+        let w = World::new(vec![colored_light(Color::ones())], Sky::Flat(Color::ZERO));
+        let mut rng = SmallRng::seed_from_u64(3);
+        for _ in 0..100 {
+            let (u, v) = (rng.random::<f32>(), rng.random::<f32>());
+            let s = w.sample_light(Point3::ZERO, u, v, &mut rng).unwrap();
+            let p = Point3::ZERO + s.wi * s.t_light;
+            assert!((p.y - 2.0).abs() < 1e-5, "point off the light plane: {p:?}");
+            assert!(p.x >= -1.0 - 1e-4 && p.x <= 1.0 + 1e-4, "x off the quad: {p:?}");
+            assert!(p.z >= -1.0 - 1e-4 && p.z <= 1.0 + 1e-4, "z off the quad: {p:?}");
+        }
+    }
+
+    #[test]
+    fn area_light_sample_pdf_is_the_per_light_solid_angle_density() {
+        // One light => n=1, so pdf == p_k. Cross-check the point-based pdf that
+        // sample_toward returns against the independent intersection-based
+        // pdf_value (two different code paths for the same solid-angle density).
+        let obj = colored_light(Color::ones());
+        let light = obj.light.clone().unwrap();
+        let w = World::new(vec![obj], Sky::Flat(Color::ZERO));
+        let mut rng = SmallRng::seed_from_u64(4);
+        for _ in 0..100 {
+            let (u, v) = (rng.random::<f32>(), rng.random::<f32>());
+            let s = w.sample_light(Point3::ZERO, u, v, &mut rng).unwrap();
+            let reference = light.pdf_value(Point3::ZERO, s.wi);
+            assert!(
+                (s.pdf - reference).abs() < 1e-4,
+                "per-light pdf {} disagreed with pdf_value {reference}",
+                s.pdf
+            );
+        }
+    }
+
+    #[test]
+    fn area_light_sample_pdf_is_divided_by_light_count() {
+        // With two lights the selected light's pdf is halved (uniform 1/n choice).
+        // The chosen light is whichever the sample points at; check against that
+        // light's own pdf_value.
+        let a = colored_light(Color::ones());
+        let la = a.light.clone().unwrap();
+        // A second light on the y=-2 plane (below the origin), area 4.
+        let below = Arc::new(Quad::new(
+            Point3::new(-1.0, -2.0, -1.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 2.0),
+        ));
+        let b = Object {
+            geometry: below.clone(),
+            material: Arc::new(DiffuseLight::from_color(Color::ones())),
+            light: Some(below.clone()),
+        };
+        let lb: Arc<dyn AreaLight> = below;
+        let w = World::new(vec![a, b], Sky::Flat(Color::ZERO));
+        let mut rng = SmallRng::seed_from_u64(5);
+        for _ in 0..200 {
+            let (u, v) = (rng.random::<f32>(), rng.random::<f32>());
+            let s = w.sample_light(Point3::ZERO, u, v, &mut rng).unwrap();
+            // Above vs below picks which light was chosen.
+            let chosen = if s.wi.y > 0.0 { &la } else { &lb };
+            let reference = chosen.pdf_value(Point3::ZERO, s.wi) / 2.0;
+            assert!(
+                (s.pdf - reference).abs() < 1e-4,
+                "two-light pdf {} should be pdf_value/2 = {reference}",
+                s.pdf
+            );
+        }
+    }
+
+    // A World whose only light is an environment map with one bright texel.
+    fn env_world() -> (World, Arc<EnvMap>) {
+        let (ew, eh) = (8usize, 4usize);
+        let mut data = vec![[0.05f32; 3]; ew * eh];
+        data[ew + 6] = [80.0, 80.0, 80.0];
+        let env = Arc::new(EnvMap::from_pixels(ew, eh, data));
+        (World::new(vec![], Sky::Env(env.clone())), env)
+    }
+
+    #[test]
+    fn env_light_sample_is_infinitely_far_and_bright() {
+        // The env light is unbounded (t_light = ∞) and, because it is importance
+        // sampled toward the bright texel, most samples carry bright radiance.
+        let (w, _env) = env_world();
+        let mut rng = SmallRng::seed_from_u64(6);
+        let mut bright = 0;
+        for _ in 0..1000 {
+            let s = w.sample_light(Point3::ZERO, rng.random(), rng.random(), &mut rng).unwrap();
+            assert!(s.t_light.is_infinite(), "env light must be infinitely far");
+            if s.radiance.x > 1.0 {
+                bright += 1;
+            }
+        }
+        assert!(bright as f32 / 1000.0 > 0.9, "env sampling should carry the bright sky, {bright}/1000");
+    }
+
+    #[test]
+    fn env_light_sample_pdf_matches_direction_pdf() {
+        // Single env light => n=1, so the sample's pdf is the env's own
+        // direction_pdf along wi (the density the MIS eval branches also use).
+        let (w, env) = env_world();
+        let mut rng = SmallRng::seed_from_u64(7);
+        for _ in 0..100 {
+            let s = w.sample_light(Point3::ZERO, rng.random(), rng.random(), &mut rng).unwrap();
+            let reference = env.direction_pdf(&s.wi);
+            assert!(
+                (s.pdf - reference).abs() < 1e-4,
+                "env pdf {} disagreed with direction_pdf {reference}",
+                s.pdf
+            );
+        }
     }
 }
 
