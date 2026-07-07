@@ -6,3 +6,6 @@
 # Editor scratch / OS / tool junk
 *.zip
 /.serena
+
+# macOS
+.DS_Store
