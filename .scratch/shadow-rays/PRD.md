@@ -172,6 +172,38 @@ re-pin happens only in Stage 2, gated behind the unbiasedness tests passing.
   re-pinned for the NEE reformulation (same converged image, new per-sample
   estimator). This is expected and intended, not a regression.
 
+## Locked design (post-grill)
+
+The self-grill refined the Stage-2 design to this:
+
+1. **Estimator (B), per-light pdf everywhere.** Verified against PBRT `SampleLd`:
+   the light-sampling pdf is `(1/n)·p_k(wi)` (per-light), *not* the marginal, for
+   both the estimator `1/pdf` and the MIS weight — in all three branches.
+2. **Identity on the hit, pdf math in the World.** `HitRecord` gains
+   `light: Option<&dyn AreaLight>` — a dumb identity token the integrator holds
+   but never dereferences. The World owns selection: `world.light_pdf(hit.light,
+   origin, dir)`, `world.env_pdf(dir)`, and `sample_light`'s pdf all return the
+   fully-formed `(1/n)·p` (the integrator never touches `n` or `pdf_value`).
+3. **Two light-geometry methods (honest to the material-agnostic split).**
+   - `AreaLight::sample_toward(origin, u, v) -> { wi, t_light, pdf }` — the
+     polymorphic per-shape kernel (quad picks a surface point → `t_light = 1`,
+     pdf from the point, *zero* intersects; sphere cone-samples → one intersect).
+     **Retires `sample_dir`** (only the deleted marginal path used it).
+   - `AreaLight::pdf_value(origin, dir)` — **kept**, for the emitter-hit branch
+     (arbitrary BSDF direction, must intersect).
+   - Named `sample_toward` (not `sample_li`): the geometry is material-agnostic,
+     so it cannot return radiance `L_i` — that would be a lie.
+4. **`World::sample_light` is the policy layer.** Picks a light `(1/n)`, calls the
+   geometry kernel, and — crossing the geom/material boundary the geometry can't —
+   adds `radiance = material.emitted(point)`. Returns `LightSample { wi, t_light,
+   radiance, pdf }`. Handles the env light (`t_light = ∞`, radiance = sky).
+5. **NEE:** `sample_light` → distance-bounded `occluded` (t_max = `t_light`, ∞ for
+   env) → if visible, `color += throughput · w · albedo · (p_brdf/pdf) · radiance`.
+6. **Re-pin gate (Q2):** a NEW *tight* (~1–2%) high-sample MIS-vs-Naive agreement
+   test is the gate; the fingerprint is re-pinned only after it is green.
+   Correctness is proven by the independent Naive oracle, never by the pin. The
+   existing 5–8% tests stay as fast regressions.
+
 ## Out of Scope
 
 - **Light importance sampling** (Stage 3): power/spatial light selection, a light
