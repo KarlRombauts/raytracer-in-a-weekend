@@ -221,6 +221,16 @@ The self-grill refined the Stage-2 design to this:
   The harness (`traversal` + a new occlusion micro-bench) and the render bench
   measure it; the `bvh-stats` counter can be extended to count occlusion tests if
   useful.
+- **MEASURED** (`cargo bench --bench bvh -- occlusion`, added in the `occlusion`
+  + `occlusion_top_level` groups): the any-hit `occluded` query vs the closest-hit
+  `intersect(...).is_some()` it replaced, same bounded rays. Per shadow ray it is
+  **~1.2–1.6× faster** — mesh BLAS: teapot 1.40× (−29%), bunny 1.57× (−36%),
+  dragon 1.31× (−23%); top-level TLAS (512 spheres) 1.22× (−18%). With shadow
+  rays ≥50% of NEE-path rays, that is the predicted "double-digit-percent" cut in
+  total trace time for shadowed scenes — hypothesis confirmed by the oracle of a
+  real timing, not just theory. (Note: the existing `render/dragon` bench has no
+  registered lights, so it fires no shadow rays and cannot show this — the
+  dedicated micro-bench is the right instrument.)
 - Stage 1 is the low-risk place to start: it adds a reusable primitive with zero
   image change, so it can land and be measured before committing to the estimator
   rewrite and its re-pin.

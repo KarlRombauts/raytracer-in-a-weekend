@@ -37,6 +37,13 @@ fn traverse(bvh: &dyn Intersect, rays: &[Ray]) -> usize {
     rays.iter().filter(|r| bvh.intersect(r, &ti).is_some()).count()
 }
 
+/// Half the bounding-sphere diagonal — the same radius `orientation_rays` uses to
+/// place the ray grid, so a `t_max` expressed in these units is comparable to the
+/// mesh extent.
+fn bbox_radius(bb: &raytracer_in_a_weekend::ray::AABB) -> f32 {
+    (bb.max_vec() - bb.min_vec()).length() * 0.5
+}
+
 fn bench_traversal(c: &mut Criterion) {
     let mut group = c.benchmark_group("traversal");
     for name in MESHES {
@@ -49,6 +56,53 @@ fn bench_traversal(c: &mut Criterion) {
             });
         }
     }
+    group.finish();
+}
+
+/// Shadow-ray occlusion: the any-hit `occluded` query vs the closest-hit
+/// `intersect(...).is_some()` it replaced (shadow-rays Stage 2), on the SAME
+/// finite-bounded rays. Both answer the identical boolean "is the segment
+/// blocked?"; the ratio of the two timings is the per-shadow-ray win of the
+/// occlusion path — early-exit on the *first* blocker (not the nearest) and no
+/// shading record built. `t_max` is bounded just past the mesh's far face, as a
+/// real shadow ray toward a light on the far side would be — that is what lets
+/// `occluded` skip work `intersect` cannot.
+fn bench_occlusion(c: &mut Criterion) {
+    let mut group = c.benchmark_group("occlusion");
+    // An oblique direction, so the rays are a realistic incoherent-ish batch
+    // rather than axis-aligned; per-mesh so the size sweep is visible.
+    let (_, dir) = orientations()[4];
+    for name in MESHES {
+        let (bvh, _) = load_mesh(name).build();
+        let bb = bvh.bounding_box();
+        let ti = Interval::new(0.001, bbox_radius(bb) * 4.0);
+        let rays = orientation_rays(bb, dir);
+        group.throughput(criterion::Throughput::Elements(rays.len() as u64));
+        group.bench_function(format!("{name}/occluded"), |b| {
+            b.iter(|| rays.iter().filter(|r| bvh.occluded(r, &ti)).count())
+        });
+        group.bench_function(format!("{name}/closest_hit"), |b| {
+            b.iter(|| rays.iter().filter(|r| bvh.intersect(r, &ti).is_some()).count())
+        });
+    }
+    group.finish();
+}
+
+/// The same occlusion A/B through a `World`'s top-level `BVH<ObjRef>` — the layer
+/// a real shadow ray actually enters (`World::occluded` vs `World::intersect`).
+fn bench_occlusion_top_level(c: &mut Criterion) {
+    let world = sphere_world(8); // 512 objects
+    let bb = world.bounding_box();
+    let ti = Interval::new(0.001, bbox_radius(bb) * 4.0);
+    let rays = orientation_rays(bb, Vec3::new(1.0, 0.3, 2.0).unit());
+    let mut group = c.benchmark_group("occlusion_top_level");
+    group.throughput(criterion::Throughput::Elements(rays.len() as u64));
+    group.bench_function("spheres_512/occluded", |b| {
+        b.iter(|| rays.iter().filter(|r| world.occluded(r, &ti)).count())
+    });
+    group.bench_function("spheres_512/closest_hit", |b| {
+        b.iter(|| rays.iter().filter(|r| world.intersect(r, &ti).is_some()).count())
+    });
     group.finish();
 }
 
@@ -163,6 +217,8 @@ fn bench_render(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_traversal,
+    bench_occlusion,
+    bench_occlusion_top_level,
     bench_build,
     bench_top_level,
     bench_render
