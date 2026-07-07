@@ -1,18 +1,44 @@
 # Resume breadcrumb: shadow-rays (any-hit occlusion + light-point NEE)
 
-Status: in-progress — Stage 1 done; Stage 2 slice 1 done; slices 2–5 remain.
+Status: **DONE** — Stage 1 + Stage 2 (all slices 1–5) complete, incl. the
+`/simplify` pass. `cargo test` all green (215 lib + render pin; 217 with
+`--features bvh-stats`). The design was **locked** (grilled — see `PRD.md`
+"Locked design"); this now records how it finished. History below is retained.
 
-Handoff mid-Stage-2. The design is **locked** (grilled hard — do not re-litigate);
-this is mostly execution against a settled plan. Read `PRD.md` in this dir first —
-especially the **"Locked design (post-grill)"** section — it is the durable spec.
+## How it finished (Stage 2 slices 2–5, commits newest first)
 
-## The one thing to do
+- `5bfa499` `/simplify`: `LightSample::shadow_interval()` owns the shadow-ray
+  bound (∞·(1−ε)=∞ collapses the finite-vs-env branch out of the integrator);
+  env branch keeps `direction_pdf` (differs from the sampler pdf by a few %, must
+  match `env_pdf`). Bit-identical.
+- `55ce599` slice 5: retired the marginal path (`sample_light_dir`, `LightRef`,
+  `light_refs`, trait `sample_dir`); fused sphere `sample_toward` to 1 intersect
+  (was 2) via inherent `cone_pdf`. Bit-identical.
+- `5e66432` slice 4: per-light occlusion NEE — all three MIS branches on the
+  chosen light's `(1/n)·p_k`; `World::light_pdf` → per-light identity.
+- `d726ee1` slice 3: `HitRecord.light` identity token + `World::env_pdf`.
+- `def037e` slice 2: `World::sample_light` → `LightSample`.
 
-Continue **`/tdd`** on Stage 2, slices 2 → 5, then `/simplify`. Suggested open line:
+## The one thing that surprised us: the pin did NOT re-pin (correctly)
 
-> Read `.scratch/shadow-rays/PRD.md` (esp. "Locked design") and `SEED.md`, and
-> continue Stage 2 — next slice is `World::sample_light` → `LightSample`. Keep the
-> render pin bit-identical until the deliberate re-pin in the estimator slice.
+The PRD anticipated a deliberate re-pin; it wasn't needed. The pinned Cornell box
+is **single-light + black-sky**, where at `n = 1` the per-light pdf equals the old
+marginal pdf and `sample_light` consumes rng identically to the retired
+`sample_light_dir` — so estimators (A) and (B) coincide bit-for-bit. Fingerprint
+stays `0x9436e82cbff110f1` (doc-noted in `render_characterization.rs`).
+
+Because every *pre-existing* test was also `n = 1` (reformulation a no-op there),
+the `n ≥ 2` correctness — the whole point of the per-light correction — is proven
+by a NEW **two-area-light** MIS-vs-Naive gate in
+`integrator::mis::repin_gate_tests`. A mutation dropping the `1/n` factor is
+invisible to every single-light test but fails that gate at rel=0.41 — so it is
+necessary and load-bearing. Keep it.
+
+## If resuming: Stage 3 (out of scope here)
+
+Light importance sampling — power/spatial selection, a light BVH. The selection
+*seam* (`sample_light` picks uniformly `1/n`) is built; swap the policy there.
+Needs its own re-pin. See PRD "Out of Scope".
 
 ## Where things stand (commits, newest first)
 
