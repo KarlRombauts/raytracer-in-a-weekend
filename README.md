@@ -32,3 +32,7 @@ Cross-origin isolation headers are set in `Trunk.toml` for `SharedArrayBuffer`.
 just web                   # build the wasm bundle into ./dist
 just serve                 # serve locally with COOP/COEP headers
 ```
+
+## License
+
+Released under the [MIT License](LICENSE).
