@@ -228,15 +228,20 @@ impl World {
             })
     }
 
-    /// Average solid-angle PDF of sampling `dir` (from `origin`) toward any
-    /// registered light. 0 when there are no lights.
-    pub fn light_pdf(&self, origin: Point3, dir: Vec3) -> f32 {
-        let n = self.light_count();
-        if n == 0 {
-            return 0.0;
-        }
-        let sum: f32 = self.light_refs().map(|l| l.pdf_value(origin, dir)).sum();
-        sum / n as f32
+    /// Per-light solid-angle pdf of sampling `dir` (from `origin`) toward the
+    /// *specific* light identified by `light` — `(1/n)·p_k(dir)`, or 0 when the
+    /// hit carries no sampleable light (a plain surface or a BSDF-only emitter).
+    /// The emitter-hit MIS branch calls this with [`HitRecord::light`]: the
+    /// integrator holds the dumb identity token, the World owns the pdf math (the
+    /// `1/n` selection and the shape's `pdf_value`). Estimator (B) — the chosen
+    /// light's own density, the same `(1/n)·p` shape [`sample_light`](Self::sample_light)
+    /// and [`env_pdf`](Self::env_pdf) return, so all three MIS branches share one
+    /// light pdf (partition of unity). `/n` is folded inside `map_or` so a `None`
+    /// light is 0, never `0.0/0`; `n ≥ 1` whenever `light` is `Some`.
+    ///
+    /// [`HitRecord::light`]: crate::ray::HitRecord::light
+    pub fn light_pdf(&self, light: Option<&dyn AreaLight>, origin: Point3, dir: Vec3) -> f32 {
+        light.map_or(0.0, |l| l.pdf_value(origin, dir) / self.light_count() as f32)
     }
 
     /// Per-light solid-angle pdf of the *environment* light along `dir`:
@@ -347,16 +352,22 @@ mod light_mixture_tests {
     }
 
     #[test]
-    fn light_pdf_is_zero_without_lights() {
-        let w = World::new(vec![], Sky::Flat(Color::ZERO));
-        assert_eq!(w.light_pdf(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0)), 0.0);
+    fn light_pdf_is_zero_for_no_light_identity() {
+        // A hit carrying no sampleable light (`None`) has light-pdf 0 — a plain
+        // surface or a BSDF-only emitter, which the emitter-hit MIS branch weights
+        // fully to the BSDF. Holds even when the World does have lights.
+        let w = World::new(vec![light_object()], Sky::Flat(Color::ZERO));
+        assert_eq!(w.light_pdf(None, Point3::ZERO, Vec3::new(0.0, 2.0, 0.0)), 0.0);
     }
 
     #[test]
-    fn light_pdf_averages_single_light() {
-        let w = World::new(vec![light_object()], Sky::Flat(Color::ZERO));
-        // One light => average == that light's pdf_value; analytic value is 1.0.
-        let p = w.light_pdf(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0));
+    fn light_pdf_is_the_per_light_density() {
+        let obj = light_object();
+        let light = obj.light.clone().unwrap();
+        let w = World::new(vec![obj], Sky::Flat(Color::ZERO));
+        // One light => (1/n)·p_k with n=1 is the light's own pdf_value; the
+        // analytic value straight up at the area-4 overhead quad is 1.0.
+        let p = w.light_pdf(Some(light.as_ref()), Point3::ZERO, Vec3::new(0.0, 2.0, 0.0));
         assert!((p - 1.0).abs() < 1e-5, "p={p}");
     }
 
@@ -389,13 +400,7 @@ mod light_mixture_tests {
         let w = World::new(vec![], Sky::Env(env.clone()));
         let origin = Point3::new(0.0, 0.0, 0.0);
 
-        // A single env light => the World's light_pdf is exactly the env's pdf.
-        let (dir, _) = env.sample_direction(0.3, 0.7);
-        assert!(
-            (w.light_pdf(origin, dir) - env.direction_pdf(&dir)).abs() < 1e-4,
-            "world light_pdf should equal the env pdf for a single env light"
-        );
-
+        // (The env light's per-light pdf is exercised by `env_pdf_tests`.)
         // Sampling the World's lights points at the bright sky (read the direction
         // back through the env's radiance lookup).
         let mut rng = SmallRng::seed_from_u64(4);

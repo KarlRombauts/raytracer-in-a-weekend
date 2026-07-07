@@ -10,6 +10,16 @@
 //! with no entropy, and pixels accumulate independently (parallelism is across
 //! pixels, with no cross-pixel float reduction), so the image is bit-identical
 //! across runs and machines.
+//!
+//! Note (shadow-rays Stage 2): the NEE reformulation to per-light occlusion
+//! sampling (estimator B) was expected to re-pin this fingerprint, but did not —
+//! and correctly so. This Cornell box has exactly one registered light and a
+//! black flat sky, and at `n == 1` the per-light pdf `(1/n)·p_k` equals the old
+//! marginal pdf while `sample_light` consumes rng identically to the retired
+//! `sample_light_dir`, so estimators (A) and (B) coincide bit-for-bit here. The
+//! reformulation's correctness at `n ≥ 2` (where they genuinely diverge) is
+//! proven by the multi-light MIS-vs-Naive gate in `integrator::mis`, not by this
+//! pin. So the baseline below is deliberately *unchanged*.
 
 use raytracer_in_a_weekend::camera::Camera;
 use raytracer_in_a_weekend::integrator::build_integrator;

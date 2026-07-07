@@ -39,7 +39,9 @@ impl Integrator for Mis {
                 if specular_bounce {
                     color += throughput * sky;
                 } else {
-                    let p_light = world.light_pdf(current.origin, current.direction);
+                    // Env-escape branch: the sky's *per-light* pdf (1/n)·direction_pdf,
+                    // matching the NEE and emitter branches for partition of unity.
+                    let p_light = world.env_pdf(current.direction);
                     let w = power_heuristic(prev_brdf_pdf, p_light);
                     color += throughput * sky * w;
                 }
@@ -51,7 +53,10 @@ impl Integrator for Mis {
                 if specular_bounce {
                     color += throughput * emitted;
                 } else {
-                    let p_light = world.light_pdf(current.origin, current.direction);
+                    // Emitter-hit branch: the *specific* light we hit knows its own
+                    // pdf (1/n)·p_k. `hit.light` is None for a BSDF-only emitter →
+                    // pdf 0 → full BSDF weight, as before.
+                    let p_light = world.light_pdf(hit.light, current.origin, current.direction);
                     let w = power_heuristic(prev_brdf_pdf, p_light);
                     color += throughput * emitted * w;
                 }
@@ -80,26 +85,27 @@ impl Integrator for Mis {
             let (lu, lv) = if depth == 0 { sample.stratified(1) } else { (rng.random(), rng.random()) };
             let (bu, bv) = if depth == 0 { sample.stratified(2) } else { (rng.random(), rng.random()) };
 
-            // (1) Next-event estimation: sample a light, weight against the BRDF pdf.
-            if let Some(ld) = world.sample_light_dir(hit.p, lu, lv, rng) {
-                let p_light = world.light_pdf(hit.p, ld);
-                let p_brdf = hit.material.scattering_pdf(&hit, &ld);
-                if p_light > 0.0 && p_brdf > 0.0 {
-                    let shadow = Ray::new_t(hit.p, ld, current.time);
-                    // Radiance from whatever the shadow ray reaches: an occluder
-                    // (or non-emitter) gives 0 = shadowed; a surface light gives
-                    // its emission; an *escaping* ray reaches the sky (the env
-                    // light). `p_light` is the marginal over ALL lights, so even if
-                    // the ray reaches a different light than the one sampled, the
-                    // estimator stays unbiased — don't "fix" this to the sampled
-                    // light's own pdf.
-                    let le = match world.intersect(&shadow, &interval) {
-                        Some(lh) => lh.material.emitted(lh.u, lh.v, lh.p),
-                        None => world.sky_radiance(&ld),
+            // (1) Next-event estimation: sample a *chosen* light, occlusion-test
+            // the shadow ray to it, and weight that light's own radiance against
+            // the BRDF pdf. Estimator (B): `pdf` and `radiance` are the sampled
+            // light's — a boolean visibility test replaces reading the closest
+            // surface's emission, so the shadow ray early-exits and builds no
+            // shading record (the ≥half-of-all-rays win).
+            if let Some(ls) = world.sample_light(hit.p, lu, lv, rng) {
+                let p_brdf = hit.material.scattering_pdf(&hit, &ls.wi);
+                if ls.pdf > 0.0 && p_brdf > 0.0 && ls.radiance != Color::ZERO {
+                    // Bound the shadow ray to just short of the light so it isn't
+                    // its own occluder; the env light (t_light = ∞) is unbounded.
+                    // `wi` is unnormalized, so `t_light` and the interval share units.
+                    let t_max = if ls.t_light.is_infinite() {
+                        f32::INFINITY
+                    } else {
+                        ls.t_light * (1.0 - 1e-3)
                     };
-                    if le != Color::ZERO {
-                        let w = power_heuristic(p_light, p_brdf);
-                        color += throughput * w * albedo * (p_brdf / p_light) * le;
+                    let shadow = Ray::new_t(hit.p, ls.wi, current.time);
+                    if !world.occluded(&shadow, &Interval::new(0.001, t_max)) {
+                        let w = power_heuristic(ls.pdf, p_brdf);
+                        color += throughput * w * albedo * (p_brdf / ls.pdf) * ls.radiance;
                     }
                 }
             }
@@ -345,6 +351,148 @@ mod mis_tests {
             mis_var < 0.5 * gi_var,
             "expected MIS variance well below pure-GI: mis_var={mis_var} gi_var={gi_var}"
         );
+    }
+}
+
+// The re-pin gate (PRD Q2): a *tight* high-sample agreement between the
+// reformulated MIS estimator and the independent Naive oracle. Correctness is
+// established HERE — by the oracle, in the mean — never by the render fingerprint.
+// The looser 5-8% tests above stay as fast regressions but are too slack to
+// authorize a re-pin; this is the one that gates it. If the per-light NEE were
+// biased (e.g. per-light radiance paired with a marginal pdf), this fails before
+// the fingerprint is allowed to move.
+#[cfg(test)]
+mod repin_gate_tests {
+    use super::*;
+    use crate::geometry::Quad;
+    use crate::world::{Object, World};
+    use crate::integrator::{Naive, Sky};
+    use crate::material::{DiffuseLight, Lambertian};
+    use crate::ray::{AreaLight, Ray};
+    use crate::vec3::{Point3, Vec3};
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+    use std::sync::Arc;
+
+    // Diffuse floor under a large overhead area light: both estimators converge
+    // well (the big light keeps Naive's variance low), so a tight mean match is a
+    // strong unbiasedness gate — not washed out by Monte-Carlo noise.
+    fn lit_world() -> World {
+        let light = Arc::new(Quad::new(
+            Point3::new(-5.0, 2.0, -5.0),
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 10.0),
+        ));
+        World::new(
+            vec![
+                Object {
+                    geometry: Arc::new(Quad::new(
+                        Point3::new(-5.0, 0.0, -5.0),
+                        Vec3::new(10.0, 0.0, 0.0),
+                        Vec3::new(0.0, 0.0, 10.0),
+                    )),
+                    material: Arc::new(Lambertian::from_color(Color::new(0.7, 0.7, 0.7))),
+                    light: None,
+                },
+                Object {
+                    geometry: light.clone(),
+                    material: Arc::new(DiffuseLight::from_color(Color::new(5.0, 5.0, 5.0))),
+                    light: Some(light as Arc<dyn AreaLight>),
+                },
+            ],
+            Sky::Flat(Color::ZERO),
+        )
+    }
+
+    fn mean(integ: &dyn Integrator, seed: u64, n: u32) -> f32 {
+        let world = lit_world();
+        let ray = Ray::new(Point3::new(0.0, 1.0, 0.0), Vec3::new(0.0, -1.0, 0.0));
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut sum = 0.0f64;
+        for s in 0..n {
+            sum += integ.radiance(&ray, &world, SampleId { i: 0, j: 0, index: s }, &mut rng).x as f64;
+        }
+        (sum / n as f64) as f32
+    }
+
+    #[test]
+    fn mis_agrees_with_naive_within_one_percent_high_sample() {
+        let n = 60000;
+        let mis = mean(&Mis { max_depth: 8 }, 7, n);
+        let naive = mean(&Naive { max_depth: 8 }, 11, n);
+        assert!(mis > 0.0 && naive > 0.0, "both lit: mis={mis} naive={naive}");
+        let rel = (mis - naive).abs() / naive;
+        assert!(rel < 0.02, "MIS must match the Naive oracle within 1-2%: mis={mis} naive={naive} rel={rel}");
+    }
+
+    // TWO area lights of different size and brightness — the n≥2 case where
+    // estimator (B) genuinely diverges from the old marginal-pdf estimator (A).
+    // The per-light reformulation is unbiased ONLY if each branch uses the chosen
+    // light's own (1/n)·p_k; pairing per-light radiance with the *marginal* pdf
+    // (the bug the PRD correction guards against) would bias this — a single-light
+    // scene can never catch it (there, marginal ≡ per-light). The Naive oracle,
+    // blind to light count, is the independent truth.
+    fn two_light_world() -> World {
+        let floor = Object {
+            geometry: Arc::new(Quad::new(
+                Point3::new(-8.0, 0.0, -8.0),
+                Vec3::new(16.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 16.0),
+            )),
+            material: Arc::new(Lambertian::from_color(Color::new(0.7, 0.7, 0.7))),
+            light: None,
+        };
+        // A big dim light to the -x side and a smaller brighter one to the +x side,
+        // both overhead — different solid angles and radiances, so the per-light
+        // weighting has to be right for each independently.
+        let big = Arc::new(Quad::new(
+            Point3::new(-4.0, 2.0, -2.0),
+            Vec3::new(3.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 4.0),
+        ));
+        let small = Arc::new(Quad::new(
+            Point3::new(1.5, 2.0, -1.0),
+            Vec3::new(1.5, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 2.0),
+        ));
+        World::new(
+            vec![
+                floor,
+                Object {
+                    geometry: big.clone(),
+                    material: Arc::new(DiffuseLight::from_color(Color::new(3.0, 3.0, 3.0))),
+                    light: Some(big as Arc<dyn AreaLight>),
+                },
+                Object {
+                    geometry: small.clone(),
+                    material: Arc::new(DiffuseLight::from_color(Color::new(12.0, 12.0, 12.0))),
+                    light: Some(small as Arc<dyn AreaLight>),
+                },
+            ],
+            Sky::Flat(Color::ZERO),
+        )
+    }
+
+    fn mean_of(world_fn: fn() -> World, integ: &dyn Integrator, seed: u64, n: u32) -> f32 {
+        let world = world_fn();
+        // Look straight down at a floor point that sees both lights.
+        let ray = Ray::new(Point3::new(0.0, 1.0, 0.0), Vec3::new(0.0, -1.0, 0.0));
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut sum = 0.0f64;
+        for s in 0..n {
+            sum += integ.radiance(&ray, &world, SampleId { i: 0, j: 0, index: s }, &mut rng).x as f64;
+        }
+        (sum / n as f64) as f32
+    }
+
+    #[test]
+    fn mis_agrees_with_naive_with_two_area_lights() {
+        let n = 120_000;
+        let mis = mean_of(two_light_world, &Mis { max_depth: 8 }, 7, n);
+        let naive = mean_of(two_light_world, &Naive { max_depth: 8 }, 11, n);
+        assert!(mis > 0.0 && naive > 0.0, "both lit: mis={mis} naive={naive}");
+        let rel = (mis - naive).abs() / naive;
+        assert!(rel < 0.02, "per-light NEE must be unbiased with 2 lights: mis={mis} naive={naive} rel={rel}");
     }
 }
 
