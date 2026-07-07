@@ -1,4 +1,4 @@
-use crate::{material::Material, ray::Ray, vec3::*};
+use crate::{material::Material, ray::AreaLight, ray::Ray, vec3::*};
 
 /// A material-agnostic surface hit — everything geometry can report about where a
 /// ray met a surface, with no material. This is what [`Intersect`](crate::ray::Intersect)
@@ -45,13 +45,19 @@ pub struct HitRecord<'a> {
     pub normal: Vec3,
     pub front_face: bool,
     pub material: &'a dyn Material,
+    /// The hit object's area-light handle when it is a *registered* (sampleable)
+    /// emitter, else `None` (ordinary surfaces and BSDF-only emitters). A dumb
+    /// identity token: the integrator holds it to ask the World for this light's
+    /// pdf (`World::light_pdf`) in the emitter-hit MIS branch, but never
+    /// dereferences it — the pdf math lives in the World.
+    pub light: Option<&'a dyn AreaLight>,
     pub u: f32,
     pub v: f32,
 }
 
 impl<'a> HitRecord<'a> {
-    /// Build a shading record directly (front-facing, zero UVs). Production code
-    /// only ever builds records via [`from_geo`](Self::from_geo) — the World is
+    /// Build a shading record directly (front-facing, zero UVs, no light). Production
+    /// code only ever builds records via [`from_geo`](Self::from_geo) — the World is
     /// the sole place a material is bound to a hit — so this is gated to tests
     /// that exercise a material against a fabricated hit.
     #[cfg(test)]
@@ -62,19 +68,22 @@ impl<'a> HitRecord<'a> {
             normal,
             front_face: true,
             material,
+            light: None,
             u: 0.,
             v: 0.,
         }
     }
 
-    /// Bind `material` to a geometry hit, producing the shading record.
-    pub fn from_geo(geo: GeoHit, material: &'a dyn Material) -> Self {
+    /// Bind `material` and the hit object's `light` identity to a geometry hit,
+    /// producing the shading record.
+    pub fn from_geo(geo: GeoHit, material: &'a dyn Material, light: Option<&'a dyn AreaLight>) -> Self {
         HitRecord {
             t: geo.t,
             p: geo.p,
             normal: geo.normal,
             front_face: geo.front_face,
             material,
+            light,
             u: geo.u,
             v: geo.v,
         }

@@ -180,7 +180,8 @@ impl World {
     /// [`HitRecord`] — the single material-attach seam.
     pub fn intersect(&self, ray: &Ray, ray_t: &Interval) -> Option<HitRecord<'_>> {
         self.bvh.closest_hit(ray, ray_t).map(|(geo, proxy)| {
-            HitRecord::from_geo(geo, self.objects[proxy.object].material.as_ref())
+            let obj = &self.objects[proxy.object];
+            HitRecord::from_geo(geo, obj.material.as_ref(), obj.light.as_deref())
         })
     }
 
@@ -236,6 +237,18 @@ impl World {
         }
         let sum: f32 = self.light_refs().map(|l| l.pdf_value(origin, dir)).sum();
         sum / n as f32
+    }
+
+    /// Per-light solid-angle pdf of the *environment* light along `dir`:
+    /// `(1/n)·direction_pdf(dir)`, or 0 when the sky is not an env map. This is the
+    /// env light's own density (estimator B), for the env-escape MIS branch — the
+    /// same `(1/n)·p` shape [`sample_light`](Self::sample_light) returns for it, so
+    /// the sampling and evaluation branches share one light pdf.
+    pub fn env_pdf(&self, dir: Vec3) -> f32 {
+        match &self.sky {
+            Sky::Env(env) => env.direction_pdf(&dir) / self.light_count() as f32,
+            Sky::Flat(_) => 0.0,
+        }
     }
 
     /// A (unnormalized) direction from `origin` toward a registered light: `rng`
@@ -558,6 +571,120 @@ mod light_sample_tests {
                 s.pdf
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod hit_light_identity_tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::geometry::Quad;
+    use crate::interval::Interval;
+    use crate::material::{DiffuseLight, Lambertian};
+    use crate::vec3::{Point3, Vec3};
+    use std::sync::Arc;
+
+    // A horizontal quad on the y-plane spanning x,z ∈ [-1,1]. `registered` decides
+    // whether it carries its area-light handle (sampleable) or is `light: None`.
+    fn quad_object(y: f32, material: Arc<dyn crate::material::Material>, registered: bool) -> Object {
+        let quad = Arc::new(Quad::new(
+            Point3::new(-1.0, y, -1.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 2.0),
+        ));
+        Object {
+            geometry: quad.clone(),
+            material,
+            light: registered.then(|| quad as Arc<dyn AreaLight>),
+        }
+    }
+
+    #[test]
+    fn intersect_tags_a_registered_area_light() {
+        // A registered emissive quad overhead; the hit carries its light identity.
+        let light_mat = Arc::new(DiffuseLight::from_color(Color::ones()));
+        let w = World::new(vec![quad_object(2.0, light_mat, true)], Sky::Flat(Color::ZERO));
+        let ray = Ray::new(Point3::ZERO, Vec3::new(0.0, 1.0, 0.0));
+        let hit = w.intersect(&ray, &Interval::new(0.001, f32::INFINITY)).unwrap();
+        assert!(hit.light.is_some(), "a registered area light must tag its hit");
+    }
+
+    #[test]
+    fn intersect_leaves_a_plain_surface_untagged() {
+        // An ordinary (non-emissive, unregistered) surface: no light identity.
+        let mat = Arc::new(Lambertian::from_color(Color::new(0.7, 0.7, 0.7)));
+        let w = World::new(vec![quad_object(2.0, mat, false)], Sky::Flat(Color::ZERO));
+        let ray = Ray::new(Point3::ZERO, Vec3::new(0.0, 1.0, 0.0));
+        let hit = w.intersect(&ray, &Interval::new(0.001, f32::INFINITY)).unwrap();
+        assert!(hit.light.is_none(), "a plain surface must not be tagged");
+    }
+
+    #[test]
+    fn intersect_leaves_a_bsdf_only_emitter_untagged() {
+        // Emits (its material glows) but isn't registered for sampling — so the
+        // emitter-hit MIS branch gets light-pdf 0 and full BSDF weight, as today.
+        let light_mat = Arc::new(DiffuseLight::from_color(Color::ones()));
+        let w = World::new(vec![quad_object(2.0, light_mat, false)], Sky::Flat(Color::ZERO));
+        let ray = Ray::new(Point3::ZERO, Vec3::new(0.0, 1.0, 0.0));
+        let hit = w.intersect(&ray, &Interval::new(0.001, f32::INFINITY)).unwrap();
+        assert!(hit.light.is_none(), "an unregistered emitter must not be tagged");
+    }
+}
+
+#[cfg(test)]
+mod env_pdf_tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::geometry::Quad;
+    use crate::material::DiffuseLight;
+    use crate::texture::env_map::EnvMap;
+    use crate::vec3::{Point3, Vec3};
+    use std::sync::Arc;
+
+    fn env(bright_texel: usize) -> Arc<EnvMap> {
+        let (ew, eh) = (8usize, 4usize);
+        let mut data = vec![[0.05f32; 3]; ew * eh];
+        data[bright_texel] = [80.0, 80.0, 80.0];
+        Arc::new(EnvMap::from_pixels(ew, eh, data))
+    }
+
+    fn overhead_light() -> Object {
+        let quad = Arc::new(Quad::new(
+            Point3::new(-1.0, 2.0, -1.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 2.0),
+        ));
+        Object {
+            geometry: quad.clone(),
+            material: Arc::new(DiffuseLight::from_color(Color::ones())),
+            light: Some(quad),
+        }
+    }
+
+    #[test]
+    fn env_pdf_is_zero_without_an_env_light() {
+        let w = World::new(vec![], Sky::Flat(Color::new(0.2, 0.4, 0.6)));
+        assert_eq!(w.env_pdf(Vec3::new(0.0, 1.0, 0.0)), 0.0);
+    }
+
+    #[test]
+    fn env_pdf_is_the_env_density_for_a_lone_env_light() {
+        // Only light is the env => n=1, so env_pdf == the env's own direction_pdf.
+        let e = env(6);
+        let w = World::new(vec![], Sky::Env(e.clone()));
+        let dir = Vec3::new(0.3, 0.8, 0.4);
+        let reference = e.direction_pdf(&dir);
+        assert!((w.env_pdf(dir) - reference).abs() < 1e-5, "env_pdf must equal direction_pdf for a lone env light");
+    }
+
+    #[test]
+    fn env_pdf_is_divided_by_the_light_count() {
+        // One area light + the env => n=2, so env_pdf == direction_pdf/2.
+        let e = env(6);
+        let w = World::new(vec![overhead_light()], Sky::Env(e.clone()));
+        let dir = Vec3::new(0.3, 0.8, 0.4);
+        let reference = e.direction_pdf(&dir) / 2.0;
+        assert!((w.env_pdf(dir) - reference).abs() < 1e-5, "env_pdf must be direction_pdf / n");
     }
 }
 
