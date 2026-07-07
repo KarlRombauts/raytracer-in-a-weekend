@@ -94,16 +94,10 @@ impl Integrator for Mis {
             if let Some(ls) = world.sample_light(hit.p, lu, lv, rng) {
                 let p_brdf = hit.material.scattering_pdf(&hit, &ls.wi);
                 if ls.pdf > 0.0 && p_brdf > 0.0 && ls.radiance != Color::ZERO {
-                    // Bound the shadow ray to just short of the light so it isn't
-                    // its own occluder; the env light (t_light = ∞) is unbounded.
-                    // `wi` is unnormalized, so `t_light` and the interval share units.
-                    let t_max = if ls.t_light.is_infinite() {
-                        f32::INFINITY
-                    } else {
-                        ls.t_light * (1.0 - 1e-3)
-                    };
+                    // The sample owns its shadow-ray bound (finite lights stop just
+                    // short of the surface; the env light is unbounded).
                     let shadow = Ray::new_t(hit.p, ls.wi, current.time);
-                    if !world.occluded(&shadow, &Interval::new(0.001, t_max)) {
+                    if !world.occluded(&shadow, &ls.shadow_interval()) {
                         let w = power_heuristic(ls.pdf, p_brdf);
                         color += throughput * w * albedo * (p_brdf / ls.pdf) * ls.radiance;
                     }

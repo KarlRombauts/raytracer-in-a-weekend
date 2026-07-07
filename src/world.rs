@@ -45,6 +45,20 @@ pub struct LightSample {
     pub pdf: f32,
 }
 
+impl LightSample {
+    /// The occlusion interval for a shadow ray fired along `wi` toward this light:
+    /// from the shading-point epsilon out to just short of the light surface (so
+    /// the light isn't counted as its own occluder), or unbounded for the
+    /// infinitely-far env light. Because `t_light` is `∞` for the env light and
+    /// `∞ · (1 − ε)` is still `∞`, one expression covers both — the caller needs no
+    /// finite-vs-infinite branch. `wi` is unnormalized, so the interval is in `wi`
+    /// units, matching `t_light`. The World owns this bound (it set `t_light`), so
+    /// the shadow-ray epsilons live here, not re-derived at each NEE call site.
+    pub fn shadow_interval(&self) -> Interval {
+        Interval::new(0.001, self.t_light * (1.0 - 1e-3))
+    }
+}
+
 /// A lightweight proxy the top-level BVH is built over: an object's geometry
 /// handle paired with the *stable* index of that object in [`World::objects`].
 /// The BVH reorders proxies freely for spatial locality; the object array never
@@ -241,9 +255,15 @@ impl World {
             Some(LightSample { wi, t_light, radiance, pdf: pdf / n as f32 })
         } else {
             // The environment light: infinitely far (`t_light = ∞`, unbounded
-            // shadow ray), its radiance read straight from the sky. The pdf uses
-            // `direction_pdf` — the same density the emitter/env-escape MIS
-            // branches evaluate — so the branches share one light pdf.
+            // shadow ray), its radiance read straight from the sky. The pdf is
+            // recomputed via `direction_pdf` — the density the env-escape eval
+            // branch (`env_pdf`) also uses — rather than reusing `sample_direction`'s
+            // returned pdf. The two are NOT interchangeable: they can differ by a
+            // few percent (see `sample_direction_reports_the_same_pdf_as_direction_pdf`),
+            // and this keeps the NEE and eval branches on one consistent density
+            // (and preserves the pre-reformulation estimator). Which density is more
+            // accurate is a separate correctness question — so don't "simplify" the
+            // `_` discard by reusing the sampler's pdf without weighing that.
             let Sky::Env(env) = &self.sky else {
                 unreachable!("i >= lights.len() only when the sky is an env light")
             };
