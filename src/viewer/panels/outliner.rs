@@ -136,13 +136,19 @@ pub fn show_outliner(
         ] {
             // Custom row: icon + name + ".obj" mono suffix. egui Button doesn't
             // support mixed-style text, so we allocate a row rect, draw the
-            // content manually, and handle the click ourselves.
+            // content manually, and interact with the row *after* the labels.
+            // Interacting first (the old bug) put the click sense BELOW the
+            // labels, so a click over the text hit the label instead and the row
+            // only reacted on its empty part. Mirrors the object-row pattern
+            // below: hover interact before the content, click interact after.
             let row_h = 32.0;
-            let (row_rect, row_resp) = ui.allocate_exact_size(
+            let (row_rect, _) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), row_h),
-                egui::Sense::click(),
+                egui::Sense::hover(),
             );
-            let hovered = row_resp.hovered();
+            let hovered = ui
+                .interact(row_rect, ui.id().with(("mesh_row_hover", file)), egui::Sense::hover())
+                .hovered();
             if hovered {
                 ui.painter().rect_filled(
                     row_rect,
@@ -174,9 +180,13 @@ pub fn show_outliner(
                 });
             });
 
-            // Start loading the bundled mesh (disk on native, HTTP fetch on the
-            // web); `poll_obj_import` at the top of the panel adds it when ready.
-            let row_resp = row_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+            // Interact LAST, on top of the labels, so a click anywhere on the row
+            // (including over the text) registers. Then start loading the bundled
+            // mesh (disk on native, HTTP fetch on web); `poll_obj_import` at the
+            // top of the panel adds it when ready.
+            let row_resp = ui
+                .interact(row_rect, ui.id().with(("mesh_row", file)), egui::Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
             if row_resp.clicked() {
                 controls::add_sample_mesh(ui, label, file);
             }
